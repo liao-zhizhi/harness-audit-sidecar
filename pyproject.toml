@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-harness-audit"
-version = "0.5.0"
+version = "0.6.0"
 description = "Execution-layer audit sidecar for AI agent harnesses: four-valued verdicts judged against independently collected witnesses."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -39,8 +39,11 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Testing",
 ]
-# No runtime dependencies beyond the standard library, by design.
-dependencies = []
+# Framework dependencies are deliberately absent: the transport, the witness
+# collectors and the verdict lattice are all standard library. PyYAML is the
+# single exception, and it exists to keep *policy* out of the code -- see
+# `audit_sidecar/judgment_base.py` for why that trade is worth a dependency.
+dependencies = ["PyYAML>=5.1"]
 
 [project.optional-dependencies]
 dev = []

@@ -99,6 +99,12 @@ class ExecutionResult:
     changed_files: Tuple[str, ...] = ()
     missing_expected: Tuple[str, ...] = ()
     unexpected_changes: Tuple[str, ...] = ()
+    # Judgment-base provenance, empty unless a rule engine judged this call.
+    # ``rule_id`` names the rule that decided the verdict, so a trace can be
+    # read without the policy that produced it to hand.
+    rule_id: Optional[str] = None
+    rules_matched: Tuple[str, ...] = ()
+    rules_violated: Tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -128,6 +134,21 @@ class SafeRunner:
         self._bash = bash
         self._timeout = float(timeout)
 
+    def with_engine(self, engine) -> "SafeRunner":
+        """Return an equivalent runner that judges with ``engine``.
+
+        ``engine`` may be a ``VerdictEngine`` or a ``RuleEngine``; the runner
+        only requires ``explain``, plus ``explain_for_tool`` when rule-aware
+        judging is wanted. Returning a copy keeps the original runner usable.
+        """
+        clone = SafeRunner(engine=engine, bash=self._bash, timeout=self._timeout)
+        return clone
+
+    @property
+    def engine(self):
+        """The engine this runner judges with (read-only)."""
+        return self._engine
+
     # -- public API ---------------------------------------------------
 
     def run_shell(
@@ -143,6 +164,7 @@ class SafeRunner:
         repo_path: Optional[str] = None,
         allow_extra_changes: bool = False,
         reported_success: Optional[bool] = None,
+        tool_name: Optional[str] = None,
     ) -> ExecutionResult:
         """Run ``command`` in ``cwd`` and judge the outcome.
 
@@ -179,6 +201,12 @@ class SafeRunner:
         would audit the wrong party, and would make a swallowed error
         invisible. When this is supplied, ``check_source`` records
         ``"protocol"`` so the audit trail shows where the claim came from.
+
+        ``tool_name`` enables judgment-base rules. When the configured engine
+        is rule-aware (it exposes ``explain_for_tool``), the observation set is
+        handed over with ``tool_name`` so per-tool policy can tighten the
+        lattice verdict. When it is not, this argument is ignored and the plain
+        lattice decides -- so passing it can never loosen a verdict.
         """
         if not isinstance(command, str) or not command.strip():
             raise ValueError("command must be a non-empty string")
@@ -303,11 +331,41 @@ class SafeRunner:
         # effect before it looks at intent, so passing None here would collapse
         # the distinction to INVALID.
         engine_intent: Optional[bool] = None if never_started else True
-        verdict, reason = self._engine.explain(
-            intent=engine_intent,
-            effect=effect_observed,
-            check=check_observed,
-        )
+
+        # Which witness *types* were actually collected. A rule that demands a
+        # witness type absent from this set is asking for evidence the run did
+        # not produce, which the rule engine reports as INVALID rather than
+        # letting the lattice's PASS stand.
+        witnesses = set()
+        if witness_path is not None:
+            witnesses.add("file")
+        if git_witness is not None:
+            witnesses.add("git_diff")
+        if check_source == "protocol":
+            witnesses.add("agent_report")
+
+        rule_aware = getattr(self._engine, "explain_for_tool", None)
+        if tool_name is not None and callable(rule_aware):
+            decision = rule_aware(
+                tool_name,
+                intent=engine_intent,
+                effect=effect_observed,
+                check=check_observed,
+                witnesses=frozenset(witnesses),
+            )
+            verdict, reason = decision.verdict, decision.reason
+            rule_id = decision.rule_id
+            rules_matched = tuple(decision.matched_rule_ids)
+            rules_violated = tuple(decision.violated_rule_ids)
+        else:
+            verdict, reason = self._engine.explain(
+                intent=engine_intent,
+                effect=effect_observed,
+                check=check_observed,
+            )
+            rule_id = None
+            rules_matched = ()
+            rules_violated = ()
 
         if effect_observed is None and verdict is Verdict.INVALID:
             reason = "{} (no independent witness requested)".format(reason)
@@ -351,6 +409,9 @@ class SafeRunner:
             changed_files=changed,
             missing_expected=missing,
             unexpected_changes=unexpected,
+            rule_id=rule_id,
+            rules_matched=rules_matched,
+            rules_violated=rules_violated,
         )
 
     def raw_exit_status(

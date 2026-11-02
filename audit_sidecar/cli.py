@@ -19,7 +19,9 @@ import subprocess
 import tempfile
 
 from .confidence import ConfidenceAccount
+from .judgment_base import JudgmentBase, RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy
+from .rule_engine import RuleEngine
 from .runner import SafeRunner
 from .self_audit import run_self_audit
 from .verdict import Verdict, VerdictEngine
@@ -477,6 +479,82 @@ def _print_mcp_demo() -> None:
         print()
 
 
+def _print_judgment_base_demo() -> None:
+    """Section 6: the same case, judged with and without the rule base."""
+    print("[6] Judgment base: policy as data, and it can only tighten")
+
+    rules_dir = default_rules_dir()
+    if rules_dir is None:
+        print("    skipped: no rules/ directory found")
+        print()
+        return
+
+    try:
+        base = JudgmentBase(rules_dir)
+    except (RuleError, FileNotFoundError) as problem:
+        print("    skipped: judgment base could not be loaded ({})".format(problem))
+        print()
+        return
+
+    print("    rules dir : {}".format(rules_dir))
+    print("    loaded    : {}".format(", ".join(base.rule_ids) or "(none)"))
+    print()
+    print("    {:<30} {:<9} {:<12} {}".format("case", "lattice", "with rules", "rule"))
+    print("    {} {} {} {}".format("-" * 30, "-" * 9, "-" * 12, "-" * 16))
+
+    engine = RuleEngine(base)
+    cases = (
+        (
+            "file witness only",
+            "write_file",
+            {"intent": True, "effect": True, "check": True},
+            frozenset({"file", "agent_report"}),
+        ),
+        (
+            "file + git witness",
+            "write_file",
+            {"intent": True, "effect": True, "check": True},
+            frozenset({"file", "git_diff", "agent_report"}),
+        ),
+        (
+            "write did not land",
+            "write_file",
+            {"intent": True, "effect": False, "check": True},
+            frozenset({"file", "git_diff", "agent_report"}),
+        ),
+        (
+            "tool with no rule",
+            "run_command",
+            {"intent": True, "effect": True, "check": True},
+            frozenset({"git_diff"}),
+        ),
+    )
+
+    for label, tool, case, witnesses in cases:
+        lattice = VerdictEngine().explain(**case)[0]
+        decision = engine.judge(tool, witnesses=witnesses, **case)
+        print(
+            "    {:<30} {:<9} {:<12} {}".format(
+                label,
+                str(lattice),
+                str(decision.verdict),
+                decision.rule_id or "-",
+            )
+        )
+
+    print()
+    print("    Row 1 is the point. The file witness alone proves the write landed,")
+    print("    so the lattice says PASS -- and it is right about the world. The")
+    print("    rule says a git change set is also required, so the same run is")
+    print("    INVALID: not 'the write failed', but 'this success is not evidence'.")
+    print("    That sentence is impossible to write in code that has no rules.")
+    print()
+    print("    The rule is monotone: row 3 stays FAIL, and row 4 is untouched")
+    print("    because no rule targets run_command. A policy that could turn a")
+    print("    FAIL into a PASS would be a way to argue with the witness.")
+    print()
+
+
 def main() -> int:
     """Run the self-audit, then the demo. Returns a process exit code."""
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -496,6 +574,7 @@ def main() -> int:
     _print_witness_demo()
     _print_git_witness_demo()
     _print_mcp_demo()
+    _print_judgment_base_demo()
 
     print("Self-audit gate: OPEN")
     return 0

@@ -29,6 +29,7 @@ import os
 import sys
 from typing import Any, Dict, Iterable, List, Optional, TextIO
 
+from .judgment_base import RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .runner import SafeRunner
 
@@ -120,6 +121,13 @@ def _trace_record(
         "changed_files": list(result.changed_files),
         "missing_expected": list(result.missing_expected),
         "unexpected_changes": list(result.unexpected_changes),
+        # Judgment-base provenance. ``rule_id`` names the rule that decided
+        # the verdict, so a trace stays readable after the policy changes:
+        # without it, an INVALID caused by a rule is indistinguishable from
+        # one caused by a missing witness.
+        "rule_id": result.rule_id,
+        "rules_matched": list(result.rules_matched),
+        "rules_violated": list(result.rules_violated),
     }
 
 
@@ -277,11 +285,34 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         help="per-command timeout in seconds (default: 30)",
     )
     parser.add_argument(
+        "--rules",
+        default=None,
+        help=(
+            "judgment-base directory of .yaml rules (default: auto-detect "
+            "./rules, then the rules/ shipped beside the package; pass 'none' "
+            "to force the plain lattice)"
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="suppress diagnostic logging on stderr",
     )
     return parser.parse_args(argv)
+
+
+def _resolve_rules_dir(option: Optional[str]) -> Optional[str]:
+    """Turn the ``--rules`` value into a directory to load, or ``None``.
+
+    ``"none"`` (case-insensitive) disables the judgment base explicitly, which
+    is different from auto-detection finding nothing: the operator asked for
+    the plain lattice rather than getting it by accident.
+    """
+    if option is None:
+        return default_rules_dir()
+    if option.strip().lower() in ("none", ""):
+        return None
+    return option
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -311,8 +342,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             cwd=cwd,
             runner=SafeRunner(timeout=options.timeout),
             repo_path=options.repo,
+            rules_dir=_resolve_rules_dir(options.rules),
         )
-    except (ValueError, FileNotFoundError) as problem:
+    except (ValueError, FileNotFoundError, RuleError) as problem:
         _LOG.error("could not start the proxy: %s", problem)
         return 2
 

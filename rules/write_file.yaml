@@ -1,0 +1,14 @@
+# Judgment Base rule
+#
+# A rule lives outside the code so that the audit policy can change without
+# re-releasing the auditor -- and so that changing it leaves a diff.
+#
+# Fields are validated at load time. An unknown field or an unsupported value
+# is a hard error: a rule base that silently ignores a typo is decoration, not
+# an institution.
+
+rule_id: "no_file_drift"
+target_tool: "write_file"
+require_witness: true
+witness_type: "git_diff"
+expectation: "file_modified" # 期望该文件确实被修改

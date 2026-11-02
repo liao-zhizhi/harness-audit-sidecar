@@ -2,10 +2,10 @@
 
 **Agent 执行层审计工具**
 
-> **项目状态：MVP / 早期版本（v0.5.0）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.6.0）—— 接口可能变化，暂不建议用于生产环境。**
 >
-> 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源与 stdio 服务端，
-> 核心闭环（执行 → 见证 → 判词 → 留痕）已跑通并有 156 项测试；
+> 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库与 stdio 服务端，
+> 核心闭环（执行 → 见证 → 判词 → 留痕）已跑通并有 219 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -18,12 +18,13 @@ agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行�
 不能由 agent 自己的报告决定，只能由独立见证（witness）决定**。
 
 > **已实现：** 四值判词引擎、信任能荷账户、自审计回路，**三种见证源**
-> （文件系统 / Git 变更集 / MCP 协议层声明），以及**可 `pip install` 的 stdio 服务端**
-> （`harness-audit-server`）。
+> （文件系统 / Git 变更集 / MCP 协议层声明）、**外置判据库（`rules/*.yaml`）**，
+> 以及**可 `pip install` 的 stdio 服务端**（`harness-audit-server`）。
 > **未实现：** 完整 MCP 握手（`initialize` / `tools/list`）、从协议帧取声明、
 > 更多见证源（mtime / 进程退出码族 / 网络副作用）。详见「已知边界」与「路线图」。
 
-仅依赖 Python 标准库，无任何第三方包。
+审计逻辑本身只用 Python 标准库；**唯一的第三方依赖是 PyYAML**，用来把
+*策略*从代码里搬出去（见 [外置判据库](#dynamic-judgment-base-外置判据库)）。
 
 ---
 
@@ -73,6 +74,96 @@ agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行�
 
 ---
 
+## Dynamic Judgment Base (外置判据库)
+
+判词以前全部长在代码里。这有个具体的坏处：**你没法 diff 一条规则，也就没法争论它。**
+想收紧某个工具的验收标准，得改 Python、发版本；实际结果就是没人收紧。
+
+外置判据库把**每个工具的策略**搬进 YAML：
+
+```yaml
+# rules/write_file.yaml
+rule_id: "no_file_drift"
+target_tool: "write_file"
+require_witness: true
+witness_type: "git_diff"
+expectation: "file_modified"
+```
+
+改动验收标准从此是一次 `rules/` 里的 diff，看得懂的人不必是写代码的人。
+
+### 它到底多做了什么
+
+注意 `require_witness` 这一条：**四值格表达不了它**。文件见证已经证明写入落地了，
+格子的判断是对的——`PASS`。可策略说："光有文件见证不够，我要 git 变更集。"
+
+同一份观测，两种判词：
+
+| 观测 | 四值格 | 加规则 | `rule_id` |
+|:--|:--|:--|:--|
+| 只有文件见证 | `PASS` | **`INVALID`** | `no_file_drift` |
+| 文件 + git 见证 | `PASS` | `PASS` | `null`（规则检查过，放行） |
+| 写入没落地 | `FAIL` | `FAIL` | `no_file_drift` |
+| 工具没有规则 | `PASS` | `PASS` | `null`（回退到格子） |
+
+第一行就是升级的意义：它说的不是"写入失败"，而是"**这次成功不算证据**"。
+这句话在没有任何规则的代码里写不出来。
+
+### 单调性：规则只能收紧，不能放松
+
+这是硬约束，不是实现细节：
+
+```
+NOT RUN  ←  什么都没跑，规则无从违反，原样保留
+FAIL     ←  见证与记录矛盾。缺一个见证并不能把矛盾解释掉
+INVALID  ←  规则要求的见证没采集到。没有证据就不许说 PASS
+PASS     ←  格子同意，且规则全部满足
+```
+
+**一条能把 `FAIL` 变成 `PASS` 的规则，就是一种跟见证讨价还价的方式**——而那正是这套
+工具存在的理由。`tests/test_rule_engine.py::TestMonotonicity` 把这条钉死了。
+
+### 加载是严格的
+
+未知字段、未知的 `witness_type`、未知的 `expectation`、跨文件重复的 `rule_id`、
+`require_witness: true` 却没写 `witness_type`——**全部在加载时报错**。
+
+理由和自审计一样：一条你以为是活的、其实是死的规则，比没有规则更糟。所以宁可炸掉：
+
+```
+RuleError: rules/write_file.yaml: unknown field(s) ['require_witnes'];
+the loader refuses to ignore a guard it does not understand
+```
+
+### 怎么用
+
+```bash
+# 服务端会自动探测 ./rules；也可以显式指定
+harness-audit-server --cwd /path/to/repo --rules ./rules
+
+# 明确要求"只用四值格"，而不是碰巧没找到规则
+harness-audit-server --cwd /path/to/repo --rules none
+```
+
+```python
+from audit_sidecar import JudgmentBase, RuleEngine, MCPProxy
+
+proxy = MCPProxy(cwd=repo, rules_dir="rules")   # 不传 rules_dir 就是纯四值格
+```
+
+`--rules none` 与"自动探测没找到"是两件事：前者是操作者的选择，后者是意外。
+
+### 自审计跟着升级
+
+判据库让策略离开了代码，也就让**失效模式**离开了代码。所以自审计多了一组已知答案的
+样本，检查三件事：规则**确实加载了**、违规的运行**被判 FAIL/INVALID**、判词**说出了
+是哪条 `rule_id`**。三者缺一，规则层就只是装饰。
+
+trace 里因此多了 `rule_id` / `rules_matched` / `rules_violated`，
+详见 [`examples/README.md`](examples/README.md)。
+
+---
+
 ## 目录结构
 
 ```
@@ -82,13 +173,17 @@ agent-harness-audit/
 │   ├── __init__.py       公开接口
 │   ├── verdict.py        四值判词引擎
 │   ├── confidence.py     信任能荷账户（滑动窗口）
+│   ├── judgment_base.py  外置判据库（加载 rules/*.yaml）
+│   ├── rule_engine.py    规则判词（在四值格之上收紧）
 │   ├── runner.py         见证采集（真实执行 + 独立读回）
 │   ├── git_witness.py    Git 见证（真实变更集）
 │   ├── mcp_proxy.py      MCP 拦截（协议层声明 vs 物理效果）
 │   ├── mcp_server.py     stdio JSON-RPC 服务端（console script）
 │   ├── self_audit.py     自审计（mode 4 防线）
 │   └── cli.py            命令行入口
-├── pyproject.toml        打包配置（零运行时依赖）
+├── rules/
+│   └── write_file.yaml   判据库：规则是数据，不是代码
+├── pyproject.toml        打包配置（运行时仅需 PyYAML）
 ├── .gitignore
 ├── examples/
 │   ├── sample_trace.jsonl   真实审计留痕（Agent 收到 ok / 账本记 FAIL）
@@ -96,6 +191,8 @@ agent-harness-audit/
 └── tests/
     ├── test_verdict.py
     ├── test_confidence.py
+    ├── test_judgment_base.py
+    ├── test_rule_engine.py
     ├── test_runner.py
     ├── test_git_witness.py
     ├── test_mcp_proxy.py
@@ -109,15 +206,17 @@ agent-harness-audit/
 ```bash
 cd agent-harness-audit
 
-# 1. 跑测试
+# 1. 装依赖（唯一的第三方包是 PyYAML，用来读规则）
+pip install -e .
+
+# 2. 跑测试
 python3 -m unittest discover tests
 
-# 2. 跑 demo（启动时先跑自审计，不通过则拒绝启动）
+# 3. 跑 demo（启动时先跑自审计，不通过则拒绝启动）
 python3 -m audit_sidecar.cli
 
-# 3. 装成可执行的 stdio sidecar
-pip install .
-harness-audit-server --cwd /path/to/project
+# 4. 装成可执行的 stdio sidecar
+harness-audit-server --cwd /path/to/project --rules ./rules
 ```
 
 编程式使用：
@@ -154,6 +253,25 @@ result = SafeRunner().run_shell(
     expected_content="feature_x=on",
 )
 print(result.verdict, result.effect_observed, result.check_observed)
+```
+
+带判据库的判词（详见下文「外置判据库」）：
+
+```python
+from audit_sidecar import JudgmentBase, MCPProxy, RuleEngine
+
+engine = RuleEngine(JudgmentBase("rules"))
+decision = engine.judge(
+    "write_file",
+    intent=True,
+    effect=True,                     # 文件见证：写入确实落地了
+    check=True,                      # 工具层对 agent 说成功
+    witnesses={"file", "agent_report"},  # 但没有 git 变更集
+)
+print(decision.verdict, decision.rule_id)   # INVALID no_file_drift
+
+# 接入拦截层后，同一判断会自动发生，并写进 trace
+proxy = MCPProxy(cwd="/path/to/repo", rules_dir="rules")
 ```
 
 ---
@@ -718,6 +836,17 @@ python3 -m unittest discover tests -v
   `unexpected_changes` 都是仓库根相对路径（`git status` 坐标系），但 `intent` 记录的是
   调用参数的原文。客户端传绝对路径，本机路径就会进 trace。分享审计日志前请自查：
   `grep -cE '/tmp/|/home/' audit_trace.jsonl`。
+- **规则层是 opt-in 的。** `MCPProxy` 不传 `rules_dir` 就是纯四值格；服务端才自动探测
+  `./rules`。不给规则不会静默改变老调用的判词。
+- **wheel 里不含 `rules/`。** 随包规则只进 sdist（`pip download --no-binary :all:` 可拿到），
+  因为 `rules/` 是仓库根目录而非包内目录。`pip install` 之后需要显式
+  `--rules /path/to/rules`，否则服务端会警告"没有判据库"并退回纯四值格。
+- **规则只覆盖 `write_file`。** 随包只带一条 `no_file_drift`；`append_file` /
+  `run_command` 目前没有规则，直接走格子。规则表达力也有限：只有三个
+  `witness_type` 与一个 `expectation: file_modified`，写成别的一律加载报错——
+  宁可拒绝，也不静默忽略。
+- **规则不做跨工具推理。** 每条规则独立判定，没有"先 A 后 B"的顺序约束，也没有
+  规则之间的依赖。
 - **无持久化。** 账户与审计日志都在内存里，进程退出即丢（trace 文件除外）。
 
 ## 路线图
@@ -731,7 +860,13 @@ python3 -m unittest discover tests -v
      `mcp_server.py` 的 stdio JSON-RPC 服务端与 JSONL 审计留痕。
    - 待扩展：从协议帧的 `result.isError` 取声明而非由客户端上送、`initialize` 握手与
      `tools/list`、Content-Length 分帧、转发到外部 MCP server、并发与批处理。
-3. 账户持久化与跨会话聚合；把判词流导出为可复核的审计日志。
+3. **外置判据库**（已具备基础形态）：
+   - 已具备：`rules/*.yaml` 加载与严格校验、按工具选规则、单调收紧、`rule_id` 入 trace、
+     规则层自审计。
+   - 待扩展：更多 `expectation`（`file_created` / `content_matches` / `no_unexpected_changes`）、
+     规则继承与分组、按路径作用域（`target_path` glob）、规则版本与生效日期、
+     远程判据库与签名。
+4. 账户持久化与跨会话聚合；把判词流导出为可复核的审计日志。
 
 ## 许可
 

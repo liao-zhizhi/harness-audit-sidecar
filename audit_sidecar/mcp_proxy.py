@@ -21,7 +21,11 @@ system under test.
 The real protocol is JSON-RPC over stdio or SSE. This module models the call
 boundary as a Python method so the audit logic can be exercised without a
 transport; the shape of the response follows MCP's tool-result envelope.
-Only the standard library is used.
+
+Judging is delegated to an engine. By default that is the plain
+``VerdictEngine`` lattice. Supplying ``rules_dir`` (or a ``JudgmentBase`` /
+``RuleEngine``) switches to rule-aware judging, which can only tighten a
+verdict -- see ``rule_engine`` for why that direction is fixed.
 """
 
 from __future__ import annotations
@@ -31,15 +35,16 @@ import shlex
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .judgment_base import JudgmentBase
+from .rule_engine import RuleEngine
 from .runner import ExecutionResult, SafeRunner
-from .verdict import Verdict
+from .verdict import Verdict, VerdictEngine
 
 __all__ = [
     "MCPProxy",
     "ToolInvocation",
     "UnknownToolError",
 ]
-
 _LOG = logging.getLogger(__name__)
 
 
@@ -149,17 +154,62 @@ class MCPProxy:
         runner: Optional[SafeRunner] = None,
         repo_path: Optional[str] = None,
         registry: Optional[Dict[str, Callable[[Dict[str, Any]], ToolInvocation]]] = None,
+        rules_dir: Optional[str] = None,
+        judgment_base: Optional[JudgmentBase] = None,
+        rule_engine: Optional[RuleEngine] = None,
     ) -> None:
         if not isinstance(cwd, str) or not cwd:
             raise ValueError("cwd must be a non-empty string")
         self._cwd = cwd
         self._repo_path = repo_path if repo_path is not None else cwd
-        self._runner = runner if runner is not None else SafeRunner()
+        self._rule_engine = self._resolve_engine(rules_dir, judgment_base, rule_engine)
+        if runner is not None:
+            # Rebind a caller-supplied runner onto this proxy's engine instead
+            # of mutating it, so the caller's runner keeps working.
+            self._runner = (
+                runner
+                if self._rule_engine is None
+                else runner.with_engine(self._rule_engine)
+            )
+        else:
+            self._runner = SafeRunner(
+                engine=self._rule_engine
+                if self._rule_engine is not None
+                else VerdictEngine()
+            )
         self._registry = dict(_DEFAULT_REGISTRY)
         if registry:
             self._registry.update(registry)
         self._audit_log: List[ExecutionResult] = []
         self._responses: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def _resolve_engine(
+        rules_dir: Optional[str],
+        judgment_base: Optional[JudgmentBase],
+        rule_engine: Optional[RuleEngine],
+    ) -> Optional[RuleEngine]:
+        """Pick the judging engine from the several ways it can be supplied.
+
+        Rules are opt-in: with no argument the proxy judges with the plain
+        lattice, exactly as before. Loading a policy implicitly would change
+        the verdict for every existing caller the moment a ``rules/`` directory
+        appeared in their working tree.
+        """
+        if rule_engine is not None:
+            if rules_dir is not None or judgment_base is not None:
+                raise ValueError(
+                    "pass rule_engine, or rules_dir/judgment_base, but not both"
+                )
+            return rule_engine
+        if judgment_base is not None and rules_dir is not None:
+            raise ValueError("pass judgment_base or rules_dir, but not both")
+        base = judgment_base
+        if base is None and rules_dir is not None:
+            base = JudgmentBase(rules_dir)
+        if base is None:
+            return None
+        return RuleEngine(base)
 
     # -- public API ---------------------------------------------------
 
@@ -172,6 +222,16 @@ class MCPProxy:
     def responses(self) -> Tuple[Dict[str, Any], ...]:
         """Every response handed back, in call order."""
         return tuple(self._responses)
+
+    @property
+    def rule_engine(self) -> Optional[RuleEngine]:
+        """The judgment-base engine in use, or ``None`` for the plain lattice."""
+        return self._rule_engine
+
+    @property
+    def judgment_base(self) -> Optional[JudgmentBase]:
+        """The loaded rule set, or ``None`` when rules are not in play."""
+        return self._rule_engine.judgment_base if self._rule_engine is not None else None
 
     def register_tool(
         self, name: str, builder: Callable[[Dict[str, Any]], ToolInvocation]
@@ -231,6 +291,8 @@ class MCPProxy:
             repo_path=self._repo_path,
             # The claim reaches the engine exactly as the agent received it.
             reported_success=agent_reported_success,
+            # Lets the judgment base select rules for this specific tool.
+            tool_name=tool_name,
         )
         self._audit_log.append(result)
 
