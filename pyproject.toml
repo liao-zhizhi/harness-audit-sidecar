@@ -4,22 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-harness-audit"
-version = "0.6.0"
+version = "0.6.1"
 description = "Execution-layer audit sidecar for AI agent harnesses: four-valued verdicts judged against independently collected witnesses."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "liaozhizhi", email = "liaozhizhi@foxmail.com" }]
-
-# Fill these in before the first public release: without them PyPI shows no
-# repository link, and `pip show` cannot point users back at the source.
-#
-# [project.urls]
-# Homepage = "https://github.com/<you>/agent-harness-audit"
-# Repository = "https://github.com/<you>/agent-harness-audit"
-# Issues = "https://github.com/<you>/agent-harness-audit/issues"
-# Changelog = "https://github.com/<you>/agent-harness-audit/blob/main/CHANGELOG.md"
 
 keywords = [
     "agents",
@@ -45,6 +36,10 @@ classifiers = [
 # `audit_sidecar/judgment_base.py` for why that trade is worth a dependency.
 dependencies = ["PyYAML>=5.1"]
 
+[project.urls]
+Repository = "https://github.com/liao-zhizhi/harness-audit-sidecar"
+Issue-Tracker = "https://github.com/liao-zhizhi/harness-audit-sidecar/issues"
+
 [project.optional-dependencies]
 dev = []
 
@@ -57,4 +52,7 @@ harness-audit-server = "audit_sidecar.mcp_server:main"
 packages = ["audit_sidecar"]
 
 [tool.setuptools.package-data]
-audit_sidecar = ["py.typed"]
+# py.typed marks the package as typed. rules/*.yaml ships the default policy
+# inside the wheel, so a plain `pip install` produces a working audit gate
+# instead of one that silently enforces nothing until configured.
+audit_sidecar = ["py.typed", "rules/*.yaml"]

@@ -31,10 +31,12 @@ verdict -- see ``rule_engine`` for why that direction is fixed.
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .git_witness import GitWitnessError
 from .judgment_base import JudgmentBase
 from .rule_engine import RuleEngine
 from .runner import ExecutionResult, SafeRunner
@@ -281,24 +283,57 @@ class MCPProxy:
             )
         invocation = builder(args)
 
-        result = self._runner.run_shell(
-            invocation.command,
-            cwd=self._cwd,
-            intent_desc=invocation.intent,
-            expected_file=invocation.expected_file,
-            expected_content=invocation.expected_content,
-            expected_files_modified=invocation.expected_files or None,
-            repo_path=self._repo_path,
-            # The claim reaches the engine exactly as the agent received it.
-            reported_success=agent_reported_success,
-            # Lets the judgment base select rules for this specific tool.
-            tool_name=tool_name,
-        )
+        try:
+            result = self._runner.run_shell(
+                invocation.command,
+                cwd=self._cwd,
+                intent_desc=invocation.intent,
+                expected_file=invocation.expected_file,
+                expected_content=invocation.expected_content,
+                expected_files_modified=invocation.expected_files or None,
+                repo_path=self._repo_path,
+                # The claim reaches the engine exactly as the agent received it.
+                reported_success=agent_reported_success,
+                # Lets the judgment base select rules for this specific tool.
+                tool_name=tool_name,
+            )
+        except GitWitnessError as problem:
+            # The requested change-set witness cannot be collected -- usually
+            # because the working directory is not a git repository. That is
+            # "we did not look", not "we looked and it passed", so the verdict
+            # is INVALID and the run is still recorded. Raising here instead
+            # would take the whole sidecar down on an ordinary first run in a
+            # scratch directory, and leave no trace to explain why.
+            result = self._unwitnessed(invocation, agent_reported_success, problem)
         self._audit_log.append(result)
 
         response = self._tool_response(tool_name, agent_reported_success, result)
         self._responses.append(response)
         return response
+
+    def _unwitnessed(
+        self,
+        invocation: "ToolInvocation",
+        reported_success: bool,
+        problem: Exception,
+    ) -> ExecutionResult:
+        """Build the INVALID record for a call whose witness is unobtainable."""
+        warning = (
+            "no independent witness: {}; refusing to claim PASS. Point --repo "
+            "at a git repository, or pass --rules none to accept the plain "
+            "lattice".format(problem)
+        )
+        _LOG.warning("%s", warning)
+        return ExecutionResult(
+            intent=invocation.intent,
+            effect_observed=None,
+            check_observed=reported_success,
+            verdict=Verdict.INVALID,
+            command=invocation.command,
+            cwd=os.path.abspath(self._cwd),
+            reason=warning,
+            check_source="protocol",
+        )
 
     def summary(self) -> Dict[str, int]:
         """Count verdicts across the audit log."""

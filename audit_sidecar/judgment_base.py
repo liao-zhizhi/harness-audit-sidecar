@@ -18,6 +18,10 @@ Two consequences follow, and they are the point:
 
 * **The policy is reviewable.** Changing what counts as acceptable is a
   diff in ``rules/``, visible to anyone who is not the author of the code.
+* **The policy travels with the code.** The default rules live inside the
+  package, so ``pip install`` alone yields a working gate: an install that
+  audits nothing until configured would be the decoration this module
+  exists to prevent.
 * **The policy is enforceable.** A rule can demand a witness the caller did
   not collect, which the boolean lattice alone cannot express. That is how
   ``require_witness`` becomes a real gate rather than a comment.
@@ -43,6 +47,7 @@ __all__ = [
     "JudgmentBase",
     "RuleError",
     "default_rules_dir",
+    "packaged_rules_dir",
 ]
 
 _LOG = logging.getLogger(__name__)
@@ -80,7 +85,11 @@ _KNOWN_FIELDS = frozenset(
 # ``target_tool: "*"`` applies the rule to every tool.
 WILDCARD_TOOL = "*"
 
-_PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Rules that ship *inside* the installed package, so ``pip install`` is
+# enough to get a working default policy.
+PACKAGE_RULES_DIR = os.path.join(_PACKAGE_DIR, DEFAULT_RULES_DIRNAME)
 
 
 class RuleError(ValueError):
@@ -113,19 +122,47 @@ class Rule:
         }
 
 
+def packaged_rules_dir() -> str:
+    """The ``rules/`` directory shipped inside the installed package.
+
+    This is the path that makes ``pip install`` sufficient: the default policy
+    travels with the code, so a fresh install has a working judgment base
+    without the caller knowing a directory exists.
+    """
+    return PACKAGE_RULES_DIR
+
+
 def default_rules_dir() -> Optional[str]:
     """Locate the judgment base, or ``None`` when there is none.
 
-    Search order: ``$HARNESS_AUDIT_RULES``, then ``./rules``, then the
-    ``rules/`` directory that ships beside the package in a source checkout.
+    Search order, first hit wins:
+
+    1. ``$HARNESS_AUDIT_RULES`` -- an explicit override is obeyed exactly,
+       including its absence: if it points somewhere that is not a directory
+       this raises rather than falling back, because a policy the operator
+       believes is active must not be silently replaced by another one.
+    2. ``./rules`` -- a project-local policy, so a working directory can
+       override the shipped default without touching the package.
+    3. the ``rules/`` directory inside the installed package.
+
+    (3) always exists in a normal install, so this returns ``None`` only for
+    an uninstalled source tree with no rules of its own.
     """
     override = os.environ.get(RULES_DIR_ENV)
     if override:
+        if not os.path.isdir(override):
+            raise FileNotFoundError(
+                "${} points at {!r}, which is not a directory; refusing to "
+                "silently fall back to a different policy".format(
+                    RULES_DIR_ENV, override
+                )
+            )
         return override
-    for candidate in (os.path.join(os.getcwd(), DEFAULT_RULES_DIRNAME),
-                      os.path.join(_PACKAGE_PARENT, DEFAULT_RULES_DIRNAME)):
-        if os.path.isdir(candidate):
-            return candidate
+    local = os.path.join(os.getcwd(), DEFAULT_RULES_DIRNAME)
+    if os.path.isdir(local):
+        return local
+    if os.path.isdir(PACKAGE_RULES_DIR):
+        return PACKAGE_RULES_DIR
     return None
 
 

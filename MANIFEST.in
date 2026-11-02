@@ -5,7 +5,7 @@
 include LICENSE
 include README.md
 recursive-include examples *
-# graft, not a *.yaml/*.yml pattern list: a pattern that matches nothing makes
-# setuptools warn on every build, and a future .yml rule must still ship.
-graft rules
+# The default judgment base. It is package data (so it reaches the wheel) and
+# also belongs in the sdist, where a source install must find it.
+recursive-include audit_sidecar/rules *.yaml *.yml
 recursive-include tests *.py

@@ -124,14 +124,14 @@ printf '%s\n' \
  '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"write_file","args":{"path":"missing_dir/target.py","content":"value = 2\n"},"reported_success":true},"id":2}' \
  '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"write_file","args":{"path":"target.py","content":"value = 3\n"},"reported_success":false},"id":3}' \
  '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"run_command","args":{"command":"printf \"x\" > wrong.py","expected_files_modified":["target.py"]},"reported_success":true},"id":4}' \
- | PYTHONPATH=/path/to/agent-harness-audit python3 -m audit_sidecar.mcp_server --cwd "$D" --rules /path/to/agent-harness-audit/rules --quiet
+ | PYTHONPATH=/path/to/agent-harness-audit python3 -m audit_sidecar.mcp_server --cwd "$D" --quiet
 
 cat "$D/audit_trace.jsonl"
 ```
 
-去掉 `--rules` 就是纯四值格版本，记录里不会有 `rule_id` 三个字段——两种 trace 都合法，
-区别在于这一份能回答"这条判词是谁下的"。默认情况下 `harness-audit-server` 会自动探测
-`./rules`，所以显式传 `--rules` 只是让复现不依赖当前工作目录。
+去掉 `--rules none` 就是纯四值格版本，记录里不会有 `rule_id` 三个字段——两种 trace 都合法，
+区别在于这一份能回答"这条判词是谁下的"。默认情况下 `harness-audit-server` 会自动加载
+包内的 `audit_sidecar/rules/`（`pip install` 之后同样存在），所以复现不需要任何路径参数。
 
 id=3 那条要靠 `reported_success:false` 构造，因为真实工具层不会主动谎报失败——
 这一条是为了覆盖判词的另一侧（假失败），不是真实故障的复现。

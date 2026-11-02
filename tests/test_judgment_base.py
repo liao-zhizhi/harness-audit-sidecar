@@ -16,10 +16,10 @@ from audit_sidecar.judgment_base import (
     JudgmentBase,
     RuleError,
     default_rules_dir,
+    packaged_rules_dir,
 )
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHIPPED_RULES = os.path.join(REPO_ROOT, DEFAULT_RULES_DIRNAME)
+SHIPPED_RULES = packaged_rules_dir()
 
 VALID_RULE = """\
 rule_id: "no_file_drift"
@@ -126,6 +126,50 @@ class TestLoading(JudgmentBaseTestCase):
     def test_rules_dir_is_exposed(self):
         self.write_rule("write_file.yaml", VALID_RULE)
         self.assertEqual(JudgmentBase(self.root).rules_dir, self.root)
+
+
+class TestDefaultResolution(JudgmentBaseTestCase):
+    """Resolution order decides which policy is live; it must be predictable."""
+
+    def test_packaged_rules_ship_inside_the_package(self):
+        # The whole point of v0.6.1: a wheel install has a working default.
+        self.assertTrue(os.path.isdir(packaged_rules_dir()))
+        self.assertTrue(
+            os.path.isfile(os.path.join(packaged_rules_dir(), "write_file.yaml"))
+        )
+        self.assertGreaterEqual(len(JudgmentBase(packaged_rules_dir())), 1)
+
+    def test_local_rules_directory_wins_over_packaged(self):
+        self.write_rule("rules/local.yaml", "rule_id: local_rule\ntarget_tool: t\n")
+        previous = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        self.assertEqual(default_rules_dir(), os.path.join(self.root, "rules"))
+
+    def test_environment_override_wins_over_everything(self):
+        env_dir = os.path.join(self.root, "from-env")
+        os.makedirs(env_dir)
+        previous = os.environ.get("HARNESS_AUDIT_RULES")
+        os.environ["HARNESS_AUDIT_RULES"] = env_dir
+        self.addCleanup(
+            lambda: os.environ.pop("HARNESS_AUDIT_RULES", None)
+            if previous is None
+            else os.environ.__setitem__("HARNESS_AUDIT_RULES", previous)
+        )
+        self.assertEqual(default_rules_dir(), env_dir)
+
+    def test_environment_override_pointing_nowhere_raises(self):
+        # A typo in the override must not be papered over by the packaged
+        # default; the operator would think their policy was in force.
+        previous = os.environ.get("HARNESS_AUDIT_RULES")
+        os.environ["HARNESS_AUDIT_RULES"] = os.path.join(self.root, "missing")
+        self.addCleanup(
+            lambda: os.environ.pop("HARNESS_AUDIT_RULES", None)
+            if previous is None
+            else os.environ.__setitem__("HARNESS_AUDIT_RULES", previous)
+        )
+        with self.assertRaises(FileNotFoundError):
+            default_rules_dir()
 
 
 class TestRejection(JudgmentBaseTestCase):

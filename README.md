@@ -2,7 +2,7 @@
 
 **Agent 执行层审计工具**
 
-> **项目状态：MVP / 早期版本（v0.6.0）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.6.1）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库与 stdio 服务端，
 > 核心闭环（执行 → 见证 → 判词 → 留痕）已跑通并有 219 项测试；
@@ -82,7 +82,7 @@ agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行�
 外置判据库把**每个工具的策略**搬进 YAML：
 
 ```yaml
-# rules/write_file.yaml
+# audit_sidecar/rules/write_file.yaml（随包发布）
 rule_id: "no_file_drift"
 target_tool: "write_file"
 require_witness: true
@@ -91,6 +91,7 @@ expectation: "file_modified"
 ```
 
 改动验收标准从此是一次 `rules/` 里的 diff，看得懂的人不必是写代码的人。
+默认规则在包内，所以"没配规则"这种状态不存在——不配就是这份。
 
 ### 它到底多做了什么
 
@@ -131,14 +132,17 @@ PASS     ←  格子同意，且规则全部满足
 理由和自审计一样：一条你以为是活的、其实是死的规则，比没有规则更糟。所以宁可炸掉：
 
 ```
-RuleError: rules/write_file.yaml: unknown field(s) ['require_witnes'];
+RuleError: audit_sidecar/rules/write_file.yaml: unknown field(s) ['require_witnes'];
 the loader refuses to ignore a guard it does not understand
 ```
 
 ### 怎么用
 
 ```bash
-# 服务端会自动探测 ./rules；也可以显式指定
+# 装好即生效：包内默认规则会自动加载，不需要 --rules
+harness-audit-server --cwd /path/to/repo
+
+# 想用项目自己的策略：放到 ./rules 下，自动优先于包内默认值
 harness-audit-server --cwd /path/to/repo --rules ./rules
 
 # 明确要求"只用四值格"，而不是碰巧没找到规则
@@ -148,10 +152,12 @@ harness-audit-server --cwd /path/to/repo --rules none
 ```python
 from audit_sidecar import JudgmentBase, RuleEngine, MCPProxy
 
-proxy = MCPProxy(cwd=repo, rules_dir="rules")   # 不传 rules_dir 就是纯四值格
+proxy = MCPProxy(cwd=repo, rules_dir="rules")   # 库默认不加载规则，显式选择才生效
 ```
 
-`--rules none` 与"自动探测没找到"是两件事：前者是操作者的选择，后者是意外。
+服务端与库的默认值不同，是有意的：**服务端**装完就该拦，所以自动加载包内规则；
+**库**的调用方可能只是要四值格，所以不传 `rules_dir` 就是纯四值格。`--rules none`
+与"自动探测没找到"是两件事：前者是操作者的选择，后者是意外。
 
 ### 自审计跟着升级
 
@@ -180,9 +186,9 @@ agent-harness-audit/
 │   ├── mcp_proxy.py      MCP 拦截（协议层声明 vs 物理效果）
 │   ├── mcp_server.py     stdio JSON-RPC 服务端（console script）
 │   ├── self_audit.py     自审计（mode 4 防线）
-│   └── cli.py            命令行入口
-├── rules/
-│   └── write_file.yaml   判据库：规则是数据，不是代码
+│   ├── cli.py            命令行入口
+│   └── rules/
+│       └── write_file.yaml  随包默认规则（装完即生效）
 ├── pyproject.toml        打包配置（运行时仅需 PyYAML）
 ├── .gitignore
 ├── examples/
@@ -204,19 +210,32 @@ agent-harness-audit/
 ## 快速开始
 
 ```bash
-cd agent-harness-audit
+# 1. 安装（会自动带上 PyYAML；默认规则已包含在包里）
+pip install agent_harness_audit-0.6.1-py3-none-any.whl
 
-# 1. 装依赖（唯一的第三方包是 PyYAML，用来读规则）
+# 2. 直接跑，不需要任何路径参数
+harness-audit-server --cwd /path/to/project
+```
+
+**The package ships with a default rule `no_file_drift` out of the box.**
+装完即生效：`write_file` 必须同时有文件见证与 git 变更集，否则判 `INVALID`。
+想用自己的策略，把 `.yaml` 放进工作目录的 `rules/`，或用 `$HARNESS_AUDIT_RULES`
+指向任意目录；两者都会覆盖随包默认值。
+
+> 在**非 git 目录**里运行时，git 见证无法采集，判词为 `INVALID`（`reason` 写明原因），
+> 而不是崩溃——"没有看"不等于"看过了并且通过"。此时可用 `--repo` 指向一个仓库，
+> 或用 `--rules none` 显式接受纯四值格。
+
+源码开发：
+
+```bash
+cd agent-harness-audit
 pip install -e .
 
-# 2. 跑测试
-python3 -m unittest discover tests
+python3 -m unittest discover tests          # 224 项
+python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
-# 3. 跑 demo（启动时先跑自审计，不通过则拒绝启动）
-python3 -m audit_sidecar.cli
-
-# 4. 装成可执行的 stdio sidecar
-harness-audit-server --cwd /path/to/project --rules ./rules
+harness-audit-server --cwd /path/to/project # 无需 --rules
 ```
 
 编程式使用：
@@ -838,13 +857,18 @@ python3 -m unittest discover tests -v
   `grep -cE '/tmp/|/home/' audit_trace.jsonl`。
 - **规则层是 opt-in 的。** `MCPProxy` 不传 `rules_dir` 就是纯四值格；服务端才自动探测
   `./rules`。不给规则不会静默改变老调用的判词。
-- **wheel 里不含 `rules/`。** 随包规则只进 sdist（`pip download --no-binary :all:` 可拿到），
-  因为 `rules/` 是仓库根目录而非包内目录。`pip install` 之后需要显式
-  `--rules /path/to/rules`，否则服务端会警告"没有判据库"并退回纯四值格。
+- **`rules/` 随包发布（v0.6.1 起）。** 默认规则在 `audit_sidecar/rules/` 内，
+  作为 package data 打进 wheel，所以 `pip install` 之后**不需要任何配置**即可生效。
+  解析顺序是 `$HARNESS_AUDIT_RULES` → 当前目录 `./rules` → 包内 `rules/`，
+  前两者用于覆盖默认策略。`$HARNESS_AUDIT_RULES` 指向不存在的目录会**报错**，
+  而不是悄悄退回默认策略——否则操作者会以为自己的规则在跑。
 - **规则只覆盖 `write_file`。** 随包只带一条 `no_file_drift`；`append_file` /
   `run_command` 目前没有规则，直接走格子。规则表达力也有限：只有三个
   `witness_type` 与一个 `expectation: file_modified`，写成别的一律加载报错——
   宁可拒绝，也不静默忽略。
+- **非 git 目录下只有文件见证。** 需要变更集的工具（`write_file`）在非 git 目录
+  判 `INVALID`：不是"通过"，是"没看到"。要么 `--repo` 指向仓库，要么
+  `--rules none` 明示接受较弱策略。
 - **规则不做跨工具推理。** 每条规则独立判定，没有"先 A 后 B"的顺序约束，也没有
   规则之间的依赖。
 - **无持久化。** 账户与审计日志都在内存里，进程退出即丢（trace 文件除外）。

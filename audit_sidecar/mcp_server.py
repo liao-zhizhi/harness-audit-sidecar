@@ -289,8 +289,8 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         default=None,
         help=(
             "judgment-base directory of .yaml rules (default: auto-detect "
-            "./rules, then the rules/ shipped beside the package; pass 'none' "
-            "to force the plain lattice)"
+            "./rules, then the rules/ shipped inside the package, which a "
+            "pip install always has; pass 'none' to force the plain lattice)"
         ),
     )
     parser.add_argument(

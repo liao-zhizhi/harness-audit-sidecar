@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import unittest
 
-from audit_sidecar.judgment_base import JudgmentBase
+from audit_sidecar.judgment_base import JudgmentBase, packaged_rules_dir
 from audit_sidecar.mcp_proxy import MCPProxy
 from audit_sidecar.rule_engine import RuleEngine
 from audit_sidecar.runner import SafeRunner
@@ -28,8 +28,7 @@ from audit_sidecar.verdict import Verdict, VerdictEngine
 GIT = shutil.which("git")
 HAS_GIT = GIT is not None and shutil.which("bash") is not None
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHIPPED_RULES = os.path.join(REPO_ROOT, "rules")
+SHIPPED_RULES = packaged_rules_dir()
 
 RULE_YAML = """\
 rule_id: "no_file_drift"
@@ -453,6 +452,25 @@ expectation: "file_modified"
     def test_shipped_rules_load_through_the_proxy(self):
         proxy = MCPProxy(cwd=self.root, rules_dir=SHIPPED_RULES)
         self.assertIn("no_file_drift", proxy.judgment_base.rule_ids)
+
+    def test_missing_witness_is_recorded_not_raised(self):
+        # A working directory that is not a git repository is an ordinary
+        # first run, not an incident. The call must still produce a verdict
+        # and a record: "we did not look" is INVALID, never PASS and never a
+        # traceback that leaves the agent with no audit trail.
+        plain = tempfile.mkdtemp(prefix="harness-nogit-")
+        self.addCleanup(shutil.rmtree, plain, True)
+        proxy = MCPProxy(cwd=plain, runner=SafeRunner(timeout=20))
+        with self.assertLogs("audit_sidecar.mcp_proxy", level="WARNING"):
+            response = proxy.intercept_tool_call(
+                "write_file", {"path": "t.py", "content": "v"}, True
+            )
+        result = proxy.audit_log[-1]
+        self.assertIs(result.verdict, Verdict.INVALID)
+        self.assertIsNone(result.effect_observed)
+        self.assertIn("no independent witness", result.reason)
+        # The proxy stays passive even when it cannot witness the call.
+        self.assertEqual(response["status"], "ok")
 
 
 if __name__ == "__main__":
