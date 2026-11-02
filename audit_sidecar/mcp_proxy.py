@@ -37,9 +37,15 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .git_witness import GitWitnessError
+from .immune_state import ImmuneState, TIER_INNATE, select_tier
 from .judgment_base import JudgmentBase
 from .rule_engine import RuleEngine
-from .runner import ExecutionResult, SafeRunner
+from .runner import (
+    ExecutionResult,
+    SafeRunner,
+    WITNESS_SCOPE_FULL,
+    WITNESS_SCOPE_STAT,
+)
 from .verdict import Verdict, VerdictEngine
 
 __all__ = [
@@ -148,7 +154,16 @@ _DEFAULT_REGISTRY: Dict[str, Callable[[Dict[str, Any]], ToolInvocation]] = {
 
 
 class MCPProxy:
-    """Minimal interception layer that judges what a tool told the agent."""
+    """Minimal interception layer that judges what a tool told the agent.
+
+    How much evidence each call is worth is decided per call by
+    ``immune_state.select_tier``: a declared low-risk tool on a system that has
+    not been contradicted gets the cheap witness (existence and mtime), while
+    high-risk tools and every call made while the system is inflamed get the
+    full change set. The tier is recorded on each audit record rather than
+    inferred later, because a PASS on an mtime is a weaker claim than a PASS on
+    a git diff and the trace must not blur them.
+    """
 
     def __init__(
         self,
@@ -159,11 +174,22 @@ class MCPProxy:
         rules_dir: Optional[str] = None,
         judgment_base: Optional[JudgmentBase] = None,
         rule_engine: Optional[RuleEngine] = None,
+        immune_state: Optional[ImmuneState] = None,
     ) -> None:
         if not isinstance(cwd, str) or not cwd:
             raise ValueError("cwd must be a non-empty string")
+        if immune_state is not None and not isinstance(immune_state, ImmuneState):
+            raise TypeError(
+                "immune_state must be an ImmuneState, got {!r}".format(
+                    type(immune_state).__name__
+                )
+            )
         self._cwd = cwd
         self._repo_path = repo_path if repo_path is not None else cwd
+        # Always present, even when nothing escalates: the state is what makes
+        # escalation possible later, and a proxy without one could not react to
+        # the failures it just recorded.
+        self._immune = immune_state if immune_state is not None else ImmuneState()
         self._rule_engine = self._resolve_engine(rules_dir, judgment_base, rule_engine)
         if runner is not None:
             # Rebind a caller-supplied runner onto this proxy's engine instead
@@ -235,6 +261,32 @@ class MCPProxy:
         """The loaded rule set, or ``None`` when rules are not in play."""
         return self._rule_engine.judgment_base if self._rule_engine is not None else None
 
+    @property
+    def immune_state(self) -> ImmuneState:
+        """The inflammation state that scopes how much each call is worth."""
+        return self._immune
+
+    def _resolve_tier(self, tool_name: str, invocation: "ToolInvocation") -> str:
+        """Ask the immune policy how much this call is worth spending on.
+
+        With no rules loaded every tool lands on the adaptive tier, which is
+        exactly the pre-existing behaviour: the plain lattice always collected
+        the full witness, and silently downgrading it would be a change nobody
+        asked for, justified by a policy nobody wrote.
+        """
+        rules = (
+            ()
+            if self._rule_engine is None
+            else self._rule_engine.rules_for_tool(tool_name)
+        )
+        return select_tier(
+            rules=rules,
+            inflamed=self._immune.is_inflamed(),
+            has_observable_path=bool(
+                invocation.expected_file or invocation.expected_files
+            ),
+        )
+
     def register_tool(
         self, name: str, builder: Callable[[Dict[str, Any]], ToolInvocation]
     ) -> None:
@@ -282,6 +334,8 @@ class MCPProxy:
                 )
             )
         invocation = builder(args)
+        tier = self._resolve_tier(tool_name, invocation)
+        innate = tier == TIER_INNATE
 
         try:
             result = self._runner.run_shell(
@@ -289,13 +343,21 @@ class MCPProxy:
                 cwd=self._cwd,
                 intent_desc=invocation.intent,
                 expected_file=invocation.expected_file,
-                expected_content=invocation.expected_content,
+                # The innate tier never reads the file, so a content assertion
+                # cannot be honoured there; it is dropped only because the
+                # policy routed this call to a tier that does not look, which
+                # the verdict reason and the trace both record.
+                expected_content=None if innate else invocation.expected_content,
+                # The claimed paths are passed in both tiers: the tier decides
+                # *how* they are observed (stat versus git change set), not
+                # which paths the call said it would touch.
                 expected_files_modified=invocation.expected_files or None,
                 repo_path=self._repo_path,
                 # The claim reaches the engine exactly as the agent received it.
                 reported_success=agent_reported_success,
                 # Lets the judgment base select rules for this specific tool.
                 tool_name=tool_name,
+                witness_scope=WITNESS_SCOPE_STAT if innate else WITNESS_SCOPE_FULL,
             )
         except GitWitnessError as problem:
             # The requested change-set witness cannot be collected -- usually
@@ -306,6 +368,11 @@ class MCPProxy:
             # scratch directory, and leave no trace to explain why.
             result = self._unwitnessed(invocation, agent_reported_success, problem)
         self._audit_log.append(result)
+        # Every verdict advances the immune state, and the state is read at the
+        # *start* of the next call. Escalating on the verdict one has just
+        # produced would make a single call judged twice at two different
+        # costs, and leave the trace unable to say which check produced it.
+        self._immune.record_verdict(result.verdict)
 
         response = self._tool_response(tool_name, agent_reported_success, result)
         self._responses.append(response)

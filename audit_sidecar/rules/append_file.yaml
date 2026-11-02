@@ -1,0 +1,16 @@
+# Judgment Base rule
+#
+# The shipped example of *innate* immunity. Appending to a file is a narrower
+# act than overwriting one: the previous contents cannot be lost, so the drift
+# this rule would have to detect is "the append never landed", and existence
+# plus mtime answers that. Deliberately no `require_witness`, because demanding
+# `git_diff` here would force the expensive tier and undo the saving.
+#
+# The trade is explicit: this tier cannot see a correct append that also
+# touched something else. If a deployment needs that, change this file --
+# `risk_level: "high"` is a one-line diff and it is meant to be reviewable.
+
+rule_id: "append_landed"
+target_tool: "append_file"
+risk_level: "low"
+expectation: "file_modified" # 追加发生了（存在性 + mtime）

@@ -29,13 +29,27 @@ import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .git_witness import GitWitness
+from .immune_state import TIER_ADAPTIVE, TIER_INNATE
 from .verdict import Verdict, VerdictEngine
 
-__all__ = ["ExecutionResult", "SafeRunner", "DEFAULT_TIMEOUT"]
+__all__ = [
+    "ExecutionResult",
+    "SafeRunner",
+    "DEFAULT_TIMEOUT",
+    "WITNESS_SCOPE_FULL",
+    "WITNESS_SCOPE_STAT",
+]
 _LOG = logging.getLogger(__name__)
+
+#: Full witness: git change set plus a content read of the artefact.
+WITNESS_SCOPE_FULL = "full"
+#: Innate witness: existence and mtime of the claimed paths, nothing else.
+WITNESS_SCOPE_STAT = "stat"
+
+_SCOPES = (WITNESS_SCOPE_FULL, WITNESS_SCOPE_STAT)
 
 DEFAULT_TIMEOUT = 30.0
 
@@ -105,11 +119,30 @@ class ExecutionResult:
     rule_id: Optional[str] = None
     rules_matched: Tuple[str, ...] = ()
     rules_violated: Tuple[str, ...] = ()
+    # Which witness class was actually collected. Recorded rather than inferred
+    # from the verdict, because a PASS on a cheap witness and a PASS on the
+    # full change set are different claims about the world and a reader of the
+    # trace has to be able to tell them apart.
+    witness_scope: str = WITNESS_SCOPE_FULL
+    # Modification time of the primary witnessed path, in seconds since the
+    # epoch. Set only by the innate tier, where mtime *is* the evidence.
+    witness_mtime: Optional[float] = None
 
     @property
     def ok(self) -> bool:
         """True only for a PASS. Anything else is not a green light."""
         return self.verdict is Verdict.PASS
+
+    @property
+    def tier(self) -> str:
+        """The defence tier this record came from, derived from what ran.
+
+        Derived, not stored: a tier that could disagree with the witness it
+        labels would be a label about a label.
+        """
+        if self.witness_scope == WITNESS_SCOPE_STAT:
+            return TIER_INNATE
+        return TIER_ADAPTIVE
 
 
 def _read_text(path: str) -> str:
@@ -165,6 +198,7 @@ class SafeRunner:
         allow_extra_changes: bool = False,
         reported_success: Optional[bool] = None,
         tool_name: Optional[str] = None,
+        witness_scope: str = WITNESS_SCOPE_FULL,
     ) -> ExecutionResult:
         """Run ``command`` in ``cwd`` and judge the outcome.
 
@@ -207,15 +241,38 @@ class SafeRunner:
         handed over with ``tool_name`` so per-tool policy can tighten the
         lattice verdict. When it is not, this argument is ignored and the plain
         lattice decides -- so passing it can never loosen a verdict.
+
+        ``witness_scope`` selects how much evidence to collect. ``"full"`` (the
+        default) is the git change set plus a content read. ``"stat"`` is the
+        innate tier: one ``os.stat`` per claimed path before the command and
+        one after, so the effect is "existed and its mtime/size moved". It
+        spawns no git process and reads no file. Two consequences are
+        deliberate: ``expected_content`` is rejected (checking it would read
+        the file) and ``unexpected_changes`` is always empty (nothing surveyed
+        the tree, so claiming to know would be a fabrication).
         """
         if not isinstance(command, str) or not command.strip():
             raise ValueError("command must be a non-empty string")
         if not isinstance(cwd, str) or not cwd:
             raise ValueError("cwd must be a non-empty string")
+        if witness_scope not in _SCOPES:
+            raise ValueError(
+                "witness_scope must be one of {}, got {!r}".format(
+                    list(_SCOPES), witness_scope
+                )
+            )
+        stat_scope = witness_scope == WITNESS_SCOPE_STAT
         if expected_content is not None and expected_file is None:
             raise ValueError(
                 "expected_content requires expected_file: content alone does "
                 "not say which file to witness"
+            )
+        if stat_scope and expected_content is not None:
+            # Silently dropping the content check would turn a caller's
+            # assertion into a weaker one without saying so.
+            raise ValueError(
+                "expected_content cannot be checked with witness_scope='stat': "
+                "the innate tier does not read the file; use witness_scope='full'"
             )
         if reported_success is not None and not isinstance(reported_success, bool):
             raise TypeError(
@@ -242,7 +299,7 @@ class SafeRunner:
         # The baseline must be captured before the command can touch anything.
         git_witness: Optional[GitWitness] = None
         baseline: Optional[Dict[str, str]] = None
-        if expected_paths is not None:
+        if expected_paths is not None and not stat_scope:
             git_witness = GitWitness(
                 repo_path if repo_path else cwd, timeout=effective_timeout
             )
@@ -264,6 +321,14 @@ class SafeRunner:
                 )
             )
             baseline = git_witness.snapshot()
+
+        # Innate tier: capture the cheap baseline (mtime + size) before the
+        # command runs, for exactly the paths the call claimed to touch.
+        stat_targets: Tuple[str, ...] = ()
+        stat_baseline: Optional[Dict[str, Optional[Tuple[int, int]]]] = None
+        if stat_scope:
+            stat_targets = self._stat_targets(witness_path, expected_paths, cwd)
+            stat_baseline = self._stat_snapshot(stat_targets)
 
         exit_code, pipe_status, stdout, stderr, error = self._execute(
             command, cwd, effective_timeout
@@ -287,12 +352,31 @@ class SafeRunner:
         changed: Tuple[str, ...] = ()
         missing: Tuple[str, ...] = ()
         unexpected: Tuple[str, ...] = ()
+        witness_mtime: Optional[float] = None
 
         if timed_out:
             effect_observed: Optional[bool] = None
         elif never_started:
             # Nothing executed, so this run cannot have changed anything.
             effect_observed = False
+        elif stat_scope and stat_targets and stat_baseline is not None:
+            # Innate tier. "It exists and its mtime or size moved" is the whole
+            # claim; seeing that a correct edit *also* touched something else
+            # is exactly what this tier cannot do, which is why overwriting a
+            # file is declared high risk rather than left to it.
+            modified, mtimes = self._stat_changes(stat_baseline)
+            # Reported under the same names the caller used, so a trace reads
+            # the same way whichever tier produced it.
+            root = os.path.abspath(cwd)
+            changed = tuple(self._observed_name(path, root) for path in modified)
+            # "Missing" is the full tier's word for "named but not observed as
+            # changed", and it means the same here: an untouched file and an
+            # absent one both failed to show the claimed effect.
+            unobserved = tuple(p for p in stat_baseline if p not in set(modified))
+            missing = tuple(self._observed_name(path, root) for path in unobserved)
+            effect_observed = not missing
+            if witness_path is not None and witness_path in mtimes:
+                witness_mtime = mtimes[witness_path] / 1e9
         elif witness_path is None and git_witness is None:
             # Nothing was named as evidence, so nothing can be observed.
             effect_observed = None
@@ -337,10 +421,17 @@ class SafeRunner:
         # not produce, which the rule engine reports as INVALID rather than
         # letting the lattice's PASS stand.
         witnesses = set()
-        if witness_path is not None:
-            witnesses.add("file")
-        if git_witness is not None:
-            witnesses.add("git_diff")
+        if stat_scope:
+            # "stat" is deliberately not reported as "file": the file's content
+            # was never read, so claiming a file witness would satisfy a rule
+            # that asked for evidence the innate tier did not collect.
+            if stat_targets:
+                witnesses.add("stat")
+        else:
+            if witness_path is not None:
+                witnesses.add("file")
+            if git_witness is not None:
+                witnesses.add("git_diff")
         if check_source == "protocol":
             witnesses.add("agent_report")
 
@@ -378,6 +469,14 @@ class SafeRunner:
                 detail.append("changed but unexpected: " + ", ".join(unexpected))
             reason = "{} ({})".format(reason, "; ".join(detail))
 
+        # Say which tier produced the verdict. A PASS resting on an mtime is a
+        # weaker claim than a PASS resting on a change set, and a trace that
+        # hides the difference overstates every cheap green tick.
+        if stat_scope and stat_targets:
+            reason = "{} [innate tier: existence and mtime only, no git change set]".format(
+                reason
+            )
+
         # Record the tool layer's own contradiction: it told the agent the call
         # succeeded while the command it wrapped exited non-zero.
         if (
@@ -412,6 +511,8 @@ class SafeRunner:
             rule_id=rule_id,
             rules_matched=rules_matched,
             rules_violated=rules_violated,
+            witness_scope=witness_scope,
+            witness_mtime=witness_mtime,
         )
 
     def raw_exit_status(
@@ -479,6 +580,17 @@ class SafeRunner:
         if relative == os.pardir or relative.startswith(os.pardir + os.sep):
             return None
         return relative.replace(os.sep, "/")
+
+    @classmethod
+    def _observed_name(cls, path: str, root: str) -> str:
+        """Name a witnessed path relative to ``root``, falling back to absolute.
+
+        Used so the innate tier's path reporting matches the full tier's: a
+        trace should not need to know which tier produced it in order to read
+        which files are named.
+        """
+        relative = cls._repo_relative(path, root)
+        return path if relative is None else relative
 
     def _execute(
         self, command: str, cwd: str, timeout: float
@@ -552,6 +664,72 @@ class SafeRunner:
         except ValueError:
             _LOG.debug("unparsable pipestatus: %r", text)
             return ()
+
+    @staticmethod
+    def _stat_targets(
+        witness_path: Optional[str],
+        expected_paths: Optional[Tuple[str, ...]],
+        cwd: str,
+    ) -> Tuple[str, ...]:
+        """The absolute paths the innate tier will watch, without duplicates.
+
+        ``expected_paths`` here are still cwd-relative: with no git process
+        there is no repository root to resolve them against, and pretending
+        otherwise would make the same call mean two different things depending
+        on the tier that judged it.
+        """
+        targets: List[str] = []
+        if witness_path is not None:
+            targets.append(witness_path)
+        if expected_paths is not None:
+            base = os.path.abspath(cwd)
+            for path in expected_paths:
+                absolute = path if os.path.isabs(path) else os.path.join(base, path)
+                if absolute not in targets:
+                    targets.append(absolute)
+        return tuple(targets)
+
+    @staticmethod
+    def _stat_snapshot(paths: Sequence[str]) -> Dict[str, Optional[Tuple[int, int]]]:
+        """``(mtime_ns, size)`` per path, or ``None`` where it does not exist.
+
+        Size rides along because a filesystem with coarse timestamps can hide a
+        same-second rewrite of different length; it cannot hide a same-second
+        rewrite of identical length, which is the residual blind spot of this
+        tier and the reason the overwrite path is declared high risk.
+        """
+        snapshot: Dict[str, Optional[Tuple[int, int]]] = {}
+        for path in paths:
+            snapshot[path] = SafeRunner._stat_one(path)
+        return snapshot
+
+    @staticmethod
+    def _stat_one(path: str) -> Optional[Tuple[int, int]]:
+        try:
+            info = os.stat(path)
+        except OSError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
+
+    @classmethod
+    def _stat_changes(
+        cls, baseline: Dict[str, Optional[Tuple[int, int]]]
+    ) -> Tuple[Tuple[str, ...], Dict[str, int]]:
+        """Compare the baseline with the world as it is now.
+
+        Returns (modified, mtimes). "Modified" includes a path that did not
+        exist before and does now: creating the file is the effect.
+        """
+        modified: List[str] = []
+        mtimes: Dict[str, int] = {}
+        for path, before in baseline.items():
+            after = cls._stat_one(path)
+            if after is None:
+                continue
+            mtimes[path] = after[0]
+            if before is None or after != before:
+                modified.append(path)
+        return tuple(modified), mtimes
 
     @staticmethod
     def _witness(path: str, expected_content: Optional[str]) -> bool:

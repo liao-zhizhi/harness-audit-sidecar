@@ -104,6 +104,7 @@ def _trace_record(
     args: Dict[str, Any],
     reported_success: bool,
     result: Any,
+    immune_state: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
         "id": message_id,
@@ -128,6 +129,14 @@ def _trace_record(
         "rule_id": result.rule_id,
         "rules_matched": list(result.rules_matched),
         "rules_violated": list(result.rules_violated),
+        # Which defence tier judged this call, and the inflammation state
+        # *after* it. Without the tier, a cheap PASS reads exactly like a
+        # witnessed one; without the state, a later escalation looks arbitrary
+        # instead of being attributable to the failures above it.
+        "tier": result.tier,
+        "witness_scope": result.witness_scope,
+        "witness_mtime": result.witness_mtime,
+        "immune_state": immune_state,
     }
 
 
@@ -246,7 +255,14 @@ class JsonRpcServer:
 
         result = self._proxy.audit_log[-1]
         self._trace.write(
-            _trace_record(message_id, tool, args, reported_success, result)
+            _trace_record(
+                message_id,
+                tool,
+                args,
+                reported_success,
+                result,
+                self._proxy.immune_state.state,
+            )
         )
         return {"jsonrpc": "2.0", "id": message_id, "result": response}
 

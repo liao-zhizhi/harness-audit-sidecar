@@ -268,6 +268,9 @@ class RuleEngine:
             require_witness=bool(entry.get("require_witness", False)),
             witness_type=entry.get("witness_type"),
             expectation=entry.get("expectation"),
+            # Carried through so a reconstructed Rule equals the loaded one;
+            # the engine itself does not act on declared risk.
+            risk_level=entry.get("risk_level"),
         )
 
     @staticmethod

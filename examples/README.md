@@ -1,8 +1,17 @@
-# 示例：同一会话里的四条审计记录
+# 示例：同一会话里的审计记录（含一次炎症风暴）
 
 `sample_trace.jsonl` 不是手写的，是用下面这条命令真实跑出来后原样保存的。
 它演示了整个项目的核心主张：**Agent 收到的答复与审计账本可以是相反的，而且两者都对各自的
 读者正确**。
+
+文件里有两个会话块，字段只增不改：
+
+| 范围 | 生成版本 | 字段 |
+|:--|:--|:--|
+| id=1..4 | v0.6.1 | `rule_id` / `rules_matched` / `rules_violated` |
+| id=5..7 | v0.7.0 | 以上 + `tier` / `witness_scope` / `witness_mtime` / `immune_state` |
+
+前半演示判词，后半演示**条件触发的免疫响应**（见本文末「炎症风暴」一节）。
 
 ## 协议层看到的东西（Agent 收到的）
 
@@ -84,6 +93,42 @@
 这条记录会变成 `check: false`，判词变成"意图未实现"——**判词凑巧一样，但被告换了人**：
 本该怀疑工具层，结果怀疑了 Agent。
 
+## 炎症风暴：id=5..7
+
+id=5..7 是 v0.7.0 追加的第二个会话块，演示**同一策略在不同免疫状态下付不同代价**：
+
+| id | 调用 | `tier` | `witness_scope` | `immune_state` | 判词 |
+|--:|:--|:--|:--|:--|:--|
+| 5 | `write_file missing_dir/target.py` | tier2（规则声明 `high`） | `full` | `NORMAL` | **FAIL** |
+| 6 | `append_file no_such_dir/log.txt` | tier1（规则声明 `low`） | `stat` | **`INFLAMED`** | **FAIL** |
+| 7 | `append_file log.txt` | **tier2**（同一条 `low` 规则） | `full` | `INFLAMED` | **PASS** |
+
+三件事值得对照：
+
+1. **id=5 是第一次失败**：危险计数 1，未达阈值，`immune_state` 仍是 `NORMAL`——
+   这里记的是**本条判词之后**的状态，"还没发炎"本身就是信息。
+2. **id=6 是第二次失败**：连续两次 `FAIL`，状态在**这条记录之后**变成 `INFLAMED`。
+   注意它自己仍是 `tier1`——**判词不改变产生它的那次调用的代价**，只改变下一次。
+3. **id=7 是同一条 `low` 规则**，本该走 tier1，却因为系统已发炎被提到 tier2，
+   `changed_files` 里有真实的 git 变更集。**发炎把便宜的路由关掉了。**
+
+`reason` 里也能直接读出来：
+
+```
+id=6: ... (expected but untouched: no_such_dir/log.txt)
+      [innate tier: existence and mtime only, no git change set]
+      [tool layer reported success, underlying command exited 1]
+id=7: witness matches intent, report agrees (rules satisfied: append_landed)
+```
+
+**为什么 tier1 的判词要自带这句话：** 一个建立在 mtime 上的 `PASS`，和一个建立在
+git 变更集上的 `PASS`，是两种强度的断言。trace 如果不写出用的是哪一种，
+就等于把每一次廉价的绿灯都说成全量校验——那才是真正的造假。
+
+`witness_mtime` 只在 tier1 有值（那是它的证据本身）；tier2 记录里是 `null`，
+因为那一路的证据是变更集，不是时间戳。
+
+
 ## 为什么不脱敏
 
 这个文件里**没有任何绝对路径**（可用下面的命令复核，结果为 0）：
@@ -102,6 +147,8 @@ grep -cE '/tmp/|/home/' examples/sample_trace.jsonl
 | `intent` | 回显客户端给的 `args.path` **原文** |
 
 `rule_id` / `rules_matched` / `rules_violated` 记录的是规则名，与机器无关，不含路径。
+`tier` / `witness_scope` / `immune_state` 是枚举值，`witness_mtime` 是浮点时间戳，
+同样不含路径。
 
 **唯一的例外是 `intent`**：它原样回显调用参数。上面这份样例的客户端传的是相对路径
 （`target.py`），所以整份文件干净。若你的客户端传绝对路径，`intent` 里就会出现本机路径
@@ -135,6 +182,26 @@ cat "$D/audit_trace.jsonl"
 
 id=3 那条要靠 `reported_success:false` 构造，因为真实工具层不会主动谎报失败——
 这一条是为了覆盖判词的另一侧（假失败），不是真实故障的复现。
+
+### 追加的炎症块（id=5..7）
+
+同一个仓库里继续跑三条，第三条就是处于 `INFLAMED` 状态的那次调用：
+
+```bash
+printf 'session\n' > log.txt && git add -A && git -c user.name=T -c user.email=t@e commit -qm log
+
+printf '%s\n' \
+ '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"write_file","args":{"path":"missing_dir/target.py","content":"value = 5\n"},"reported_success":true},"id":5}' \
+ '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"append_file","args":{"path":"no_such_dir/log.txt","content":"one\n"},"reported_success":true},"id":6}' \
+ '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"append_file","args":{"path":"log.txt","content":"two\n"},"reported_success":true},"id":7}' \
+ | PYTHONPATH=/path/to/agent-harness-audit python3 -m audit_sidecar.mcp_server --cwd "$D" --quiet
+
+tail -3 "$D/audit_trace.jsonl"
+```
+
+id=5 与 id=6 两次 `FAIL` 把状态推到 `INFLAMED`，所以 id=7 虽然是 `risk_level: low`
+的追加，也拿到了 git 变更集（`witness_scope: "full"`）。三条记录缺一不可：
+**没有前两条失败，第三条的发炎就没有来源。**
 
 ## 文件格式
 

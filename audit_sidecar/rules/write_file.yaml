@@ -9,6 +9,12 @@
 
 rule_id: "no_file_drift"
 target_tool: "write_file"
+# Overwriting is the expensive case, for a reason that is not obvious: an
+# existence-and-mtime check cannot tell "wrote the intended file" from "wrote
+# the intended file and also something else", and a same-length rewrite inside
+# one filesystem timestamp tick is invisible to it entirely. So this path buys
+# the git change set every time -- see `immune_state.py`.
+risk_level: "high"
 require_witness: true
 witness_type: "git_diff"
 expectation: "file_modified" # 期望该文件确实被修改

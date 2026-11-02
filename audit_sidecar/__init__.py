@@ -10,6 +10,8 @@ Public surface::
     VerdictEngine    judge one (intent, effect, check) case
     JudgmentBase     load the external judgment base (rules/*.yaml)
     RuleEngine       judge with the lattice, then tighten by rule
+    ImmuneState      inflammation state that scopes how much a call is worth
+    select_tier      choose the innate or adaptive defence for one call
     ConfidenceAccount sliding-window trust balance
     run_self_audit   known-answer gate that must pass before the tool runs
 
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 from .confidence import ConfidenceAccount
 from .git_witness import GitWitness, GitWitnessError
+from .immune_state import ImmuneState, select_tier
 from .judgment_base import JudgmentBase, RuleError, default_rules_dir, packaged_rules_dir
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .rule_engine import RuleDecision, RuleEngine
@@ -27,13 +30,14 @@ from .runner import ExecutionResult, SafeRunner
 from .self_audit import run_self_audit
 from .verdict import Verdict, VerdictEngine
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 __all__ = [
     "ConfidenceAccount",
     "ExecutionResult",
     "GitWitness",
     "GitWitnessError",
+    "ImmuneState",
     "JudgmentBase",
     "MCPProxy",
     "RuleDecision",
@@ -46,5 +50,6 @@ __all__ = [
     "default_rules_dir",
     "packaged_rules_dir",
     "run_self_audit",
+    "select_tier",
     "__version__",
 ]

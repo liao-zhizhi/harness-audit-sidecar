@@ -2,10 +2,10 @@
 
 **Agent 执行层审计工具**
 
-> **项目状态：MVP / 早期版本（v0.6.1）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.7.0）—— 接口可能变化，暂不建议用于生产环境。**
 >
-> 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库与 stdio 服务端，
-> 核心闭环（执行 → 见证 → 判词 → 留痕）已跑通并有 224 项测试；
+> 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
+> 分级免疫响应与 stdio 服务端，核心闭环（执行 → 见证 → 判词 → 留痕）已跑通并有 275 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -18,10 +18,12 @@ agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行�
 不能由 agent 自己的报告决定，只能由独立见证（witness）决定**。
 
 > **已实现：** 四值判词引擎、信任能荷账户、自审计回路，**三种见证源**
-> （文件系统 / Git 变更集 / MCP 协议层声明）、**外置判据库（`rules/*.yaml`）**，
+> （文件系统 / Git 变更集 / MCP 协议层声明）、**外置判据库（`rules/*.yaml`）**、
+> **条件触发的分级免疫响应**（先天 stat / 适应性全量，含炎症风暴与恢复），
 > 以及**可 `pip install` 的 stdio 服务端**（`harness-audit-server`）。
 > **未实现：** 完整 MCP 握手（`initialize` / `tools/list`）、从协议帧取声明、
-> 更多见证源（mtime / 进程退出码族 / 网络副作用）。详见「已知边界」与「路线图」。
+> 更多见证源（进程退出码族 / 网络副作用）、跨进程持久化炎症状态。
+> 详见「已知边界」与「路线图」。
 
 审计逻辑本身只用 Python 标准库；**唯一的第三方依赖是 PyYAML**，用来把
 *策略*从代码里搬出去（见 [外置判据库](#dynamic-judgment-base-外置判据库)）。
@@ -54,6 +56,9 @@ agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行�
 `exit_code: 1` 是命令自己的状态。**三套观测同时留档**，才不会在事后搞错该怀疑谁。
 
 完整解读、脱敏说明与复现命令见 [`examples/README.md`](examples/README.md)。
+
+文件末尾还有第二个会话块（id=5..7），演示发炎后同一工具的代价升级，
+见[条件触发的免疫响应](#conditional-immune-response-条件触发的免疫响应)。
 
 ---
 
@@ -170,6 +175,96 @@ trace 里因此多了 `rule_id` / `rules_matched` / `rules_violated`，
 
 ---
 
+## Conditional Immune Response (条件触发的免疫响应)
+
+前两节解决的是"**判得准**"，这一节解决"**判得起**"。
+
+全量见证是正确但昂贵的：一次 git 变更集要 snapshot 加 diff，一次内容校验要读整个文件。
+如果一次无关紧要的追加和一次覆盖核心配置付一样的代价，那这条防线在长会话里迟早会被
+关掉——**而"关掉"和"从来没有"是同一个结果**。
+
+所以按生物学分两级：
+
+| | Tier 1 先天免疫 | Tier 2 适应性免疫 |
+|:--|:--|:--|
+| 触发 | 规则声明 `risk_level: low`（省略即视为 low），且系统未发炎 | `risk_level: high`、规则要求见证、或系统已发炎 |
+| 见证 | 存在性 + mtime（命令前后各一次 `stat`） | git 变更集 + 内容读回 |
+| 开销 | 无 git 进程，不读文件 | 一次 snapshot、一次 diff、一次读文件 |
+| 能看见 | "它到底动没动" | "动的是不是只有它" |
+| 看不见 | 顺手多改的第三个文件 | —— |
+
+### 炎症风暴
+
+一个刚被证伪的系统，不该继续相信廉价检查。所以判词会累积：
+
+- **连续 2 次 `FAIL`**，或**1 次 `INVALID`** → 进入 `INFLAMED`；
+- 发炎期间**所有调用**强制走 Tier 2，包括它自己的策略声明为 low 的调用；
+- 需要**连续 5 次 `PASS`** 才恢复 `NORMAL`。
+
+`INVALID` 的门槛更低，因为它意味着"没看见"——一个看不见的防线已经在失效了。
+
+**愈合刻意比受伤慢。** 两次失败点火，五次通过才熄灭；恢复期内再失败一次，进度归零。
+对称的响应挡不住任何东西。
+
+### 真实的 trace：同一策略，两种代价
+
+[`examples/sample_trace.jsonl`](examples/sample_trace.jsonl) 的 id=5..7 是同一次会话：
+
+| id | 调用 | tier | `immune_state` | 判词 |
+|--:|:--|:--|:--|:--|
+| 5 | `write_file missing_dir/target.py` | tier2（声明为 high） | NORMAL | **FAIL** |
+| 6 | `append_file no_such_dir/log.txt` | tier1（声明为 low） | **INFLAMED** | **FAIL** |
+| 7 | `append_file log.txt` | **tier2**（同一条 low 规则） | INFLAMED | **PASS** |
+
+id=7 和 id=6 是同一条规则、同一个工具，代价却不同：**发炎把低风险调用也提升到了全量
+校验**。这就是 `--rules` 之外的第二个调度器——一个由历史而不是由声明驱动的调度器。
+
+### 不放松，只是看得少
+
+这是硬约束：**分级只决定"采集哪些见证"，不决定"见证意味着什么"**。
+
+- Tier 1 的 `PASS` 是**在更弱证据上的 PASS**，不是在相反证据上的 PASS：
+  报告成功但文件没有变化，Tier 1 照样判 `FAIL`（`test_innate_tier_still_catches_false_completion`）。
+- 规则要求 `git_diff` 见证 → 自动升级 Tier 2，因为 stat 满足不了它；
+  硬塞进 Tier 1 只会让它变成永久的 `INVALID`。
+- **没有任何规则的工具一律 Tier 2**：**"没声明"不等于"低风险"**，
+  否则加一个 `rules/` 目录反而会让那些没被提到的工具变弱。
+- Tier 1 的 `PASS` 在 `reason` 里带 `[innate tier: existence and mtime only, no git change set]`，
+  trace 里记 `tier` / `witness_scope` / `witness_mtime`。
+
+### 已知盲点（写进代码，而不是写进脚注）
+
+Tier 1 看不见"顺手多改了一个文件"。`test_adaptive_tier_sees_drift_the_innate_tier_cannot`
+把这个盲点写成了断言：同一个工具，声明 low 时判 `PASS`，声明 high 时判 `FAIL`。
+
+这也正是 `write_file` 随包声明为 `high` 的理由：覆盖写是唯一一种"内容看起来对、副作用
+却可以完全在别处"的操作；而且**同长度、同一文件系统时间戳刻度内的重写**对 mtime 不可见。
+把它交给廉价层，等于用省下的几毫秒换一个看不见的漏洞。
+
+### 怎么用
+
+策略即代码，改一行就换档：
+
+```yaml
+rule_id: "append_landed"
+target_tool: "append_file"
+risk_level: "low"      # 改成 "high" 就是一行 diff，会进入评审
+expectation: "file_modified"
+```
+
+```python
+from audit_sidecar import ImmuneState, MCPProxy
+
+proxy = MCPProxy(cwd=repo, rules_dir="rules", immune_state=ImmuneState())
+proxy.immune_state.is_inflamed()      # 当前是否处于炎症状态
+proxy.immune_state.snapshot()         # {"state": ..., "danger_count": ..., ...}
+```
+
+阈值可调（`ImmuneState(fail_threshold=3, recovery_passes=6)`），但
+`recovery_passes < fail_threshold` 会被拒绝——愈合比受伤快，是配置错误而不是选择。
+
+---
+
 ## 目录结构
 
 ```
@@ -181,24 +276,27 @@ agent-harness-audit/
 │   ├── confidence.py     信任能荷账户（滑动窗口）
 │   ├── judgment_base.py  外置判据库（加载 rules/*.yaml）
 │   ├── rule_engine.py    规则判词（在四值格之上收紧）
-│   ├── runner.py         见证采集（真实执行 + 独立读回）
+│   ├── immune_state.py   免疫状态机（炎症 / 恢复）+ 分级路由（tier1 / tier2）
+│   ├── runner.py         见证采集（真实执行 + 独立读回；full / stat 两级）
 │   ├── git_witness.py    Git 见证（真实变更集）
 │   ├── mcp_proxy.py      MCP 拦截（协议层声明 vs 物理效果）
 │   ├── mcp_server.py     stdio JSON-RPC 服务端（console script）
 │   ├── self_audit.py     自审计（mode 4 防线）
 │   ├── cli.py            命令行入口
 │   └── rules/
-│       └── write_file.yaml  随包默认规则（装完即生效）
+│       ├── write_file.yaml  risk_level: high（覆盖写必走全量）
+│       └── append_file.yaml risk_level: low（追加走先天免疫）
 ├── pyproject.toml        打包配置（运行时仅需 PyYAML）
 ├── .gitignore
 ├── examples/
-│   ├── sample_trace.jsonl   真实审计留痕（Agent 收到 ok / 账本记 FAIL）
+│   ├── sample_trace.jsonl   真实审计留痕（Agent 收到 ok / 账本记 FAIL / 炎症升级）
 │   └── README.md            样例说明
 └── tests/
     ├── test_verdict.py
     ├── test_confidence.py
     ├── test_judgment_base.py
     ├── test_rule_engine.py
+    ├── test_immune.py        分级免疫（tier 路由 / 炎症 / 恢复 / trace）
     ├── test_runner.py
     ├── test_git_witness.py
     ├── test_mcp_proxy.py
@@ -211,7 +309,7 @@ agent-harness-audit/
 
 ```bash
 # 1. 安装（会自动带上 PyYAML；默认规则已包含在包里）
-pip install agent_harness_audit-0.6.1-py3-none-any.whl
+pip install dist/agent_harness_audit-*.whl    # 或 python3 -m pip wheel . --no-deps -w dist/
 
 # 2. 直接跑，不需要任何路径参数
 harness-audit-server --cwd /path/to/project
@@ -219,7 +317,8 @@ harness-audit-server --cwd /path/to/project
 
 **The package ships with a default rule `no_file_drift` out of the box.**
 装完即生效：`write_file` 必须同时有文件见证与 git 变更集，否则判 `INVALID`。
-想用自己的策略，把 `.yaml` 放进工作目录的 `rules/`，或用 `$HARNESS_AUDIT_RULES`
+随包另有一条 `append_landed`（`risk_level: low`），演示先天免疫：追加只做存在性 +
+mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/`，或用 `$HARNESS_AUDIT_RULES`
 指向任意目录；两者都会覆盖随包默认值。
 
 > 在**非 git 目录**里运行时，git 见证无法采集，判词为 `INVALID`（`reason` 写明原因），
@@ -232,7 +331,7 @@ harness-audit-server --cwd /path/to/project
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover tests          # 224 项
+python3 -m unittest discover tests          # 275 项
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -799,13 +898,19 @@ always-FAIL engine       : False
 
 ```bash
 python3 -m unittest discover tests -v
-# Ran 156 tests ... OK
+# Ran 275 tests ... OK
 ```
 
 覆盖：
 
 - **判词**：四种判词各自的触发场景（重点 `INVALID` 不许变 `PASS`、`FAIL` 的假完成/假失败/
   意图未实现三种分支）、判词优先级、`check` 归一化与拒绝、keyword-only 约束。
+- **免疫分级**：`ImmuneState` 的阈值/连续计数/`NOT RUN` 不计入/恢复期归零/参数校验；
+  `select_tier` 的整张判定表（无规则、声明 low、省略字段、声明 high、规则要求见证、
+  已发炎、无可观测路径）以及三个参数的类型校验；`stat` 见证的观测与拒绝
+  （`expected_content` 不得在廉价层被静默丢弃）；tier 路由在**真实仓库**里的四种组合；
+  发炎后同一条 low 规则确实升级到 git 变更集；五次通过恢复；`INVALID` 一次即发炎；
+  注入的 `ImmuneState` 与调用方共享；响应不泄漏 tier。
 - **账户**：窗口淘汰、`NOT RUN` 占格但不入分母、label 阈值边界（0.7 / 0.5）。
 - **文件见证**：`false | true` 的退出码不被吞、`PIPESTATUS` 逐段记录、天真读法与审计读法的
   差值、内容校验、缺失产物判假完成、坐标漂移（钉住 / 跟随见证两种对照）、超时与不存在的 `cwd`、
@@ -839,8 +944,14 @@ python3 -m unittest discover tests -v
   `result.isError` 解析，而不是相信上送的值。
 - **单进程、单线程、无并发。** 一行一请求串行处理；慢命令会阻塞后续调用。
   无批处理（JSON-RPC batch 未实现）。
-- **见证只有文件系统与 git**。没有 mtime 精度处理、没有进程退出码族、没有网络副作用；
+- **见证只有文件系统与 git**。没有进程退出码族，没有网络副作用；
   `git` 见证依赖工作树状态，对已 commit 的历史改动不可见（基线是工作区快照）。
+- **Tier 1 有明确盲点。** 先天免疫只看存在性与 mtime，**看不见"顺手多改了一个文件"**；
+  同长度、同一文件系统时间戳刻度内的重写对它完全不可见。这不是缺陷而是取舍，
+  所以覆盖写在 `write_file` 的 `risk_level: "high"` 里，并把盲点写成了一条测试
+  （`test_adaptive_tier_sees_drift_the_innate_tier_cannot`）。
+- **炎症状态不跨进程持久化。** `harness-audit-server` 每次启动都是 `NORMAL`；
+  一个崩溃重启的会话会忘记自己刚被证伪过。持久化需要外部存储，MVP 未做。
 - **不阻止坏动作。** 没有 hook、没有代理；本工具是旁路判词器，不阻止坏动作发生，
   只拒绝为它背书。
 - **`pipe_status` 对顶层 `exit` 退化。** 命令里出现顶层 `exit` 会让 wrapper 提前终止，
@@ -862,10 +973,11 @@ python3 -m unittest discover tests -v
   解析顺序是 `$HARNESS_AUDIT_RULES` → 当前目录 `./rules` → 包内 `rules/`，
   前两者用于覆盖默认策略。`$HARNESS_AUDIT_RULES` 指向不存在的目录会**报错**，
   而不是悄悄退回默认策略——否则操作者会以为自己的规则在跑。
-- **规则只覆盖 `write_file`。** 随包只带一条 `no_file_drift`；`append_file` /
-  `run_command` 目前没有规则，直接走格子。规则表达力也有限：只有三个
-  `witness_type` 与一个 `expectation: file_modified`，写成别的一律加载报错——
-  宁可拒绝，也不静默忽略。
+- **规则只覆盖 `write_file` 与 `append_file`。** 随包带两条：`no_file_drift`
+  （`risk_level: high`）与 `append_landed`（`risk_level: low`）；`run_command`
+  没有规则，直接走格子并默认 Tier 2。规则表达力也有限：只有三个
+  `witness_type`、一个 `expectation: file_modified` 和两个 `risk_level`，
+  写成别的一律加载报错——宁可拒绝，也不静默忽略。
 - **非 git 目录下只有文件见证。** 需要变更集的工具（`write_file`）在非 git 目录
   判 `INVALID`：不是"通过"，是"没看到"。要么 `--repo` 指向仓库，要么
   `--rules none` 明示接受较弱策略。
@@ -878,7 +990,9 @@ python3 -m unittest discover tests -v
 1. **见证采集**：
    - 文件系统：已具备（存在性 + 内容子串）。
    - Git 变更集：已具备（`git_witness.py`）。
-   - 待扩展：mtime、内容哈希、进程退出码族、网络副作用。
+   - 待扩展：内容哈希、进程退出码族、网络副作用。
+   - mtime：已用于 Tier 1（存在性 + mtime，见[条件触发的免疫响应](#conditional-immune-response-条件触发的免疫响应)），
+     精度处理与内容哈希仍未做。
 2. **MCP 拦截**（语义与传输已具备，握手未接）：
    - 已具备：`MCPProxy` 的调用边界、被动响应、工具注册表、注入防护；
      `mcp_server.py` 的 stdio JSON-RPC 服务端与 JSONL 审计留痕。

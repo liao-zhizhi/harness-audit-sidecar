@@ -67,6 +67,13 @@ SUPPORTED_WITNESS_TYPES = frozenset({"git_diff", "file", "agent_report"})
 # ignored, and an ignored guard is worse than no guard.
 SUPPORTED_EXPECTATIONS = frozenset({"file_modified"})
 
+# Declared risk, which decides how much witnessing a call is worth. Omitted
+# means "low": a rule that names a tool has taken responsibility for it, and
+# ``immune_state`` escalates on inflammation anyway. The dangerous default is
+# the opposite one -- treating silence as "cheap" -- which is why a tool no
+# rule mentions is *not* low risk.
+SUPPORTED_RISK_LEVELS = frozenset({"low", "high"})
+
 # Fields that carry documentation only. Kept as an explicit allowlist so a
 # misspelled guard (``require_witnes``) is an error rather than a no-op.
 _METADATA_FIELDS = frozenset({"description", "note"})
@@ -79,6 +86,7 @@ _KNOWN_FIELDS = frozenset(
         "require_witness",
         "witness_type",
         "expectation",
+        "risk_level",
     }
 ) | _METADATA_FIELDS
 
@@ -105,6 +113,9 @@ class Rule:
     require_witness: bool = False
     witness_type: Optional[str] = None
     expectation: Optional[str] = None
+    #: ``"low"``, ``"high"``, or ``None`` when the field was omitted (which
+    #: ``immune_state.select_tier`` reads as low).
+    risk_level: Optional[str] = None
     source: str = ""
 
     @property
@@ -119,6 +130,7 @@ class Rule:
             "require_witness": self.require_witness,
             "witness_type": self.witness_type,
             "expectation": self.expectation,
+            "risk_level": self.risk_level,
         }
 
 
@@ -238,12 +250,23 @@ def _normalise(raw: Any, source: str) -> Rule:
                 )
             )
 
+    risk_level = raw.get("risk_level")
+    if risk_level is not None:
+        if not isinstance(risk_level, str) or risk_level not in SUPPORTED_RISK_LEVELS:
+            raise RuleError(
+                "{}: rule {!r}: unsupported risk_level {!r}; supported: {} "
+                "(omit the field to mean 'low')".format(
+                    source, rule_id, risk_level, sorted(SUPPORTED_RISK_LEVELS)
+                )
+            )
+
     return Rule(
         rule_id=rule_id,
         target_tool=target_tool,
         require_witness=require_witness,
         witness_type=witness_type,
         expectation=expectation,
+        risk_level=risk_level,
         source=source,
     )
 
