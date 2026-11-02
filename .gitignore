@@ -10,6 +10,11 @@ __pycache__/
 
 # Local audit traces produced by running the sidecar
 audit_trace.jsonl
+# Persisted inflammation counters, written beside the trace by default. This is
+# runtime state, not source: committing it would ship one machine's suspicion
+# to everyone else's first run.
+.immune_state.json
+.immune-*.tmp
 
 # ...but the curated sample kept for documentation must stay tracked.
 # A bare filename pattern above matches at any depth, so this negation is

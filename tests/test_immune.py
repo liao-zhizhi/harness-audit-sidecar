@@ -1,11 +1,13 @@
 """Tests for conditional immune response.
 
-Two halves, deliberately. The state machine and the tier policy are pure
+Three halves, deliberately. The state machine and the tier policy are pure
 functions over verdicts and rule dicts, so they are tested exhaustively and
-instantly. The routing itself is tested against a real temporary git repository
-with real commands, because the claim being made -- "the cheap tier still
-catches a lie" -- is a claim about the physical world, and a stubbed runner
-would only prove that the stub was called.
+instantly. The routing is tested against a real temporary git repository with
+real commands, because the claim being made -- "the cheap tier still catches a
+lie" -- is a claim about the physical world, and a stubbed runner would only
+prove that the stub was called. Persistence is tested by killing a real server
+process and starting another one, because "the state survives a restart" is the
+whole claim and an in-process object cannot demonstrate it.
 """
 
 from __future__ import annotations
@@ -15,12 +17,14 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 from audit_sidecar.immune_state import (
     ImmuneState,
+    STATE_FILENAME,
     STATE_INFLAMED,
     STATE_NORMAL,
     TIER_ADAPTIVE,
@@ -658,6 +662,445 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(third["tier"], TIER_ADAPTIVE)
         self.assertEqual(third["witness_scope"], "full")
         self.assertEqual(third["verdict"], "PASS")
+
+
+class PersistenceTest(unittest.TestCase):
+    """The state file: written after every verdict, read at construction."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="harness-state-")
+        self.root = self._tmp.name
+        self.state_path = os.path.join(self.root, STATE_FILENAME)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def read(self) -> dict:
+        with open(self.state_path, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def write_raw(self, text: str) -> None:
+        with open(self.state_path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    def test_inflammation_survives_a_new_instance(self) -> None:
+        # The whole point: a restart must not be a way to wash the record.
+        first = ImmuneState(state_path=self.state_path)
+        first.record_verdict(Verdict.FAIL)
+        first.record_verdict(Verdict.FAIL)
+        self.assertTrue(first.is_inflamed())
+
+        restarted = ImmuneState(state_path=self.state_path)
+        self.assertTrue(restarted.is_inflamed())
+        self.assertEqual(restarted.state, STATE_INFLAMED)
+        self.assertEqual(restarted.danger_count, 2)
+
+    def test_recovery_progress_survives_too(self) -> None:
+        first = ImmuneState(state_path=self.state_path)
+        first.record_verdict(Verdict.INVALID)
+        for _ in range(3):
+            first.record_verdict(Verdict.PASS)
+
+        restarted = ImmuneState(state_path=self.state_path)
+        self.assertTrue(restarted.is_inflamed())
+        self.assertEqual(restarted.recovery_progress, 3)
+        # Two more passes finish the job the previous process started.
+        restarted.record_verdict(Verdict.PASS)
+        restarted.record_verdict(Verdict.PASS)
+        self.assertFalse(restarted.is_inflamed())
+
+    def test_healed_state_survives_as_normal(self) -> None:
+        first = ImmuneState(state_path=self.state_path)
+        first.record_verdict(Verdict.INVALID)
+        for _ in range(5):
+            first.record_verdict(Verdict.PASS)
+        self.assertFalse(first.is_inflamed())
+
+        restarted = ImmuneState(state_path=self.state_path)
+        self.assertFalse(restarted.is_inflamed())
+        self.assertEqual(restarted.state, STATE_NORMAL)
+        self.assertEqual(restarted.danger_count, 0)
+
+    def test_missing_file_is_an_ordinary_first_run(self) -> None:
+        self.assertFalse(os.path.exists(self.state_path))
+        state = ImmuneState(state_path=self.state_path)
+        self.assertFalse(state.is_inflamed())
+        # Construction alone must not create the file: a proxy that has not
+        # judged anything has nothing to remember.
+        self.assertFalse(os.path.exists(self.state_path))
+
+    def test_file_is_written_after_the_first_verdict(self) -> None:
+        state = ImmuneState(state_path=self.state_path)
+        state.record_verdict(Verdict.PASS)
+        self.assertTrue(os.path.exists(self.state_path))
+        document = self.read()
+        self.assertEqual(document["state"], STATE_NORMAL)
+        self.assertEqual(document["version"], 1)
+
+    def test_not_run_writes_nothing(self) -> None:
+        # Nothing ran, so there is nothing new to remember; rewriting the file
+        # on every skipped call would be work with no content behind it.
+        state = ImmuneState(state_path=self.state_path)
+        state.record_verdict(Verdict.PASS)
+        before = os.stat(self.state_path).st_mtime_ns
+        state.record_verdict(Verdict.NOT_RUN)
+        self.assertEqual(os.stat(self.state_path).st_mtime_ns, before)
+
+    def test_corrupt_json_falls_back_to_normal_and_says_so(self) -> None:
+        self.write_raw("{not json at all")
+        with self.assertLogs("audit_sidecar.immune_state", level="ERROR") as logs:
+            state = ImmuneState(state_path=self.state_path)
+        self.assertFalse(state.is_inflamed())
+        # Reported as an amnesia event, not as a clean start: silence here
+        # would make deliberate corruption indistinguishable from first use.
+        self.assertIn("amnesia", " ".join(logs.output))
+
+    def test_unknown_version_is_rejected_loudly(self) -> None:
+        self.write_raw(json.dumps({"version": 99, "state": "INFLAMED"}))
+        with self.assertLogs("audit_sidecar.immune_state", level="ERROR") as logs:
+            state = ImmuneState(state_path=self.state_path)
+        self.assertFalse(state.is_inflamed())
+        self.assertIn("amnesia", " ".join(logs.output))
+
+    def test_unknown_state_value_is_rejected(self) -> None:
+        self.write_raw(json.dumps({"version": 1, "state": "FINE"}))
+        with self.assertLogs("audit_sidecar.immune_state", level="ERROR"):
+            state = ImmuneState(state_path=self.state_path)
+        self.assertFalse(state.is_inflamed())
+
+    def test_negative_counters_are_rejected(self) -> None:
+        self.write_raw(
+            json.dumps(
+                {
+                    "version": 1,
+                    "state": "NORMAL",
+                    "danger_count": -1,
+                    "recovery_progress": 0,
+                }
+            )
+        )
+        with self.assertLogs("audit_sidecar.immune_state", level="ERROR"):
+            state = ImmuneState(state_path=self.state_path)
+        self.assertEqual(state.danger_count, 0)
+
+    def test_forged_recovery_counter_cannot_skip_the_wait(self) -> None:
+        # A record claiming INFLAMED with a full recovery streak would heal on
+        # the very next pass. Clamped to one short, so the wait is still owed.
+        self.write_raw(
+            json.dumps(
+                {
+                    "version": 1,
+                    "state": "INFLAMED",
+                    "danger_count": 2,
+                    "recovery_progress": 99,
+                }
+            )
+        )
+        state = ImmuneState(state_path=self.state_path)
+        self.assertTrue(state.is_inflamed())
+        self.assertEqual(state.recovery_progress, 4)
+        state.record_verdict(Verdict.PASS)
+        self.assertFalse(state.is_inflamed())
+
+    def test_inflamed_with_zero_danger_stays_inflamed(self) -> None:
+        # Inconsistent but not dangerous to trust: keep the suspicion.
+        self.write_raw(
+            json.dumps(
+                {
+                    "version": 1,
+                    "state": "INFLAMED",
+                    "danger_count": 0,
+                    "recovery_progress": 0,
+                }
+            )
+        )
+        state = ImmuneState(state_path=self.state_path)
+        self.assertTrue(state.is_inflamed())
+
+    def test_normal_with_a_stale_streak_is_clamped(self) -> None:
+        self.write_raw(
+            json.dumps(
+                {
+                    "version": 1,
+                    "state": "NORMAL",
+                    "danger_count": 0,
+                    "recovery_progress": 3,
+                }
+            )
+        )
+        state = ImmuneState(state_path=self.state_path)
+        self.assertFalse(state.is_inflamed())
+        self.assertEqual(state.recovery_progress, 0)
+
+    def test_write_is_atomic_and_leaves_no_temporaries(self) -> None:
+        state = ImmuneState(state_path=self.state_path)
+        for _ in range(3):
+            state.record_verdict(Verdict.PASS)
+        leftovers = [n for n in os.listdir(self.root) if n.startswith(".immune-")]
+        self.assertEqual(leftovers, [])
+
+    def test_unwritable_location_does_not_raise(self) -> None:
+        # Losing the ability to persist is an incident, not a reason to take
+        # the agent down; it is logged instead. A parent that is a regular file
+        # gives a deterministic failure without depending on file permissions
+        # (which a root test runner would bypass).
+        blocker = os.path.join(self.root, "not-a-directory")
+        with open(blocker, "w", encoding="utf-8") as handle:
+            handle.write("occupied\n")
+        with self.assertLogs("audit_sidecar.immune_state", level="ERROR") as logs:
+            state = ImmuneState(state_path=os.path.join(blocker, STATE_FILENAME))
+            state.record_verdict(Verdict.INVALID)
+        self.assertTrue(state.is_inflamed())
+        self.assertIn("could not persist", " ".join(logs.output))
+    def test_parent_directory_is_created(self) -> None:
+        nested = os.path.join(self.root, "a", "b", STATE_FILENAME)
+        state = ImmuneState(state_path=nested)
+        state.record_verdict(Verdict.PASS)
+        self.assertTrue(os.path.isfile(nested))
+
+    def test_reset_is_persisted(self) -> None:
+        first = ImmuneState(state_path=self.state_path)
+        first.record_verdict(Verdict.INVALID)
+        first.reset()
+        self.assertFalse(ImmuneState(state_path=self.state_path).is_inflamed())
+
+    def test_memory_only_state_writes_nothing(self) -> None:
+        state = ImmuneState()
+        state.record_verdict(Verdict.INVALID)
+        self.assertEqual(os.listdir(self.root), [])
+        self.assertIsNone(state.state_path)
+
+    def test_state_path_is_validated(self) -> None:
+        for value in ("", "   "):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    ImmuneState(state_path=value)
+
+    def test_state_path_accepts_a_pathlike(self) -> None:
+        import pathlib
+
+        state = ImmuneState(state_path=pathlib.Path(self.state_path))
+        self.assertEqual(state.state_path, self.state_path)
+        state.record_verdict(Verdict.PASS)
+        self.assertTrue(os.path.isfile(self.state_path))
+
+
+class PersistenceThroughProxyTest(unittest.TestCase):
+    """A second proxy must inherit the first one's suspicion."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="harness-pstate-")
+        self.root = self._tmp.name
+        self.state_path = os.path.join(self.root, STATE_FILENAME)
+        self.git("init", "-q")
+        self.write("target.py", "value = 0\n")
+        self.write("log.txt", "session\n")
+        self.git("add", "-A")
+        self.git(
+            "-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-q", "-m", "initial",
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            [GIT, *args], cwd=self.root, check=True, capture_output=True, text=True
+        ).stdout
+
+    def write(self, name: str, content: str) -> None:
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as handle:
+            handle.write(content)
+
+    def proxy(self, **kwargs) -> MCPProxy:
+        return MCPProxy(
+            cwd=self.root,
+            runner=SafeRunner(timeout=20),
+            rules_dir=packaged_rules_dir(),
+            immune_state_path=self.state_path,
+            **kwargs,
+        )
+
+    def test_second_proxy_inherits_inflammation(self) -> None:
+        first = self.proxy()
+        for _ in range(2):
+            first.intercept_tool_call(
+                "write_file",
+                {"path": "missing_dir/target.py", "content": "x\n"},
+                True,
+            )
+        self.assertTrue(first.immune_state.is_inflamed())
+
+        second = self.proxy()
+        self.assertTrue(second.immune_state.is_inflamed())
+        # Same low-risk tool as always, now on the expensive tier.
+        second.intercept_tool_call(
+            "append_file", {"path": "log.txt", "content": "more\n"}, True
+        )
+        self.assertEqual(second.audit_log[-1].tier, TIER_ADAPTIVE)
+
+    def test_state_file_does_not_become_its_own_drift_witness(self) -> None:
+        # The bookkeeping file lives in the audited tree, and the git witness
+        # lists untracked files. If it were written while a command was being
+        # observed, the audit would convict its own notebook.
+        proxy = self.proxy()
+        proxy.intercept_tool_call(
+            "write_file", {"path": "target.py", "content": "value = 1\n"}, True
+        )
+        proxy.intercept_tool_call(
+            "write_file", {"path": "target.py", "content": "value = 2\n"}, True
+        )
+        for result in proxy.audit_log:
+            self.assertIs(result.verdict, Verdict.PASS)
+            self.assertEqual(result.unexpected_changes, ())
+        self.assertTrue(os.path.isfile(self.state_path))
+
+    def test_state_and_object_are_mutually_exclusive(self) -> None:
+        with self.assertRaises(ValueError):
+            MCPProxy(
+                cwd=self.root,
+                immune_state=ImmuneState(),
+                immune_state_path=self.state_path,
+            )
+
+
+@unittest.skipUnless(HAS_GIT, "git and bash are required for restart tests")
+class CrashRestartTest(unittest.TestCase):
+    """Kill the process, start another one: the suspicion must still be there.
+
+    This is the test the feature exists for. An in-process check cannot fail
+    when the property is "survives a restart", so the process boundary has to be
+    real: two separate interpreters, one shared state file.
+    """
+
+    MODULE = "audit_sidecar.mcp_server"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="harness-restart-")
+        self.root = self._tmp.name
+        self.state_path = os.path.join(self.root, STATE_FILENAME)
+        self._git("init", "-q")
+        self._write("target.py", "value = 0\n")
+        self._write("log.txt", "session\n")
+        self._git("add", "-A")
+        self._git(
+            "-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-q", "-m", "initial",
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _git(self, *args: str) -> str:
+        return subprocess.run(
+            [GIT, *args], cwd=self.root, check=True, capture_output=True, text=True
+        ).stdout
+
+    def _write(self, name: str, content: str) -> None:
+        with open(os.path.join(self.root, name), "w", encoding="utf-8") as handle:
+            handle.write(content)
+
+    @staticmethod
+    def _request(message_id: int, tool: str, args: dict, reported: bool) -> str:
+        return json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "tool_call",
+                "params": {
+                    "tool": tool,
+                    "args": args,
+                    "reported_success": reported,
+                },
+                "id": message_id,
+            }
+        )
+
+    def run_server(self, lines, trace_name: str, extra_args=()):
+        trace_path = os.path.join(self.root, trace_name)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                self.MODULE,
+                "--cwd",
+                self.root,
+                "--trace",
+                trace_path,
+                "--quiet",
+                *extra_args,
+            ],
+            input="".join(line + "\n" for line in lines),
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            timeout=120,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        with open(trace_path, encoding="utf-8") as handle:
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def lie(self, message_id: int) -> str:
+        return self._request(
+            message_id,
+            "write_file",
+            {"path": "missing_dir/target.py", "content": "x\n"},
+            True,
+        )
+
+    def append(self, message_id: int) -> str:
+        return self._request(
+            message_id, "append_file", {"path": "log.txt", "content": "more\n"}, True
+        )
+
+    def test_inflammation_survives_a_restart(self) -> None:
+        first = self.run_server([self.lie(1), self.lie(2)], "trace-1.jsonl")
+        self.assertEqual([r["verdict"] for r in first], ["FAIL", "FAIL"])
+        self.assertEqual(first[-1]["immune_state"], STATE_INFLAMED)
+        self.assertTrue(os.path.isfile(self.state_path))
+
+        # A new process, the same working tree: the state file is picked up
+        # from beside the trace, so nothing has to be passed twice.
+        second = self.run_server([self.append(3)], "trace-2.jsonl")
+        self.assertEqual(second[0]["immune_state"], STATE_INFLAMED)
+        self.assertEqual(second[0]["tier"], TIER_ADAPTIVE)
+        self.assertEqual(second[0]["verdict"], "PASS")
+
+    def test_opt_out_reproduces_the_old_amnesia(self) -> None:
+        # The contrast that proves the default is what closes the hole: with
+        # persistence switched off, the restart really does forget.
+        self.run_server([self.lie(1), self.lie(2)], "trace-1.jsonl")
+        second = self.run_server(
+            [self.append(3)], "trace-2.jsonl", extra_args=("--immune-state", "none")
+        )
+        self.assertEqual(second[0]["immune_state"], STATE_NORMAL)
+        self.assertEqual(second[0]["tier"], TIER_INNATE)
+
+    def test_healing_survives_a_restart(self) -> None:
+        self.run_server([self.lie(1), self.lie(2)], "trace-1.jsonl")
+        healed = self.run_server(
+            [self.append(i) for i in range(3, 8)], "trace-2.jsonl"
+        )
+        self.assertEqual(healed[-1]["immune_state"], STATE_NORMAL)
+
+        third = self.run_server([self.append(8)], "trace-3.jsonl")
+        self.assertEqual(third[0]["immune_state"], STATE_NORMAL)
+        self.assertEqual(third[0]["tier"], TIER_INNATE)
+
+    def test_explicit_state_path_wins(self) -> None:
+        elsewhere = os.path.join(self.root, "state", "immune.json")
+        self.run_server(
+            [self.lie(1), self.lie(2)],
+            "trace-1.jsonl",
+            extra_args=("--immune-state", elsewhere),
+        )
+        self.assertTrue(os.path.isfile(elsewhere))
+        self.assertFalse(os.path.isfile(self.state_path))
+
+        second = self.run_server(
+            [self.append(3)], "trace-2.jsonl", extra_args=("--immune-state", elsewhere)
+        )
+        self.assertEqual(second[0]["tier"], TIER_ADAPTIVE)
 
 
 class ShippedPolicyTest(unittest.TestCase):

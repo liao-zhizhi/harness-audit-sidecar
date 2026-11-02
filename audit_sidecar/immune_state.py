@@ -33,27 +33,57 @@ Two properties this module does not have, on purpose:
 * It never decides that something is fine because it is *boring*. Risk is
   declared by policy (``risk_level``) or forced by inflammation. A tool with
   no rule at all gets tier 2: absence of a policy is not evidence of low risk.
+
+**Inflammation survives the process.** A state that lived only in memory would
+be a get-out-of-jail card: crash the sidecar, restart it, and the suspicion is
+gone -- and crashing the sidecar is something the audited agent can arrange.
+So with a ``state_path`` the counts are written to a small JSON file after every
+verdict and read back at construction. Two rules govern the recovery:
+
+* **Nothing is lost silently.** A missing file means "first run" and is normal;
+  an unreadable, malformed or unknown-version file is an *amnesia event* and is
+  logged at ERROR, because a system that quietly forgets is a system that can be
+  made to forget on purpose.
+* **Every ambiguity resolves toward suspicion.** A file whose counters are
+  inconsistent with its state (``INFLAMED`` with zero danger, a recovery
+  progress past its own threshold) is clamped so that it stays inflamed, never
+  so that it calms down. Guessing "probably fine" from a damaged record is the
+  one direction this module must never round in.
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import tempfile
 from collections.abc import Mapping as _MappingABC
 from collections.abc import Sequence as _SequenceABC
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 from .verdict import Verdict
 
 __all__ = [
     "ImmuneState",
     "select_tier",
+    "STATE_FILENAME",
     "STATE_INFLAMED",
     "STATE_NORMAL",
     "TIER_ADAPTIVE",
     "TIER_INNATE",
 ]
 
+_LOG = logging.getLogger(__name__)
+
 STATE_NORMAL = "NORMAL"
 STATE_INFLAMED = "INFLAMED"
+
+#: Default filename for the persisted state, placed beside the audit trace.
+STATE_FILENAME = ".immune_state.json"
+
+#: Schema version. A future reader that finds a version it does not know must
+#: not guess: the file is rejected and the system stays suspicious.
+STATE_VERSION = 1
 
 #: The cheap, always-on check: existence plus mtime of the claimed paths.
 TIER_INNATE = "tier1"
@@ -64,6 +94,21 @@ TIER_ADAPTIVE = "tier2"
 #: omitted from the YAML) means the same thing: a rule that bothers to name a
 #: tool has already taken responsibility for it.
 LOW_RISK = "low"
+
+
+def _normalise_state_path(state_path: Any) -> Optional[str]:
+    """Validate the persistence path, or ``None`` for a memory-only state."""
+    if state_path is None:
+        return None
+    if isinstance(state_path, os.PathLike):
+        state_path = os.fspath(state_path)
+    if not isinstance(state_path, str) or not state_path.strip():
+        raise ValueError(
+            "state_path must be a non-empty string or None, got {!r}".format(
+                state_path
+            )
+        )
+    return os.path.abspath(state_path)
 
 
 def _positive_int(value: Any, name: str) -> int:
@@ -101,6 +146,7 @@ class ImmuneState:
         fail_threshold: int = DEFAULT_FAIL_THRESHOLD,
         invalid_threshold: int = DEFAULT_INVALID_THRESHOLD,
         recovery_passes: int = DEFAULT_RECOVERY_PASSES,
+        state_path: Optional[str] = None,
     ) -> None:
         self._fail_threshold = _positive_int(fail_threshold, "fail_threshold")
         self._invalid_threshold = _positive_int(invalid_threshold, "invalid_threshold")
@@ -113,9 +159,12 @@ class ImmuneState:
                     self._recovery_passes, self._fail_threshold
                 )
             )
+        self._state_path = _normalise_state_path(state_path)
         self._inflamed = False
         self._danger = 0
         self._recovery = 0
+        if self._state_path is not None:
+            self._restore()
 
     # -- public API ---------------------------------------------------
 
@@ -146,6 +195,7 @@ class ImmuneState:
                 # Only *consecutive* failures inflame: an occasional failure
                 # surrounded by verified work is a normal day, not an attack.
                 self._danger = 0
+            self._persist()
             return self.state
 
         # FAIL or INVALID: damage, and the recovery streak restarts.
@@ -158,6 +208,7 @@ class ImmuneState:
         )
         if self._danger >= threshold:
             self._inflamed = True
+        self._persist()
         return self.state
 
     def is_inflamed(self) -> bool:
@@ -165,10 +216,130 @@ class ImmuneState:
         return self._inflamed
 
     def reset(self) -> None:
-        """Return to NORMAL, discarding the danger count. For tests and restarts."""
+        """Return to NORMAL, discarding the danger count.
+
+        An explicit reset is durable: it is written through to the state file,
+        so "I cleared it" and "I restarted the sidecar" do not accidentally
+        look the same afterwards.
+        """
         self._inflamed = False
         self._danger = 0
         self._recovery = 0
+        self._persist()
+
+    # -- persistence --------------------------------------------------
+
+    @property
+    def state_path(self) -> Optional[str]:
+        """Where this state is written, or ``None`` when it is memory-only."""
+        return self._state_path
+
+    def _persist(self) -> None:
+        """Write the counters to ``state_path`` atomically, if configured.
+
+        Written to a sibling temporary file and moved into place, because the
+        interesting failure is a crash *during* the write: a half-written file
+        would restore as "unparseable" and lose exactly the inflammation that
+        was being recorded. An I/O failure is logged and swallowed -- taking
+        the agent down because bookkeeping could not be flushed would turn a
+        lost audit trail into an outage -- but never silently: this is the one
+        path by which suspicion can be dropped without a verdict.
+        """
+        if self._state_path is None:
+            return
+        payload = self.as_document()
+        directory = os.path.dirname(self._state_path) or "."
+        handle_name: Optional[str] = None
+        try:
+            os.makedirs(directory, exist_ok=True)
+            descriptor, handle_name = tempfile.mkstemp(
+                prefix=".immune-", suffix=".tmp", dir=directory
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(handle_name, self._state_path)
+            handle_name = None
+        except OSError as problem:
+            _LOG.error(
+                "could not persist immune state to %s: %s; inflammation is "
+                "memory-only until this is fixed",
+                self._state_path,
+                problem,
+            )
+        finally:
+            if handle_name is not None:
+                try:
+                    os.unlink(handle_name)
+                except OSError:
+                    # A stray temp file is not worth raising over; the real
+                    # failure has already been logged above.
+                    pass
+
+    def _restore(self) -> None:
+        """Read ``state_path`` if it exists, resolving doubt toward suspicion."""
+        assert self._state_path is not None
+        try:
+            with open(self._state_path, "r", encoding="utf-8") as handle:
+                document = json.load(handle)
+        except FileNotFoundError:
+            # A missing file is an ordinary first run, not an incident: there
+            # is nothing to remember yet.
+            return
+        except (OSError, ValueError) as problem:
+            _LOG.error(
+                "could not read immune state from %s: %s; starting NORMAL. "
+                "Treat this as a possible amnesia event, not a clean slate",
+                self._state_path,
+                problem,
+            )
+            return
+
+        restored = self._from_document(document)
+        if restored is None:
+            _LOG.error(
+                "immune state in %s is not a record this version understands; "
+                "starting NORMAL. Treat this as a possible amnesia event",
+                self._state_path,
+            )
+            return
+
+        inflamed, danger, recovery = restored
+        self._inflamed = inflamed
+        self._danger = danger
+        self._recovery = recovery
+
+    def _from_document(self, document: Any) -> Optional[Any]:
+        """Validate a loaded document; ``None`` when it cannot be trusted.
+
+        Anything inconsistent is clamped in the *suspicious* direction: an
+        ``INFLAMED`` record with zero danger stays inflamed, and a recovery
+        progress at or past its threshold is held one short of healing. A
+        damaged record must never be able to calm the system down.
+        """
+        if not isinstance(document, Mapping):
+            return None
+        if document.get("version") != STATE_VERSION:
+            return None
+        state = document.get("state")
+        if state not in (STATE_NORMAL, STATE_INFLAMED):
+            return None
+        danger = document.get("danger_count")
+        recovery = document.get("recovery_progress")
+        for value in (danger, recovery):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return None
+        inflamed = state == STATE_INFLAMED
+        if not inflamed:
+            # A calm record with a recovery streak in progress is incoherent;
+            # dropping the streak loses nothing, since healing is complete.
+            return False, danger, 0
+        # Still inflamed: keep the lowest recovery count that is consistent
+        # with not having healed, so a forged or damaged counter cannot be
+        # used to skip straight to calm.
+        return True, danger, min(recovery, self._recovery_passes - 1)
 
     # -- observability ------------------------------------------------
 
@@ -205,6 +376,23 @@ class ImmuneState:
             "danger_count": self._danger,
             "recovery_progress": self._recovery,
             "recovery_passes": self._recovery_passes,
+        }
+
+    def as_document(self) -> Dict[str, Any]:
+        """The persisted form, including the schema version.
+
+        Separate from ``snapshot`` because they answer different questions: a
+        trace wants "what did the system believe at this call", a state file
+        wants "what should the next process believe".
+        """
+        return {
+            "version": STATE_VERSION,
+            "state": self.state,
+            "danger_count": self._danger,
+            "recovery_progress": self._recovery,
+            "recovery_passes": self._recovery_passes,
+            "fail_threshold": self._fail_threshold,
+            "invalid_threshold": self._invalid_threshold,
         }
 
     def __repr__(self) -> str:

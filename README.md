@@ -5,7 +5,8 @@
 > **项目状态：MVP / 早期版本（v0.7.0）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
-> 分级免疫响应与 stdio 服务端，核心闭环（执行 → 见证 → 判词 → 留痕）已跑通并有 275 项测试；
+> 分级免疫响应（含跨进程持久化）与 stdio 服务端，核心闭环
+> （执行 → 见证 → 判词 → 留痕）已跑通并有 302 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -206,6 +207,41 @@ trace 里因此多了 `rule_id` / `rules_matched` / `rules_violated`，
 **愈合刻意比受伤慢。** 两次失败点火，五次通过才熄灭；恢复期内再失败一次，进度归零。
 对称的响应挡不住任何东西。
 
+### 炎症不会因为重启而消失
+
+只在内存里记录的炎症，是一个**越狱通道**：崩掉 sidecar、重启，嫌疑归零。而"能让 sidecar
+崩溃"恰恰是被审 Agent 能做到的事。所以炎症会落盘。
+
+```
+<trace 目录>/.immune_state.json
+{"version": 1, "state": "INFLAMED", "danger_count": 2,
+ "recovery_progress": 0, "recovery_passes": 5, ...}
+```
+
+- 每次判词后**原子写入**（同目录临时文件 + `fsync` + `os.replace`），所以崩溃不会留下
+  半截文件——半截文件恰恰会丢掉正在记录的那次炎症。
+- 启动时读回。**缺失** = 正常首跑；**损坏 / 版本未知 / 字段非法** = 记 `ERROR`
+  （日志里叫 *amnesia event*），因为悄悄遗忘与"被弄遗忘"在外部完全一样。
+- **一切歧义都朝怀疑的方向取整。** `INFLAMED` 但危险计数为 0 → 仍然发炎；
+  恢复进度超出阈值 → 压到阈值前一步。一份被篡改的记录可以让系统**更**警惕，
+  不能让它更放松。
+
+```bash
+# 默认：就放在 trace 旁边
+harness-audit-server --cwd /path/to/repo
+
+# 放到 Agent 写不到的地方（推荐：被审进程能写状态文件就能删它）
+harness-audit-server --cwd /path/to/repo --immune-state /var/lib/audit/immune.json
+
+# 显式要求失忆——这是唯一的失忆入口
+harness-audit-server --cwd /path/to/repo --immune-state none
+```
+
+> **残余风险：** 文件是普通 JSON，没有签名。能写该路径的 Agent 仍可删改它。
+> 抗篡改需要放到被审进程写不到的位置，或加 HMAC——MVP 未做。
+> `test_inflammation_survives_a_restart` 证明的只是"重启不再自动洗清"，
+> 不是"无法伪造"。
+
 ### 真实的 trace：同一策略，两种代价
 
 [`examples/sample_trace.jsonl`](examples/sample_trace.jsonl) 的 id=5..7 是同一次会话：
@@ -276,7 +312,7 @@ agent-harness-audit/
 │   ├── confidence.py     信任能荷账户（滑动窗口）
 │   ├── judgment_base.py  外置判据库（加载 rules/*.yaml）
 │   ├── rule_engine.py    规则判词（在四值格之上收紧）
-│   ├── immune_state.py   免疫状态机（炎症 / 恢复）+ 分级路由（tier1 / tier2）
+│   ├── immune_state.py   免疫状态机（炎症 / 恢复 / 落盘）+ 分级路由（tier1 / tier2）
 │   ├── runner.py         见证采集（真实执行 + 独立读回；full / stat 两级）
 │   ├── git_witness.py    Git 见证（真实变更集）
 │   ├── mcp_proxy.py      MCP 拦截（协议层声明 vs 物理效果）
@@ -296,7 +332,7 @@ agent-harness-audit/
     ├── test_confidence.py
     ├── test_judgment_base.py
     ├── test_rule_engine.py
-    ├── test_immune.py        分级免疫（tier 路由 / 炎症 / 恢复 / trace）
+    ├── test_immune.py        分级免疫（tier 路由 / 炎症 / 恢复 / 重启后仍发炎）
     ├── test_runner.py
     ├── test_git_witness.py
     ├── test_mcp_proxy.py
@@ -331,7 +367,7 @@ mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover tests          # 275 项
+python3 -m unittest discover tests          # 302 项
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -770,6 +806,7 @@ harness-audit-server --cwd /path/to/project
 | `--cwd` | `.` | 被审命令的执行目录 |
 | `--repo` | 同 `--cwd` | Git 见证使用的仓库根 |
 | `--trace` | `<cwd>/audit_trace.jsonl` | 审计留痕（JSONL） |
+| `--immune-state` | `.immune_state.json`（与 `--trace` 同目录） | 炎症计数的持久化文件；`none` 表示只在内存（重启即遗忘，唯一的失忆入口） |
 | `--timeout` | `30` | 单条命令超时（秒） |
 | `--quiet` | 关 | 静默 stderr 诊断 |
 
@@ -825,6 +862,9 @@ harness-audit-server --cwd /path/to/project
 2. 如果是 git 项目，`--repo` 一般留空（取 `--cwd`）；跨目录时显式指定。
 3. 轮询 `audit_trace.jsonl` 做告警/仪表盘；**不要**从 stdout 取判词——那里只有 Agent 该看到的东西。
 4. 判词文件按行追加，可安全地被 `tail -f` 或日志采集器并行读取。
+5. **炎症计数默认写在 trace 旁边**（`.immune_state.json`），重启后继续生效。若被审 Agent
+   对该目录有写权限，它就能删除或篡改这个文件——这时把 `--immune-state` 指到 agent
+   写不到的位置（见[炎症不会因为重启而消失](#炎症不会因为重启而消失)）。
 
 ### 实测：装完就能拦
 
@@ -898,7 +938,7 @@ always-FAIL engine       : False
 
 ```bash
 python3 -m unittest discover tests -v
-# Ran 275 tests ... OK
+# Ran 302 tests ... OK
 ```
 
 覆盖：
@@ -911,6 +951,17 @@ python3 -m unittest discover tests -v
   （`expected_content` 不得在廉价层被静默丢弃）；tier 路由在**真实仓库**里的四种组合；
   发炎后同一条 low 规则确实升级到 git 变更集；五次通过恢复；`INVALID` 一次即发炎；
   注入的 `ImmuneState` 与调用方共享；响应不泄漏 tier。
+- **炎症持久化**：发炎 / 恢复到一半 / 已痊愈三种状态各自跨实例还原；缺失文件不创建、
+  也不写盘；`NOT RUN` 不重写文件；损坏 JSON、未知版本、未知状态、负计数各自记 ERROR 并回退；
+  伪造的恢复计数被压到阈值前一步（不能跳过等待）；`INFLAMED` 配 0 危险计数仍保持发炎；
+  原子写入不留临时文件；父路径不可写时只记日志不抛异常；`reset()` 持久化；
+  `--immune-state none` 与显式路径。
+- **重启**：真起两个 `python -m audit_sidecar.mcp_server` 子进程，第一个退出后启动第二个，
+  由后者从磁盘读回前者的状态。验证炎症跨进程存活、痊愈跨进程存活、`--immune-state none`
+  如实退回失忆、显式路径优先生效。**这是"重启不能洗白"唯一的实证。**
+- **自身不产生漂移**：状态文件就在被审仓库里，而 git 见证会列未跟踪文件——
+  连续两次 `write_file` 必须都是 PASS 且 `unexpected_changes` 为空，
+  否则审计会把自己的笔记本当作罪证。
 - **账户**：窗口淘汰、`NOT RUN` 占格但不入分母、label 阈值边界（0.7 / 0.5）。
 - **文件见证**：`false | true` 的退出码不被吞、`PIPESTATUS` 逐段记录、天真读法与审计读法的
   差值、内容校验、缺失产物判假完成、坐标漂移（钉住 / 跟随见证两种对照）、超时与不存在的 `cwd`、
@@ -950,8 +1001,16 @@ python3 -m unittest discover tests -v
   同长度、同一文件系统时间戳刻度内的重写对它完全不可见。这不是缺陷而是取舍，
   所以覆盖写在 `write_file` 的 `risk_level: "high"` 里，并把盲点写成了一条测试
   （`test_adaptive_tier_sees_drift_the_innate_tier_cannot`）。
-- **炎症状态不跨进程持久化。** `harness-audit-server` 每次启动都是 `NORMAL`；
-  一个崩溃重启的会话会忘记自己刚被证伪过。持久化需要外部存储，MVP 未做。
+- **炎症状态跨进程持久化（v0.7.0 起）。** `harness-audit-server` 默认把计数写在
+  `--trace` 旁边的 `.immune_state.json`，每次判词后原子写入，启动时读回。
+  **杀进程重启不再能洗清嫌疑**——这正是它存在的理由：能安排崩溃的是被审的 Agent 自己。
+  用 `--immune-state none` 显式要求失忆（这是唯一的失忆入口），或用 `--immune-state PATH`
+  把文件放到被审目录之外。
+
+  **残余风险（不隐藏）：** 状态文件是普通 JSON，没有签名。一个**有权写入该路径**的 Agent
+  仍然可以删掉或改掉它；损坏或缺失时系统回退 `NORMAL` 并在 stderr 记 ERROR
+  （日志里写作 amnesia event）。要做到抗篡改，需要把文件放到 Agent 写不到的地方，
+  或加 HMAC——MVP 未做。**这比"重启即遗忘"强得多，但不是不可伪造的。**
 - **不阻止坏动作。** 没有 hook、没有代理；本工具是旁路判词器，不阻止坏动作发生，
   只拒绝为它背书。
 - **`pipe_status` 对顶层 `exit` 退化。** 命令里出现顶层 `exit` 会让 wrapper 提前终止，

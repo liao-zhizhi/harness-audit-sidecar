@@ -175,9 +175,16 @@ class MCPProxy:
         judgment_base: Optional[JudgmentBase] = None,
         rule_engine: Optional[RuleEngine] = None,
         immune_state: Optional[ImmuneState] = None,
+        immune_state_path: Optional[str] = None,
     ) -> None:
         if not isinstance(cwd, str) or not cwd:
             raise ValueError("cwd must be a non-empty string")
+        if immune_state is not None and immune_state_path is not None:
+            raise ValueError(
+                "pass immune_state or immune_state_path, but not both: a state "
+                "object that also has a path would be saved behind the "
+                "caller's back"
+            )
         if immune_state is not None and not isinstance(immune_state, ImmuneState):
             raise TypeError(
                 "immune_state must be an ImmuneState, got {!r}".format(
@@ -189,7 +196,11 @@ class MCPProxy:
         # Always present, even when nothing escalates: the state is what makes
         # escalation possible later, and a proxy without one could not react to
         # the failures it just recorded.
-        self._immune = immune_state if immune_state is not None else ImmuneState()
+        self._immune = (
+            immune_state
+            if immune_state is not None
+            else ImmuneState(state_path=immune_state_path)
+        )
         self._rule_engine = self._resolve_engine(rules_dir, judgment_base, rule_engine)
         if runner is not None:
             # Rebind a caller-supplied runner onto this proxy's engine instead

@@ -128,6 +128,23 @@ git 变更集上的 `PASS`，是两种强度的断言。trace 如果不写出用
 `witness_mtime` 只在 tier1 有值（那是它的证据本身）；tier2 记录里是 `null`，
 因为那一路的证据是变更集，不是时间戳。
 
+## 炎症跨进程存活
+
+这四条记录是在**一个**进程里跑出来的。真实场景里更危险的是另一种：Agent 想办法让 sidecar
+崩掉，重启之后账本归零。所以状态会落盘到 trace 旁边的 `.immune_state.json`：
+
+```bash
+# 第一个进程：两次假完成 -> 落盘 INFLAMED
+cat "$D/.immune_state.json"
+# {"danger_count": 2, "recovery_progress": 0, "state": "INFLAMED", "version": 1, ...}
+
+# 杀掉它，重启一个同样的命令：下一次低风险追加仍走 tier2
+```
+
+`tests/test_immune.py::CrashRestartTest` 就是这么验证的：真起两个子进程，第二个从磁盘
+读回第一个的炎症。想亲手看一遍"旧的失忆"是什么样子，加 `--immune-state none`——
+重启后那条低风险调用会重新变回 tier1。
+
 
 ## 为什么不脱敏
 

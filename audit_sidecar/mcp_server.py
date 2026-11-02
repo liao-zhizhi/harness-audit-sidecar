@@ -29,6 +29,7 @@ import os
 import sys
 from typing import Any, Dict, Iterable, List, Optional, TextIO
 
+from .immune_state import STATE_FILENAME
 from .judgment_base import RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .runner import SafeRunner
@@ -295,6 +296,15 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         help="JSONL audit trace path (default: <cwd>/audit_trace.jsonl)",
     )
     parser.add_argument(
+        "--immune-state",
+        default=None,
+        help=(
+            "JSON file the inflammation counters survive in (default: "
+            ".immune_state.json beside --trace). Pass 'none' for a memory-only "
+            "state, which means a restart forgets every failure so far"
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=float,
         default=30.0,
@@ -331,6 +341,25 @@ def _resolve_rules_dir(option: Optional[str]) -> Optional[str]:
     return option
 
 
+def _resolve_immune_state(
+    option: Optional[str], trace_path: str
+) -> Optional[str]:
+    """Where the inflammation counters live, defaulting beside the trace.
+
+    Beside the trace is deliberate: both files answer "what did this session
+    believe", and splitting them across directories makes it easy to keep one
+    and lose the other. ``"none"`` disables persistence explicitly, which is a
+    different thing from the default and is the only way to ask for amnesia.
+    """
+    if option is not None and option.strip().lower() == "none":
+        return None
+    if option is not None:
+        return os.path.abspath(option)
+    return os.path.join(
+        os.path.dirname(os.path.abspath(trace_path)), STATE_FILENAME
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the console script and ``python -m``."""
     options = _parse_args(argv if argv is not None else sys.argv[1:])
@@ -359,6 +388,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             runner=SafeRunner(timeout=options.timeout),
             repo_path=options.repo,
             rules_dir=_resolve_rules_dir(options.rules),
+            immune_state_path=_resolve_immune_state(
+                options.immune_state, trace_path
+            ),
         )
     except (ValueError, FileNotFoundError, RuleError) as problem:
         _LOG.error("could not start the proxy: %s", problem)
