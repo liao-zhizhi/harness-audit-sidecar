@@ -1,0 +1,18 @@
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local audit traces produced by running the sidecar
+audit_trace.jsonl
+
+# ...but the curated sample kept for documentation must stay tracked.
+# A bare filename pattern above matches at any depth, so this negation is
+# what keeps examples/sample_trace.jsonl in the repository even if the
+# ignore rule is later widened (for example to *.jsonl).
+!examples/sample_trace.jsonl

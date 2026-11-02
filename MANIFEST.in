@@ -1,0 +1,11 @@
+# Files shipped in the sdist beyond what setuptools finds automatically.
+# The wheel intentionally contains only `audit_sidecar/`; the sdist carries the
+# docs and tests so that `pip download --no-binary :all:` yields a buildable,
+# inspectable source tree.
+include LICENSE
+include README.md
+recursive-include examples *
+recursive-include tests *.py
+
+# Never ship local audit output, even if the sidecar was run in the repo root.
+exclude audit_trace.jsonl

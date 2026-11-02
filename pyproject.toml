@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-harness-audit"
+version = "0.5.0"
+description = "Execution-layer audit sidecar for AI agent harnesses: four-valued verdicts judged against independently collected witnesses."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "liaozhizhi", email = "liaozhizhi@foxmail.com" }]
+
+# Fill these in before the first public release: without them PyPI shows no
+# repository link, and `pip show` cannot point users back at the source.
+#
+# [project.urls]
+# Homepage = "https://github.com/<you>/agent-harness-audit"
+# Repository = "https://github.com/<you>/agent-harness-audit"
+# Issues = "https://github.com/<you>/agent-harness-audit/issues"
+# Changelog = "https://github.com/<you>/agent-harness-audit/blob/main/CHANGELOG.md"
+
+keywords = [
+    "agents",
+    "audit",
+    "mcp",
+    "json-rpc",
+    "false-completion",
+    "verification",
+    "observability",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+# No runtime dependencies beyond the standard library, by design.
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+# Console script used as the stdio sidecar for an agent client.
+harness-audit-server = "audit_sidecar.mcp_server:main"
+
+[tool.setuptools]
+# Only the package itself: tests and scratch output are not part of the wheel.
+packages = ["audit_sidecar"]
+
+[tool.setuptools.package-data]
+audit_sidecar = ["py.typed"]

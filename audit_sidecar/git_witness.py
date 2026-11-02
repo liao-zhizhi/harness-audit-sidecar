@@ -1,0 +1,266 @@
+"""Git-backed witness: what actually changed, versus what was claimed.
+
+An agent saying "I edited ``target.py``" is a claim, not a fact. Git holds a
+second, independent record of which paths in a working tree really moved.
+``GitWitness`` reads that record instead of trusting the agent.
+
+Two things make this witness trustworthy where a plain ``git status`` would
+not be:
+
+1. **Coordinates.** ``git status`` reports paths relative to the repository
+   root. A command running in ``sub/`` that correctly edits ``sub/target.py``
+   shows up as ``sub/target.py``, not ``target.py``. Comparing a raw expected
+   list against raw status output would manufacture drift out of a correct
+   edit, so ``resolve_expected`` maps caller-supplied paths (relative to the
+   command's cwd) into repository-root space first. Mismatched coordinate
+   systems are how an auditor ends up accusing the innocent.
+
+2. **Baselines.** Repositories are usually dirty before the audited command
+   runs. A status snapshot taken afterwards cannot tell "this command changed
+   it" from "it was already changed". ``snapshot`` records a content
+   fingerprint of every dirty path, and ``changed_since`` reports only paths
+   that are new or whose content actually differs. Without this a long-lived
+   workspace would report every historical edit as fresh evidence.
+
+Only the standard library is used; git is invoked through ``subprocess``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import shutil
+import subprocess
+from typing import Dict, List, Optional, Sequence
+
+__all__ = ["GitWitness", "GitWitnessError"]
+
+_LOG = logging.getLogger(__name__)
+
+DEFAULT_TIMEOUT = 15.0
+
+# Marker used in a snapshot for a path with no working-tree content.
+_ABSENT = "-"
+
+# Filesystem entries that are never part of an intent.
+_VCS_ARTEFACT = os.path.join(".git")
+
+
+class GitWitnessError(RuntimeError):
+    """Raised when the witness cannot observe a repository at all.
+
+    This is deliberately not swallowed: an audit that cannot look must say so
+    rather than report "nothing changed" and let a PASS through.
+    """
+
+
+class GitWitness:
+    """Read the real change set of a git working tree."""
+
+    def __init__(self, repo_path: str, timeout: float = DEFAULT_TIMEOUT) -> None:
+        if not isinstance(repo_path, str) or not repo_path:
+            raise ValueError("repo_path must be a non-empty string")
+        if timeout <= 0:
+            raise ValueError("timeout must be positive, got {}".format(timeout))
+        self._git = shutil.which("git")
+        if self._git is None:
+            raise GitWitnessError("git executable not found on PATH")
+        self._timeout = float(timeout)
+        self._root = self._discover_root(repo_path)
+
+    # -- construction helpers -----------------------------------------
+
+    def _discover_root(self, repo_path: str) -> str:
+        if not os.path.isdir(repo_path):
+            raise GitWitnessError("no such directory: {}".format(repo_path))
+        try:
+            top = self._git_out(
+                ["rev-parse", "--show-toplevel"], cwd=repo_path
+            ).strip()
+        except GitWitnessError:
+            raise GitWitnessError(
+                "not a git repository: {}".format(os.path.abspath(repo_path))
+            ) from None
+        if not top:
+            raise GitWitnessError(
+                "not a git repository: {}".format(os.path.abspath(repo_path))
+            )
+        return os.path.abspath(top)
+
+    @staticmethod
+    def is_repository(path: str) -> bool:
+        """True when ``path`` sits inside a git working tree."""
+        if not os.path.isdir(path):
+            return False
+        git = shutil.which("git")
+        if git is None:
+            return False
+        completed = subprocess.run(
+            [git, "rev-parse", "--is-inside-work-tree"],
+            cwd=path,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+    # -- observation --------------------------------------------------
+
+    @property
+    def repo_root(self) -> str:
+        return self._root
+
+    def get_changed_files(self) -> List[str]:
+        """Return every path that differs from HEAD, repo-root relative.
+
+        Includes staged, unstaged, untracked and deleted paths. Ignored paths
+        are excluded because git does not report them. Paths are POSIX-style
+        and sorted, so the result is stable across runs and platforms.
+        """
+        return sorted(self._status_map())
+
+    def has_changes(self) -> bool:
+        return bool(self._status_map())
+
+    def snapshot(self) -> Dict[str, str]:
+        """Fingerprint the current dirty set, for use with ``changed_since``."""
+        fingerprint: Dict[str, str] = {}
+        for path, status in self._status_map().items():
+            fingerprint[path] = self._fingerprint(path, status)
+        return fingerprint
+
+    def changed_since(self, baseline: Dict[str, str]) -> List[str]:
+        """Return paths whose state differs from ``baseline``.
+
+        A path counts as changed when it is new, its git status code changed,
+        or its working-tree content changed. This is what isolates the effect
+        of one command from whatever dirt the workspace already carried.
+        """
+        if not isinstance(baseline, dict):
+            raise TypeError("baseline must be a dict from snapshot()")
+        current = self.snapshot()
+        moved = [
+            path
+            for path, state in current.items()
+            if baseline.get(path) != state
+        ]
+        return sorted(moved)
+
+    def resolve_expected(
+        self, expected: Sequence[str], cwd: str
+    ) -> List[str]:
+        """Map caller paths into repository-root space.
+
+        ``expected`` entries are interpreted relative to ``cwd`` -- the
+        directory the audited command ran in -- because that is the coordinate
+        system the caller was thinking in. The returned paths match what
+        ``get_changed_files`` reports.
+        """
+        if isinstance(expected, (str, bytes)):
+            raise TypeError(
+                "expected must be a sequence of paths, not a single string"
+            )
+        resolved: List[str] = []
+        cwd_abs = os.path.abspath(cwd)
+        for entry in expected:
+            if not isinstance(entry, str) or not entry:
+                raise ValueError("expected paths must be non-empty strings")
+            absolute = (
+                entry if os.path.isabs(entry) else os.path.join(cwd_abs, entry)
+            )
+            absolute = os.path.normpath(absolute)
+            relative = os.path.relpath(absolute, self._root)
+            if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+                raise ValueError(
+                    "expected path is outside the repository: {!r}".format(entry)
+                )
+            resolved.append(relative.replace(os.sep, "/"))
+        return resolved
+
+    # -- internals ----------------------------------------------------
+
+    def _fingerprint(self, path: str, status: str) -> str:
+        absolute = os.path.join(self._root, path.replace("/", os.sep))
+        if not os.path.lexists(absolute):
+            return "{}:{}".format(status, _ABSENT)
+        if os.path.isdir(absolute):
+            return "{}:dir".format(status)
+        digest = hashlib.sha256()
+        try:
+            with open(absolute, "rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+        except OSError as problem:
+            _LOG.warning("could not fingerprint %s: %s", absolute, problem)
+            return "{}:unreadable".format(status)
+        return "{}:{}".format(status, digest.hexdigest())
+
+    def _status_map(self) -> Dict[str, str]:
+        """Parse ``git status --porcelain -z`` into {path: XY code}.
+
+        ``-z`` avoids git's quoting of unusual filenames, and ``--no-renames``
+        keeps every record a single (code, path) pair so a rename does not
+        consume the following record. ``-uall`` forces every untracked file to
+        be listed individually, which matters because a new directory is
+        exactly how target drift usually looks.
+        """
+        raw = self._git_out(
+            [
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--no-renames",
+            ]
+        )
+        entries: Dict[str, str] = {}
+        for record in raw.split("\0"):
+            if not record:
+                continue
+            if len(record) < 4:
+                _LOG.debug("unexpected status record: %r", record)
+                continue
+            code = record[:2]
+            path = record[3:]
+            if path == _VCS_ARTEFACT or path.startswith(_VCS_ARTEFACT + "/"):
+                continue
+            entries[path] = code
+        return entries
+
+    def _git_out(self, args: Sequence[str], cwd: Optional[str] = None) -> str:
+        argv = [self._git, *args]
+        environment = dict(os.environ)
+        # Never block an audit on a credential prompt.
+        environment.setdefault("GIT_TERMINAL_PROMPT", "0")
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=cwd or self._root,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=self._timeout,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired:
+            raise GitWitnessError(
+                "git timed out after {:.1f}s: {}".format(self._timeout, args)
+            ) from None
+        except OSError as problem:
+            raise GitWitnessError("git could not be executed: {}".format(problem))
+        if completed.returncode != 0:
+            raise GitWitnessError(
+                "git {} failed ({}): {}".format(
+                    " ".join(args), completed.returncode, completed.stderr.strip()
+                )
+            )
+        return completed.stdout
+
+    # -- dunder -------------------------------------------------------
+
+    def __repr__(self) -> str:
+        return "GitWitness(repo_root={!r})".format(self._root)
