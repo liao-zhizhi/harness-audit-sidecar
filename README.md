@@ -99,14 +99,15 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.8.6) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.9.0) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
 > response (with cross-process persistence), citation witnesses (DOI/arXiv resolution), the
 > external ecology interface (five laws as pure functions), the semi-permeable membrane
-> (hash-chain ledger + potential-difference authorisation) and a stdio server. The core loop
-> (execute → witness → verdict → record) runs, backed by 445 tests;
+> (hash-chain ledger + potential-difference authorisation), the rule interface (digest-verified
+> external rule packages, mounted through the membrane) and a stdio server. The core loop
+> (execute → witness → verdict → record) runs, backed by 514 tests;
 > but the full MCP handshake, concurrency and forwarding to an external server are missing,
 > and `reported_success` is still supplied by the client (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
@@ -295,6 +296,99 @@ Traces therefore carry `rule_id` / `rules_matched` / `rules_violated`; see
 
 ---
 
+## Rule Interface: a rule package is an interface, not a config file
+
+A YAML file in the working directory is a note to oneself: whoever is present edits it, the
+same process it constrains reads it, and nobody outside can tell whether the copy in force is
+the copy that was reviewed. That is adequate while one operator writes every rule, and it stops
+being adequate the moment a rule is written by someone who will never run the agent.
+
+`audit_sidecar/tools/rule_interface.py` is the distribution layer above the judgment base. A
+package must answer three questions a local file never had to:
+
+| Question | Field | Why it cannot be left implicit |
+|---|---|---|
+| **Who is this?** | `rule_id` (namespaced), `version`, `author` | A name unique only inside one directory cannot be distributed, and a trace has to name the policy that decided rather than the file it lived in |
+| **What does it need?** | `interface_spec.required_witnesses` | A rule that cannot state its evidence requirement can be checked by nobody but its author |
+| **What does breaking it cost?** | `penalty_weight` | A rule whose violation is free is an advertisement, not a gate |
+
+### The seal precedes the reading
+
+Installation verifies the SHA-256 digest of the package's **exact bytes** *before* any YAML is
+parsed. A mismatch raises and the registry is left exactly as it was — a half-installed policy
+is worse than none, because its gaps are invisible.
+
+**There is no unsigned local mode.** A working directory is precisely where a rule file is most
+likely to be edited by hand, and that edit is what the digest exists to make visible. Every
+package needs a digest: supplied out of band, or read from a `<file>.sha256` sidecar.
+
+Loading is strict for the same reason as the judgment base, and stricter in one respect:
+unknown fields, an unsupported witness name, a duplicated `rule_id` across two packages, and a
+package schema the loader does not speak are all refused. A guard you believe is live and that
+is in fact dead is worse than no guard.
+
+```python
+from audit_sidecar.tools.rule_interface import RuleRegistry
+
+registry = RuleRegistry()
+package = registry.pull(URL, expected_digest="sha256:...")   # verified, then parsed
+```
+
+### The package crosses the membrane before its rules may act
+
+`RuleRegistry.mount(gateway)` is not a table registration; it is an admission. Construction
+registers the package digest for `read`, requests an inline warrant over the package's own
+text, redeems it, and appends the mount to the hash-chained ledger as an audited action. Only
+then does any rule in that package decide anything.
+
+Two properties follow, and neither is optional:
+
+- `membrane.py` is **not modified** and does not learn that rules exist — injection uses the
+  public API only, so the policy layer cannot acquire a privileged corner inside the gate it
+  configures;
+- a package that will not cross **does not load**. The interface is subject to the interface,
+  which is the only arrangement in which the gate's own configuration is evidence rather than
+  assertion.
+
+### Enforcement keeps the two layers apart
+
+| Layer | Question | Failure looks like |
+|---|---|---|
+| Rule | Was the evidence an action needs actually collected? | `RULE_INTERFACE_VIOLATION` denial carrying `rule_id`, missing witness names, `penalty_weight` |
+| Membrane | Are the exact bytes offered the bytes someone registered *before* the request arrived? | `NOT_REGISTERED` / `DIGEST_MISMATCH` |
+
+A missing `compiler_exit_code` is a denial even when the shell command exited `0`. Passing
+`witness_payload` asks both questions in one step; leaving it out proves only that the evidence
+*exists*, which is adequate for a dry run and insufficient for a write.
+
+**Denial is not damage.** A request stopped before execution is written as a denial carrying no
+verdict at all, so a defence that works cannot inflame the system it protects.
+
+### Honest limits
+
+- **The digest is a transport seal, not a signature.** In the sense `sha256sum -c` checks one:
+  it detects corruption. If the package and its digest arrive over the same channel, an
+  attacker who can replace the package can usually replace the digest beside it, and `pull()`
+  logs a warning when it is forced to take a digest from a sidecar. Authorship requires a
+  publisher key and a signature scheme over the digest — not implemented.
+- **The witness vocabulary is closed** (`git_diff`, `file`, `agent_report`,
+  `compiler_exit_code`, `test_exit_code`, `lint_exit_code`, `static_analysis_report`,
+  `coverage_report`, `transaction_receipt`, `simulation_receipt`). Adding one is a code change,
+  deliberately: somebody must agree to collect it. A rule demanding evidence no runner can
+  produce would be a guard that always fires, indistinguishable from one that never loads.
+- **`expectation` currently has one supported value** (`file_modified`), and `risk_level` two
+  (`low`, `high`). Both are validated, so a package cannot invent a third and have it silently
+  ignored.
+- **Rules perform no cross-tool reasoning.** Each rule judges independently; there are no "A
+  then B" ordering constraints.
+
+See [`demo_rule_registry.py`](demo_rule_registry.py) for a runnable end-to-end example: an
+external package is pulled against a published digest, mounted, blocks a high-risk call whose
+compiler witness is missing, allows the same call once the full evidence set arrives, and
+refuses a tampered package before it can zero its own penalty.
+
+---
+
 ## Conditional Immune Response
 
 The first two sections address **judging correctly**; this one addresses **being able to
@@ -453,11 +547,18 @@ agent-harness-audit/
 │   ├── mcp_server.py     stdio JSON-RPC server (console script)
 │   ├── self_audit.py     self-audit (mode 4 defence)
 │   ├── cli.py            command-line entry point
+│   ├── tools/
+│   │   ├── membrane.py        semi-permeable gate (hash-chained ledger, warrants)
+│   │   ├── rule_interface.py  rule packages: digest verification, install, mount, enforce
+│   │   ├── ledger.py          hash-chained append-only record
+│   │   ├── eco_api.py         the five ecological laws as pure functions
+│   │   └── citation_audit.py  DOI/arXiv resolution witness
 │   └── rules/
 │       ├── write_file.yaml  risk_level: high (overwrites always take the full path)
 │       └── append_file.yaml risk_level: low (appends take innate immunity)
 ├── pyproject.toml        packaging (runtime needs only PyYAML)
 ├── .gitignore
+├── demo_rule_registry.py runnable rule-interface demo (no network, no sockets)
 ├── examples/
 │   ├── sample_trace.jsonl   real audit trail (agent told ok / ledger records FAIL / inflammation escalates)
 │   └── README.md            sample notes
@@ -466,6 +567,7 @@ agent-harness-audit/
     ├── test_confidence.py
     ├── test_judgment_base.py
     ├── test_rule_engine.py
+    ├── test_rule_interface.py  packages: integrity, schema, mount, enforcement, tampering
     ├── test_immune.py        tiered immunity (tier routing / inflammation / recovery / still inflamed after restart)
     ├── test_runner.py
     ├── test_git_witness.py
@@ -503,7 +605,7 @@ Developing from source:
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 445 tests (must run from the repository root)
+python3 -m unittest discover -s tests -p 'test_*.py'   # 514 tests (must run from the repository root)
 python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
 harness-audit-server --cwd /path/to/project # no --rules needed
@@ -1121,7 +1223,7 @@ landed), self-audit also returns False.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 445 tests ... OK (skipped=7)
+# Ran 514 tests ... OK (skipped=7)
 ```
 
 > **Must be run from the repository root.** The start directory is the relative path `tests`;
@@ -1281,9 +1383,14 @@ Coverage:
 3. **External judgment base** (basic form available):
    - Available: `rules/*.yaml` loading and strict validation, per-tool rule selection, monotonic
      tightening, `rule_id` in the trace, rule-layer self-audit.
+   - Available since v0.9.0: distribution as digest-verified packages — namespaced ids with
+     versions and authors, a declared witness requirement per rule, a `penalty_weight`, install
+     gated on the SHA-256 of the exact bytes, and mounting through the membrane's public API
+     only (`tools/rule_interface.py`).
    - To extend: more `expectation`s (`file_created` / `content_matches` /
      `no_unexpected_changes`), rule inheritance and grouping, path scoping (`target_path` glob),
-     rule versions and effective dates, a remote judgment base with signatures.
+     effective dates, and **an author signature** over the package digest. The digest currently
+     seals the download, not the author: whoever can reach both channels can replace both.
 4. Account persistence and cross-session aggregation; exporting the verdict stream as a
    reviewable audit log.
 

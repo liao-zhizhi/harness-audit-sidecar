@@ -5,6 +5,7 @@
 include LICENSE
 include README.md
 include ERRATA.md
+include demo_rule_registry.py
 recursive-include examples *
 # The default judgment base. It is package data (so it reaches the wheel) and
 # also belongs in the sdist, where a source install must find it.
