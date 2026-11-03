@@ -367,7 +367,7 @@ mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover tests          # 348 项
+python3 -m unittest discover -s tests -p 'test_*.py'   # 348 项（须在仓库根目录运行）
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -937,9 +937,15 @@ always-FAIL engine       : False
 ## 测试
 
 ```bash
-python3 -m unittest discover tests -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 # Ran 348 tests ... OK
 ```
+
+> **必须在仓库根目录运行。** 起始目录写的是相对路径 `tests`；换到其他目录执行时
+> unittest 会静默地只收集到一部分模块（实测从 `/tmp` 运行只跑 31 项并报 9 个 error），
+> 而不是干脆地失败——一个少跑了 317 项却"通过"的测试，比一个红掉的测试更危险。
+> 因此 `-s` 与 `-p` 都显式写出：`-p 'test_*.py'` 排除 `tests/` 下将来可能出现的
+> 辅助模块被误当作测试收集。
 
 覆盖：
 
