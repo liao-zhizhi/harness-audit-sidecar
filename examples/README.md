@@ -1,42 +1,45 @@
-# 示例：同一会话里的审计记录（含一次炎症风暴）
+# Example: audit records from a single session (including one inflammatory storm)
 
-`sample_trace.jsonl` 不是手写的，是用下面这条命令真实跑出来后原样保存的。
-它演示了整个项目的核心主张：**Agent 收到的答复与审计账本可以是相反的，而且两者都对各自的
-读者正确**。
+`sample_trace.jsonl` was not written by hand. It was produced by the command shown below
+and saved verbatim. It demonstrates the project's central claim: **the reply an agent
+receives and the audit ledger may contradict each other, and both are correct for their
+respective readers.**
 
-文件里有两个会话块，字段只增不改：
+The file holds two session blocks; fields are only ever added, never changed:
 
-| 范围 | 生成版本 | 字段 |
+| Range | Version | Fields |
 |:--|:--|:--|
 | id=1..4 | v0.6.1 | `rule_id` / `rules_matched` / `rules_violated` |
-| id=5..7 | v0.7.0 | 以上 + `tier` / `witness_scope` / `witness_mtime` / `immune_state` |
+| id=5..7 | v0.7.0 | the above + `tier` / `witness_scope` / `witness_mtime` / `immune_state` |
 
-前半演示判词，后半演示**条件触发的免疫响应**（见本文末「炎症风暴」一节）。
+The first half demonstrates verdicts; the second demonstrates the **conditional immune
+response** (see the "inflammatory storm" section at the end of this document).
 
-## 协议层看到的东西（Agent 收到的）
+## What the protocol layer saw (what the agent received)
 
 ```
 {"jsonrpc": "2.0", "id": 1, "result": {"status": "ok", "isError": false, ...}}
-{"jsonrpc": "2.0", "id": 2, "result": {"status": "ok", "isError": false, ...}}   <- 伪装
+{"jsonrpc": "2.0", "id": 2, "result": {"status": "ok", "isError": false, ...}}   <- disguised
 {"jsonrpc": "2.0", "id": 3, "result": {"status": "error", "isError": true, ...}}
-{"jsonrpc": "2.0", "id": 4, "result": {"status": "ok", "isError": false, ...}}   <- 伪装
+{"jsonrpc": "2.0", "id": 4, "result": {"status": "ok", "isError": false, ...}}   <- disguised
 ```
 
-## 审计账本看到的东西（`audit_trace.jsonl`）
+## What the audit ledger saw (`audit_trace.jsonl`)
 
-| id | 调用 | 字段含义 | 判词 | 说明 |
+| id | Call | What the fields mean | Verdict | Note |
 |--:|:--|:--|:--|:--|
-| 1 | `write_file target.py` | ✅ 成功 / ✅ 已写入 | **PASS** | 诚实调用，规则满足 |
-| 2 | `write_file missing_dir/target.py` | ✅ 成功 / ❌ 无变化 | **FAIL** | 工具层吞掉路径错误，违反 `no_file_drift` |
-| 3 | `write_file target.py` | ❌ 失败 / ✅ 已写入 | **FAIL** | 假失败：写成了却报错 |
-| 4 | `run_command`（期望改 `target.py`） | ✅ 成功 / ❌ 改的是 `wrong.py` | **FAIL** | 目标漂移 |
+| 1 | `write_file target.py` | ✅ success / ✅ written | **PASS** | Honest call, rule satisfied |
+| 2 | `write_file missing_dir/target.py` | ✅ success / ❌ no change | **FAIL** | Tool layer swallowed a path error, violating `no_file_drift` |
+| 3 | `write_file target.py` | ❌ failure / ✅ written | **FAIL** | False failure: it was written but reported as failed |
+| 4 | `run_command` (expected to modify `target.py`) | ✅ success / ❌ modified `wrong.py` | **FAIL** | Target drift |
 
-**四条调用里有三条 FAIL，而 Agent 只被明确告知一次失败（id=3）。**
-另外两次，Agent 收到的是 `ok`。
+**Three of the four calls are FAIL, yet the agent was explicitly told about a failure only
+once (id=3).** For the other two it received `ok`.
 
-## 新增字段：`rule_id`
+## The added field: `rule_id`
 
-这份样例是用判据库（`rules/`）跑出来的，所以每条记录多了三个字段：
+This sample was produced with the judgment base (`rules/`), so every record carries three
+extra fields:
 
 ```json
 {
@@ -46,24 +49,26 @@
 }
 ```
 
-读法很重要：
+How to read them matters:
 
-| 情况 | `rule_id` | 含义 |
+| Case | `rule_id` | Meaning |
 |:--|:--|:--|
-| **PASS**（id=1） | `null` | 判词由四值格决定，没有被规则改写；`rules_matched` 说明这条规则**被检查过并且通过** |
-| **FAIL，有规则**（id=2） | `"no_file_drift"` | 规则亲手判的，`reason` 里带出 `rule 'no_file_drift' violated` |
-| **FAIL，无规则**（id=4） | `null` | 该工具没有规则，回退到四值格 |
-| **INVALID，有规则** | `"<rule_id>"` | 规则要求的见证没采集到 |
+| **PASS** (id=1) | `null` | The verdict came from the four-valued grid and was not rewritten by a rule; `rules_matched` shows the rule **was checked and passed** |
+| **FAIL, with a rule** (id=2) | `"no_file_drift"` | The rule itself decided it; `reason` carries `rule 'no_file_drift' violated` |
+| **FAIL, no rule** (id=4) | `null` | No rule for that tool, so the grid decided |
+| **INVALID, with a rule** | `"<rule_id>"` | The witness the rule required was never collected |
 
-`null` 不等于"没检查"。`rules_matched` 非空就说明规则加载了、匹配了、并且放行了——
-一个 PASS 加上 `"rule_id": null` 和 `"rules_matched": ["no_file_drift"]` 是
-"这条规则读过、它没意见"，不是"没有规则"。
+`null` does not mean "not checked". A non-empty `rules_matched` means the rule was loaded,
+matched, and let the call through: a PASS with `"rule_id": null` and
+`"rules_matched": ["no_file_drift"]` means "this rule read it and had no objection", not
+"there was no rule".
 
-**为什么非要记 `rule_id`：** 判词只告诉你结果，不告诉你**谁**判的。
-同一个 `INVALID`，可能是"见证根本没采集"，也可能是"策略要求了另一种见证"——
-这两种情况的处置方式完全不同，少了 `rule_id` 就分不开。策略会变，trace 不能跟着变糊涂。
+**Why `rule_id` has to be recorded:** a verdict tells you the outcome, not **who** decided
+it. The same `INVALID` may mean "no witness was collected at all" or "policy demanded a
+different kind of witness" — two situations handled quite differently, and without
+`rule_id` they cannot be told apart. Policy changes; the trace must not blur with it.
 
-## 重点看 id=2
+## Look at id=2 in particular
 
 ```json
 {
@@ -82,37 +87,42 @@
 }
 ```
 
-三个字段值得对照着看：
+Three fields are worth reading together:
 
-- `check_observed: true` —— 工具层对 Agent 说的话。
-- `effect_observed: false` —— git 与文件系统看到的实情。
-- `exit_code: 1` —— 命令自己的退出码。工具层看到了 1，然后换成了 `ok`。
+- `check_observed: true` — what the tool layer told the agent.
+- `effect_observed: false` — what git and the filesystem actually saw.
+- `exit_code: 1` — the command's own exit status. The tool layer saw 1 and replaced it with `ok`.
 
-`reason` 里那句 `[tool layer reported success, underlying command exited 1]`
-同时留下了**两套观测**。如果 `check` 当初是从 `exit_code` 推导出来的，
-这条记录会变成 `check: false`，判词变成"意图未实现"——**判词凑巧一样，但被告换了人**：
-本该怀疑工具层，结果怀疑了 Agent。
+The clause `[tool layer reported success, underlying command exited 1]` in `reason` keeps
+**both observations** on file. Had `check` been derived from `exit_code`, this record would
+say `check: false` and the verdict would read "intent not realised" — **the same verdict by
+coincidence, but the defendant would have changed**: the tool layer should have been
+suspected, and instead the agent would have been.
 
-## 炎症风暴：id=5..7
+## The inflammatory storm: id=5..7
 
-id=5..7 是 v0.7.0 追加的第二个会话块，演示**同一策略在不同免疫状态下付不同代价**：
+id=5..7 is a second session block added in v0.7.0, demonstrating that **the same policy
+costs different amounts under different immune states**:
 
-| id | 调用 | `tier` | `witness_scope` | `immune_state` | 判词 |
+| id | Call | `tier` | `witness_scope` | `immune_state` | Verdict |
 |--:|:--|:--|:--|:--|:--|
-| 5 | `write_file missing_dir/target.py` | tier2（规则声明 `high`） | `full` | `NORMAL` | **FAIL** |
-| 6 | `append_file no_such_dir/log.txt` | tier1（规则声明 `low`） | `stat` | **`INFLAMED`** | **FAIL** |
-| 7 | `append_file log.txt` | **tier2**（同一条 `low` 规则） | `full` | `INFLAMED` | **PASS** |
+| 5 | `write_file missing_dir/target.py` | tier2 (rule declares `high`) | `full` | `NORMAL` | **FAIL** |
+| 6 | `append_file no_such_dir/log.txt` | tier1 (rule declares `low`) | `stat` | **`INFLAMED`** | **FAIL** |
+| 7 | `append_file log.txt` | **tier2** (same `low` rule) | `full` | `INFLAMED` | **PASS** |
 
-三件事值得对照：
+Three things are worth comparing:
 
-1. **id=5 是第一次失败**：危险计数 1，未达阈值，`immune_state` 仍是 `NORMAL`——
-   这里记的是**本条判词之后**的状态，"还没发炎"本身就是信息。
-2. **id=6 是第二次失败**：连续两次 `FAIL`，状态在**这条记录之后**变成 `INFLAMED`。
-   注意它自己仍是 `tier1`——**判词不改变产生它的那次调用的代价**，只改变下一次。
-3. **id=7 是同一条 `low` 规则**，本该走 tier1，却因为系统已发炎被提到 tier2，
-   `changed_files` 里有真实的 git 变更集。**发炎把便宜的路由关掉了。**
+1. **id=5 is the first failure**: danger count 1, below the threshold, `immune_state` still
+   `NORMAL` — the state recorded here is the one **after this verdict**, and "not inflamed
+   yet" is itself information.
+2. **id=6 is the second failure**: two consecutive `FAIL`s, so the state becomes `INFLAMED`
+   **after this record**. Note that it is itself still `tier1` — **a verdict does not change
+   the cost of the call that produced it, only of the next one.**
+3. **id=7 is the same `low` rule**, which should have taken tier1, but is promoted to tier2
+   because the system is already inflamed, and `changed_files` carries a real git change
+   set. **Inflammation closes the cheap route.**
 
-`reason` 里也能直接读出来：
+This is readable straight out of `reason`:
 
 ```
 id=6: ... (expected but untouched: no_such_dir/log.txt)
@@ -121,62 +131,64 @@ id=6: ... (expected but untouched: no_such_dir/log.txt)
 id=7: witness matches intent, report agrees (rules satisfied: append_landed)
 ```
 
-**为什么 tier1 的判词要自带这句话：** 一个建立在 mtime 上的 `PASS`，和一个建立在
-git 变更集上的 `PASS`，是两种强度的断言。trace 如果不写出用的是哪一种，
-就等于把每一次廉价的绿灯都说成全量校验——那才是真正的造假。
+**Why a tier1 verdict must carry that clause:** a `PASS` resting on mtime and a `PASS`
+resting on a git change set are assertions of different strength. A trace that does not say
+which one was used turns every cheap green light into a claim of full verification — that
+would be the real fabrication.
 
-`witness_mtime` 只在 tier1 有值（那是它的证据本身）；tier2 记录里是 `null`，
-因为那一路的证据是变更集，不是时间戳。
+`witness_mtime` has a value only in tier1 (it is that tier's evidence); in tier2 records it
+is `null`, because the evidence there is a change set, not a timestamp.
 
-## 炎症跨进程存活
+## Inflammation survives the process
 
-这四条记录是在**一个**进程里跑出来的。真实场景里更危险的是另一种：Agent 想办法让 sidecar
-崩掉，重启之后账本归零。所以状态会落盘到 trace 旁边的 `.immune_state.json`：
+These four records were produced in **one** process. The more dangerous case in practice is
+the other one: the agent finds a way to crash the sidecar, and after a restart the ledger is
+back to zero. So the state is persisted to `.immune_state.json` next to the trace:
 
 ```bash
-# 第一个进程：两次假完成 -> 落盘 INFLAMED
+# first process: two false completions -> INFLAMED persisted
 cat "$D/.immune_state.json"
 # {"danger_count": 2, "recovery_progress": 0, "state": "INFLAMED", "version": 1, ...}
 
-# 杀掉它，重启一个同样的命令：下一次低风险追加仍走 tier2
+# kill it, restart the same command: the next low-risk append still goes to tier2
 ```
 
-`tests/test_immune.py::CrashRestartTest` 就是这么验证的：真起两个子进程，第二个从磁盘
-读回第一个的炎症。想亲手看一遍"旧的失忆"是什么样子，加 `--immune-state none`——
-重启后那条低风险调用会重新变回 tier1。
+`tests/test_immune.py::CrashRestartTest` verifies exactly this: two real subprocesses, the
+second reading the first one's inflammation back from disk. To see the old amnesia for
+yourself, add `--immune-state none` — after a restart that low-risk call is tier1 again.
 
+## Why nothing is redacted
 
-## 为什么不脱敏
-
-这个文件里**没有任何绝对路径**（可用下面的命令复核，结果为 0）：
+This file contains **no absolute paths** (verify with the command below, which prints 0):
 
 ```bash
 grep -cE '/tmp/|/home/' examples/sample_trace.jsonl
 ```
 
-这不是运气，是字段设计所致：
+That is not luck; it follows from how the fields are defined:
 
-| 字段 | 路径形态 |
+| Field | Path form |
 |:--|:--|
-| `changed_files` | 仓库根相对（`git status` 的坐标系） |
-| `missing_expected` | 仓库根相对（经 `resolve_expected` 映射） |
-| `unexpected_changes` | 仓库根相对 |
-| `intent` | 回显客户端给的 `args.path` **原文** |
+| `changed_files` | repository-root relative (`git status` coordinates) |
+| `missing_expected` | repository-root relative (mapped by `resolve_expected`) |
+| `unexpected_changes` | repository-root relative |
+| `intent` | echoes the client's `args.path` **verbatim** |
 
-`rule_id` / `rules_matched` / `rules_violated` 记录的是规则名，与机器无关，不含路径。
-`tier` / `witness_scope` / `immune_state` 是枚举值，`witness_mtime` 是浮点时间戳，
-同样不含路径。
+`rule_id` / `rules_matched` / `rules_violated` record rule names, which are independent of
+the machine and contain no paths. `tier` / `witness_scope` / `immune_state` are enum values
+and `witness_mtime` is a float timestamp; none of them contains a path.
 
-**唯一的例外是 `intent`**：它原样回显调用参数。上面这份样例的客户端传的是相对路径
-（`target.py`），所以整份文件干净。若你的客户端传绝对路径，`intent` 里就会出现本机路径
-（形如 `<TEMP_DIR>/target.py`）——这不是脱敏遗漏，而是"记录被审计的声明"所必付的代价。
-分享 trace 前请用上面那条 `grep` 自查。
+**The one exception is `intent`**: it echoes the call arguments as given. The client in this
+sample passed relative paths (`target.py`), so the whole file is clean. If your client passes
+absolute paths, `intent` will contain local paths (of the form `<TEMP_DIR>/target.py`) —
+that is not a redaction oversight but the price of recording the statement under audit.
+Before sharing a trace, check it with the `grep` above.
 
-> 这条边界已记入 `README.md` 的「已知边界」。
+> This boundary is recorded in the "Known boundaries" section of `README.md`.
 
-## 如何重新生成
+## How to regenerate it
 
-在任意临时 git 仓库里跑（`--cwd` 指向该仓库）：
+Run inside any temporary git repository (pointing `--cwd` at it):
 
 ```bash
 D=$(mktemp -d) && cd "$D"
@@ -193,16 +205,19 @@ printf '%s\n' \
 cat "$D/audit_trace.jsonl"
 ```
 
-去掉 `--rules none` 就是纯四值格版本，记录里不会有 `rule_id` 三个字段——两种 trace 都合法，
-区别在于这一份能回答"这条判词是谁下的"。默认情况下 `harness-audit-server` 会自动加载
-包内的 `audit_sidecar/rules/`（`pip install` 之后同样存在），所以复现不需要任何路径参数。
+Dropping `--rules none` yields the pure four-valued grid version, whose records carry none
+of the three `rule_id` fields — both traces are legitimate; the difference is whether this
+one can answer "who issued this verdict". By default `harness-audit-server` loads the
+bundled `audit_sidecar/rules/` automatically (still present after `pip install`), so
+reproducing this needs no path arguments.
 
-id=3 那条要靠 `reported_success:false` 构造，因为真实工具层不会主动谎报失败——
-这一条是为了覆盖判词的另一侧（假失败），不是真实故障的复现。
+The id=3 record has to be constructed with `reported_success:false`, because a real tool
+layer does not lie about failure on its own — it covers the other side of the verdict
+(false failure), not a reproduction of a real fault.
 
-### 追加的炎症块（id=5..7）
+### The appended inflammation block (id=5..7)
 
-同一个仓库里继续跑三条，第三条就是处于 `INFLAMED` 状态的那次调用：
+Run three more calls in the same repository; the third is the one taken while `INFLAMED`:
 
 ```bash
 printf 'session\n' > log.txt && git add -A && git -c user.name=T -c user.email=t@e commit -qm log
@@ -216,11 +231,13 @@ printf '%s\n' \
 tail -3 "$D/audit_trace.jsonl"
 ```
 
-id=5 与 id=6 两次 `FAIL` 把状态推到 `INFLAMED`，所以 id=7 虽然是 `risk_level: low`
-的追加，也拿到了 git 变更集（`witness_scope: "full"`）。三条记录缺一不可：
-**没有前两条失败，第三条的发炎就没有来源。**
+The two `FAIL`s at id=5 and id=6 push the state to `INFLAMED`, so id=7, although an append
+with `risk_level: low`, also receives a git change set (`witness_scope: "full"`). All three
+records are needed: **without the first two failures, the third has no inflammation to
+inherit.**
 
-## 文件格式
+## File format
 
-一行一条记录，字段按字母序（`json.dumps(..., sort_keys=True)`），无缩进。
-这样追加写入时单次 `write` 不会撕裂记录，`tail -f` 和日志采集器都能安全并行读取。
+One record per line, fields in alphabetical order (`json.dumps(..., sort_keys=True)`), no
+indentation. A single `write` therefore cannot tear a record on append, and `tail -f` and log
+collectors can read it safely in parallel.

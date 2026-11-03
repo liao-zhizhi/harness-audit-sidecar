@@ -1,134 +1,156 @@
 # agent-harness-audit
 
-**Agent 执行层审计工具**
+**An audit tool for the agent execution layer**
 
-## Bio-Inspired Architecture（仿生架构）
+## Bio-Inspired Architecture
 
-本系统采用"内外双修"的分层：**内部按八律运行，外部按五律被接入**。两套定律不共享
-状态，只共享判词词汇——这是刻意的，因为一个读自己被审计对象账本的制动器，可以被
-同一个缺陷同时污染。
+The system is layered on two fronts: **eight laws govern the inside, five laws govern how
+the outside may attach.** The two sets share no state, only verdict vocabulary — deliberately,
+because a brake that reads the ledger of the system it audits can be poisoned by the same
+defect twice.
 
-**外部接口：五律（`audit_sidecar/tools/eco_api.py`）**
+**External interface: the five laws (`audit_sidecar/tools/eco_api.py`)**
 
-| 律 | 生态学原型 | 本系统中的可调用形式 |
+| Law | Ecological prototype | Callable form in this system |
 |---|---|---|
-| 1 | 能量梯度 | `get_energy_gradient()` —— 每调用 Token / 时间成本及其斜率 |
-| 2 | 边缘到主流演替 | `get_evolution_history()` —— 判词时序，及每个工具是否"毕业" |
-| 3 | 废物资源化 | `get_recyclable_waste()` —— `ERRATA.md` 中有多少失败被提炼为常驻规则 |
-| 4 | 关键种 | `get_evolution_history()["keystone"]` —— 移除后损失最多证据的工具 |
-| 5 | 承载力 | `get_energy_gradient(..., capacity=)` 的 `headroom` —— 距拒绝服务还剩多少余量 |
+| 1 | Energy gradient | `get_energy_gradient()` — per-call token / time cost and its slope |
+| 2 | Succession from margin to mainstream | `get_evolution_history()` — verdict time series, and whether each tool has "graduated" |
+| 3 | Waste as resource | `get_recyclable_waste()` — how many failures in `ERRATA.md` became standing rules |
+| 4 | Keystone species | `get_evolution_history()["keystone"]` — the tool whose removal loses the most evidence |
+| 5 | Carrying capacity | `headroom` from `get_energy_gradient(..., capacity=)` — how much slack remains before refusal |
 
-律 1–3 是接口需求中明确指定的三条；律 4、5 是本实现的补充提案，在 `LAWS` 中以
-`"specified": False` 标注，不冒充需求。需求以「等」字收尾，并未定义第四、第五条。
+Laws 1–3 are the three explicitly named in the interface requirement; laws 4 and 5 are
+proposals added by this implementation and are marked `"specified": False` in `LAWS`, so they
+are not passed off as requirements. The requirement ends with "etc." and never defines a
+fourth or fifth law.
 
-**一个刻意的拒绝**：trace 缺少 Token / 耗时字段时，`get_energy_gradient` 返回
-`INVALID`，不返回 `0`。现有 trace schema 记录判词，不记录取得判词的代价；"零成本"
-会被读成一次测量，而它其实是"未测量"。
+**One deliberate refusal**: when a trace lacks token / duration fields,
+`get_energy_gradient` returns `INVALID`, not `0`. The existing trace schema records verdicts,
+not what a verdict cost to obtain; "zero cost" would be read as a measurement, when it is in
+fact an *absence* of measurement.
 
-### 半透膜接口：势差、单向锁定、违约代价
+### The semi-permeable interface: potential difference, one-way locking, breach cost
 
-上一节的三个函数是**被动读取**——它们描述环境，却不改变谁能做什么。真正的接口要有
-势差：跨膜必须先付代价，而且**验收标准不能由请求方自己定**。
+The three functions above are **passive reads** — they describe the environment but do not
+change who may do what. A real interface needs a potential difference: crossing the membrane
+must be paid for first, and **the acceptance criterion must not be set by the requester**.
 
-`audit_sidecar/tools/membrane.py` 的 `MembraneGateway` 是唯一入口：
+`MembraneGateway` in `audit_sidecar/tools/membrane.py` is the only entry point:
 
 ```python
-gw = MembraneGateway("audit.jsonl")            # 自动带头锚点 + fsync
-gw.register_artefact("write", "out/spec.yaml") # 先登记期望（膜外进行）
+gw = MembraneGateway("audit.jsonl")            # automatic head anchor + fsync
+gw.register_artefact("write", "out/spec.yaml") # register the expectation first (outside the membrane)
 w = gw.request_action_warrant(
     {"kind": "file", "path": "out/spec.yaml", "digest": "sha256:..."}, "write")
-gw.redeem(w)                                    # 一次性
+gw.redeem(w)                                    # single use
 ```
 
-| 性质 | 实现方式 | 边界 |
+| Property | How it is implemented | Boundary |
 |---|---|---|
-| **势差** | 摘要由膜**重新计算**，且必须命中**请求到达前**的登记 | 未登记 → `NOT_REGISTERED`。若 Agent 能自定验收标准，势差为零 |
-| **单向锁定** | 每条 grant/denial/registration/redeem 都是哈希链上的一环；Warrant 绑定签发位置的 `seq + chain_head` | 回滚日志 → 未兑现的 Warrant 立即失效 |
-| **违约代价** | 拒绝**先写账本再抛** `MembraneRejectError`（含稳定 `reason` 码） | 不记录拒绝，等于把"拒绝"伪装成"没发生" |
-| **统一入口** | `ImmuneState` 只以标量字典（`brake()`）离开；五律由本网关计算 | 这是**接口边界，不是沙箱**——同进程代码仍可 `import` 底层对象 |
+| **Potential difference** | The digest is **recomputed** by the membrane and must match a registration made **before the request arrived** | Unregistered → `NOT_REGISTERED`. If the agent can set its own acceptance criterion, the potential difference is zero |
+| **One-way locking** | Every grant/denial/registration/redeem is a link in a hash chain; a Warrant is bound to the `seq + chain_head` at issuance | Rolling the log back → unredeemed Warrants become invalid immediately |
+| **Breach cost** | A refusal **writes the ledger first, then raises** `MembraneRejectError` (with a stable `reason` code) | Not recording a refusal disguises it as "never happened" |
+| **Single entry point** | `ImmuneState` leaves only as a scalar dict (`brake()`); the five laws are computed by this gateway | This is an **interface boundary, not a sandbox** — code in the same process can still `import` the underlying objects |
 
-拒绝码：`NO_WITNESS` / `MALFORMED_WITNESS` / `ARTEFACT_MISSING` / `DIGEST_MISMATCH` /
+Refusal codes: `NO_WITNESS` / `MALFORMED_WITNESS` / `ARTEFACT_MISSING` / `DIGEST_MISMATCH` /
 `NOT_REGISTERED` / `UNKNOWN_CAPABILITY` / `BRAKE_TRIPPED` / `WARRANT_ROLLED_BACK` /
-`WARRANT_EXHAUSTED` / `LEDGER_BROKEN`。
+`WARRANT_EXHAUSTED` / `LEDGER_BROKEN`.
 
-**关于"删掉最后一行"这个漏洞——必须说清楚。** 纯哈希链**挡不住**它：删掉末尾后，
-剩下的前缀仍然是自洽的链，`verify_chain()` 会返回 `PASS`。链证明的是"记录未被改写"，
-不是"记录未被移除"。要防移除，需要**头锚点**（`seal()` 把 `{seq, head_hash}` 写到
-独立路径），而锚点又必须存放在攻击者**写不到**的地方（提交、另一台主机、只读介质）——
-否则改账本再改锚点，两者依旧自洽。这是本地纯文件方案的硬边界，本仓库不宣称能越过它。
-详见 [ERRATA.md](ERRATA.md) 第 7 条。
+**On the "delete the last line" hole — this must be stated plainly.** A pure hash chain
+**cannot** stop it: remove the tail and the remaining prefix is still a self-consistent chain,
+so `verify_chain()` returns `PASS`. The chain proves "the record was not rewritten", not "the
+record was not removed". Preventing removal requires a **head anchor** (`seal()` writes
+`{seq, head_hash}` to a separate path), and the anchor must live somewhere the attacker
+**cannot write** (a commit, another host, read-only media) — otherwise rewriting ledger and
+anchor together leaves both self-consistent. This is a hard boundary of a local, file-only
+scheme, and this repository does not claim to cross it. See item 7 of [ERRATA.md](ERRATA.md).
 
-**内部：八律（L1–L7 + 罚金账本）**由运行时自身执行。其中 L1–L4、L6、L7 在
-`agent-metabolism-os` 中，而 **L5 别构制动由本仓库承载**——触发它所需的矛盾证据
-来自审计方，而不是调度方。本仓库通过 `ImmuneState` 把 L5 暴露给代谢网关：
-`MetabolicGateway(immune_state=...).get_current_laws_status()["L5_Brake"]`。这一层
-故意不从本仓库导入到代谢侧，只按协议鸭子类型对接，保持两侧可独立安装。
+**Internal: the eight laws (L1–L7 + penalty ledger)** are enforced by the runtime itself.
+L1–L4, L6 and L7 live in `agent-metabolism-os`, while **L5 allosteric braking is carried by
+this repository** — the contradictory evidence needed to trigger it comes from the auditing
+side, not the scheduling side. This repository exposes L5 to the metabolic gateway through
+`ImmuneState`:
+`MetabolicGateway(immune_state=...).get_current_laws_status()["L5_Brake"]`. This layer
+deliberately does not import from this repository into the metabolic side; it attaches by
+protocol duck typing, keeping both sides independently installable.
 
-**膜同时执行 L3 的写闸门。** 只算不拦的政策等于装饰：`evaluate_regime` 在电量
-10% + 罚金 `CRITICAL` 时会算出 `EMERGENCY`，但过去没有任何一处在写入时拒绝。
-现在膜接受 `penalty_ledger=`，罚金 `CRITICAL` 时直接以 `PENALTY_CRITICAL` 关闭
-`write` / `execute`，与炎症制动彼此独立、各自报告：
+**The membrane also enforces L3's write gate.** A policy that only computes but never blocks
+is decoration: `evaluate_regime` would compute `EMERGENCY` at 10% energy with a `CRITICAL`
+penalty, yet nothing previously refused the write. The membrane now accepts `penalty_ledger=`
+and, at `CRITICAL`, closes `write` / `execute` with `PENALTY_CRITICAL`, independently of the
+inflammatory brake and reported separately:
 
 ```python
 gateway = MembraneGateway(ledger, immune_state=immune, penalty_ledger=penalty)
 gateway.request_action_warrant(witness, "write")   # MembraneRejectError: PENALTY_CRITICAL
 ```
 
-两者故意分开，因为它们问不同的问题、寿命也不同：炎症会在若干次通过后自愈，
-罚金不会。相应地，`PenaltyLedger` 的状态属性叫 `penalty_state` 而不是 `state`——
-两个词汇表（`HEALTHY/WARNING/CRITICAL` 与 `NORMAL/INFLAMED`）不该共用一个词，
-把其中一个接到另一个的槽位上现在会直接抛 `TypeError`，而不是安静地返回"一切正常"。
+The two are deliberately separate because they ask different questions and have different
+lifetimes: inflammation heals after a few passes, a penalty does not. Accordingly the
+`PenaltyLedger` state attribute is named `penalty_state`, not `state` — two vocabularies
+(`HEALTHY/WARNING/CRITICAL` and `NORMAL/INFLAMED`) should not share one word, and wiring one
+into the other's slot now raises `TypeError` instead of quietly returning "all fine".
 
-**被拦截 ≠ 失败。** 在执行前被挡下的请求记为 `record_type="deny"`（`outcome="DENIED"`，
-不带任何判词），不进入损伤计数；执行后没拿到授权的仍然记 `FAIL`。把两者都记成
-`FAIL`，会让系统被自己的成功防御激成炎症——两次攻击就发炎，比任何真实假完成都早。
-
+**Blocked is not the same as failed.** A request stopped before execution is recorded as
+`record_type="deny"` (`outcome="DENIED"`, carrying no verdict) and does not enter the damage
+count; one that executed without authorisation is still recorded as `FAIL`. Recording both as
+`FAIL` would inflame the system through its own successful defence — two attacks and it
+flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **项目状态：MVP / 早期版本（v0.8.5）—— 接口可能变化，暂不建议用于生产环境。**
+> **Project status: MVP / early version (v0.8.6) — interfaces may change; not recommended for production yet.**
 >
-> 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
-> 分级免疫响应（含跨进程持久化）、引用见证（DOI/arXiv 物理解析）、外部生态接口
-> （五律纯函数）、半透膜接口（哈希链账本 + 势差鉴权）与 stdio 服务端，核心闭环
-> （执行 → 见证 → 判词 → 留痕）已跑通并有 445 项测试；
-> 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
-> 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
+> Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
+> three witness sources, the external judgment base, condition-triggered tiered immune
+> response (with cross-process persistence), citation witnesses (DOI/arXiv resolution), the
+> external ecology interface (five laws as pure functions), the semi-permeable membrane
+> (hash-chain ledger + potential-difference authorisation) and a stdio server. The core loop
+> (execute → witness → verdict → record) runs, backed by 445 tests;
+> but the full MCP handshake, concurrency and forwarding to an external server are missing,
+> and `reported_success` is still supplied by the client (see "Known boundaries").
+> **Trial use and feedback are welcome; do not wire it into critical paths yet.**
 >
-> **先看这一份**：[`examples/sample_trace.jsonl`](examples/sample_trace.jsonl)
-> —— 一次真实会话里，Agent 收到 `ok` 而账本记 `FAIL` 的现场记录。
+> **Read this first**: [`examples/sample_trace.jsonl`](examples/sample_trace.jsonl)
+> — a real session in which the agent received `ok` while the ledger recorded `FAIL`.
 
-本仓库是论文 *From Formal Verification to Agents: A Method-Transfer Audit of
-"False Completion" in AI Agent Harnesses* 的工程实现。论文的论点不是"再写一个
-agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行层：**一次动作是否完成，
-不能由 agent 自己的报告决定，只能由独立见证（witness）决定**。
+This repository is the engineering implementation of the paper *From Formal Verification to
+Agents: A Method-Transfer Audit of "False Completion" in AI Agent Harnesses*. The paper's
+thesis is not "write another agent framework" but to transfer the notion of a *verdict* from
+formal verification into the agent execution layer: **whether an action completed cannot be
+decided by the agent's own report; it can only be decided by an independent witness.**
 
-> **已实现：** 四值判词引擎、信任能荷账户、自审计回路，**三种见证源**
-> （文件系统 / Git 变更集 / MCP 协议层声明）、**外置判据库（`rules/*.yaml`）**、
-> **条件触发的分级免疫响应**（先天 stat / 适应性全量，含炎症风暴与恢复），
-> 以及**可 `pip install` 的 stdio 服务端**（`harness-audit-server`）。
-> **未实现：** 完整 MCP 握手（`initialize` / `tools/list`）、从协议帧取声明、
-> 更多见证源（进程退出码族 / 网络副作用）、跨进程持久化炎症状态。
-> 详见「已知边界」与「路线图」。
+> **Implemented:** the four-valued verdict engine, the trust-energy account, the self-audit
+> loop, **three witness sources** (filesystem / git change set / MCP protocol-layer claim),
+> the **external judgment base (`rules/*.yaml`)**, the **condition-triggered tiered immune
+> response** (innate stat, adaptive full, including inflammatory storm and recovery),
+> and a **`pip install`-able stdio server** (`harness-audit-server`).
+> **Not implemented:** the full MCP handshake (`initialize` / `tools/list`), claims taken from
+> protocol frames, more witness sources (process exit-code family / network side effects), and
+> cross-process persistence of inflammatory state.
+> See "Known boundaries" and "Roadmap".
 
-审计逻辑本身只用 Python 标准库；**唯一的第三方依赖是 PyYAML**，用来把
-*策略*从代码里搬出去（见 [外置判据库](#dynamic-judgment-base-外置判据库)）。
+The audit logic itself uses only the Python standard library; **the only third-party
+dependency is PyYAML**, used to move *policy* out of the code (see
+[External judgment base](#dynamic-judgment-base)).
 
 ---
 
-## 示例：一次会话里的四条记录
+## Example: four records from one session
 
-[`examples/sample_trace.jsonl`](examples/sample_trace.jsonl) 是真实跑出来的一份审计留痕
-（非手写）。同一次会话里，Agent 收到的协议层答复与账本记录如下：
+[`examples/sample_trace.jsonl`](examples/sample_trace.jsonl) is a genuine audit trail
+(not hand-written). In one session, the protocol-layer replies the agent received and the
+ledger records were:
 
-| id | 调用 | agent 声明 | 真实效果 | 判词 |
+| id | Call | Agent's claim | Actual effect | Verdict |
 |--:|:--|:--|:--|:--|
-| 1 | `write_file target.py` | 成功 | 已写入 | **PASS** |
-| 2 | `write_file missing_dir/target.py` | 成功 | 无变化 | **FAIL**（工具层吞错） |
-| 3 | `write_file target.py` | 失败 | 已写入 | **FAIL**（假失败） |
-| 4 | `run_command`（期望改 `target.py`） | 成功 | 改的是 `wrong.py` | **FAIL**（目标漂移） |
+| 1 | `write_file target.py` | success | written | **PASS** |
+| 2 | `write_file missing_dir/target.py` | success | no change | **FAIL** (tool layer swallowed the error) |
+| 3 | `write_file target.py` | failure | written | **FAIL** (false failure) |
+| 4 | `run_command` (expected to modify `target.py`) | success | modified `wrong.py` | **FAIL** (target drift) |
 
-四条里三条 FAIL，而 Agent 只被明确告知一次失败。id=2 的账本记录：
+Three of the four are FAIL, while the agent was explicitly told about a failure only once.
+The ledger record for id=2:
 
 ```json
 {"id":2,"tool":"write_file",
@@ -138,42 +160,47 @@ agent 框架"，而是把形式验证里"判词"的概念移植到 agent 执行�
            [tool layer reported success, underlying command exited 1]"}
 ```
 
-`check_observed: true` 是工具层对 Agent 说的话，`effect_observed: false` 是 git 看到的实情，
-`exit_code: 1` 是命令自己的状态。**三套观测同时留档**，才不会在事后搞错该怀疑谁。
+`check_observed: true` is what the tool layer told the agent, `effect_observed: false` is what
+git saw, and `exit_code: 1` is the command's own status. **All three observations are kept**,
+so it is not possible afterwards to mistake whom to suspect.
 
-完整解读、脱敏说明与复现命令见 [`examples/README.md`](examples/README.md)。
+For the full reading, redaction notes and reproduction commands see
+[`examples/README.md`](examples/README.md).
 
-文件末尾还有第二个会话块（id=5..7），演示发炎后同一工具的代价升级，
-见[条件触发的免疫响应](#conditional-immune-response-条件触发的免疫响应)。
+The file also holds a second session block (id=5..7) demonstrating the rising cost of the same
+tool after inflammation; see
+[Conditional Immune Response](#conditional-immune-response).
 
 ---
 
-## 为什么需要它
+## Why this is needed
 
-一个 agent 说"已完成"，背后有三种完全不同的世界：
+Behind an agent saying "done" there are three quite different worlds:
 
-| 世界 | agent 报告 | 磁盘真相 | 布尔判词会怎么说 |
+| World | Agent reports | Disk truth | What a boolean verdict says |
 |:--|:--|:--|:--|
-| 真完成 | 成功 | 落地 | 完成 ✓ |
-| **假完成** | 成功 | **没落地** | 完成 ✓ ← **撒谎** |
-| 未采集 | 成功 | **不知道** | 完成 ✓ ← **假装知道** |
+| Genuinely done | success | landed | done ✓ |
+| **False completion** | success | **not landed** | done ✓ ← **a lie** |
+| Not collected | success | **unknown** | done ✓ ← **pretending to know** |
 
-第二、三行是布尔判词的结构性缺陷：它没有词汇去表达"我根本没看"。四值判词把它拆开：
+Rows two and three are the structural defect of boolean verdicts: there is no word for
+"I did not look at all". A four-valued verdict splits them apart:
 
-- **FAIL** —— 我看了，看到的是失败（假完成落在这一类）。
-- **INVALID** —— 我没看。**不许说 PASS**。
+- **FAIL** — I looked, and I saw failure (false completion falls here).
+- **INVALID** — I did not look. **PASS is not permitted.**
 
 ---
 
-## Dynamic Judgment Base (外置判据库)
+## Dynamic Judgment Base
 
-判词以前全部长在代码里。这有个具体的坏处：**你没法 diff 一条规则，也就没法争论它。**
-想收紧某个工具的验收标准，得改 Python、发版本；实际结果就是没人收紧。
+Verdicts used to live entirely in code, with one concrete drawback: **you cannot diff a rule,
+so you cannot argue about it.** Tightening one tool's acceptance criterion meant editing
+Python and cutting a release; in practice nobody tightened anything.
 
-外置判据库把**每个工具的策略**搬进 YAML：
+The external judgment base moves **per-tool policy** into YAML:
 
 ```yaml
-# audit_sidecar/rules/write_file.yaml（随包发布）
+# audit_sidecar/rules/write_file.yaml (shipped with the package)
 rule_id: "no_file_drift"
 target_tool: "write_file"
 require_witness: true
@@ -181,195 +208,216 @@ witness_type: "git_diff"
 expectation: "file_modified"
 ```
 
-改动验收标准从此是一次 `rules/` 里的 diff，看得懂的人不必是写代码的人。
-默认规则在包内，所以"没配规则"这种状态不存在——不配就是这份。
+Changing an acceptance criterion is now a diff in `rules/`, and the person who can read it
+need not be the person who writes code. Default rules ship inside the package, so the state
+"no rule configured" does not exist — unconfigured means this one.
 
-### 它到底多做了什么
+### What it actually adds
 
-注意 `require_witness` 这一条：**四值格表达不了它**。文件见证已经证明写入落地了，
-格子的判断是对的——`PASS`。可策略说："光有文件见证不够，我要 git 变更集。"
+Note the `require_witness` clause: **the four-valued grid cannot express it.** The file
+witness has already proved the write landed, and the grid's decision is correct — `PASS`. But
+policy says: "a file witness is not enough; I want a git change set."
 
-同一份观测，两种判词：
+The same observation, two verdicts:
 
-| 观测 | 四值格 | 加规则 | `rule_id` |
+| Observation | Four-valued grid | With the rule | `rule_id` |
 |:--|:--|:--|:--|
-| 只有文件见证 | `PASS` | **`INVALID`** | `no_file_drift` |
-| 文件 + git 见证 | `PASS` | `PASS` | `null`（规则检查过，放行） |
-| 写入没落地 | `FAIL` | `FAIL` | `no_file_drift` |
-| 工具没有规则 | `PASS` | `PASS` | `null`（回退到格子） |
+| File witness only | `PASS` | **`INVALID`** | `no_file_drift` |
+| File + git witness | `PASS` | `PASS` | `null` (rule checked, allowed) |
+| Write did not land | `FAIL` | `FAIL` | `no_file_drift` |
+| Tool has no rule | `PASS` | `PASS` | `null` (falls back to the grid) |
 
-第一行就是升级的意义：它说的不是"写入失败"，而是"**这次成功不算证据**"。
-这句话在没有任何规则的代码里写不出来。
+The first line is the point of the upgrade: it does not say "the write failed", it says
+"**this success does not count as evidence**". There is no way to write that sentence in code
+that has no rules.
 
-### 单调性：规则只能收紧，不能放松
+### Monotonicity: rules may only tighten, never loosen
 
-这是硬约束，不是实现细节：
+This is a hard constraint, not an implementation detail:
 
 ```
-NOT RUN  ←  什么都没跑，规则无从违反，原样保留
-FAIL     ←  见证与记录矛盾。缺一个见证并不能把矛盾解释掉
-INVALID  ←  规则要求的见证没采集到。没有证据就不许说 PASS
-PASS     ←  格子同意，且规则全部满足
+NOT RUN  <-  nothing ran, so no rule can be violated; kept as is
+FAIL     <-  witness contradicts the record. A missing witness does not explain the contradiction away
+INVALID  <-  the witness a rule demanded was not collected. No evidence, no PASS
+PASS     <-  the grid agrees, and every rule is satisfied
 ```
 
-**一条能把 `FAIL` 变成 `PASS` 的规则，就是一种跟见证讨价还价的方式**——而那正是这套
-工具存在的理由。`tests/test_rule_engine.py::TestMonotonicity` 把这条钉死了。
+**A rule that can turn `FAIL` into `PASS` is a way of bargaining with the witness** — and
+that is precisely what this tool exists to prevent.
+`tests/test_rule_engine.py::TestMonotonicity` nails it down.
 
-### 加载是严格的
+### Loading is strict
 
-未知字段、未知的 `witness_type`、未知的 `expectation`、跨文件重复的 `rule_id`、
-`require_witness: true` 却没写 `witness_type`——**全部在加载时报错**。
+Unknown fields, unknown `witness_type`, unknown `expectation`, a `rule_id` duplicated across
+files, `require_witness: true` without a `witness_type` — **all fail at load time**.
 
-理由和自审计一样：一条你以为是活的、其实是死的规则，比没有规则更糟。所以宁可炸掉：
+The reason is the same as for self-audit: a rule you believe is live but is in fact dead is
+worse than no rule. So it would rather blow up:
 
 ```
 RuleError: audit_sidecar/rules/write_file.yaml: unknown field(s) ['require_witnes'];
 the loader refuses to ignore a guard it does not understand
 ```
 
-### 怎么用
+### Usage
 
 ```bash
-# 装好即生效：包内默认规则会自动加载，不需要 --rules
+# Active on install: bundled default rules load automatically, no --rules needed
 harness-audit-server --cwd /path/to/repo
 
-# 想用项目自己的策略：放到 ./rules 下，自动优先于包内默认值
+# Project-specific policy: place it under ./rules; it takes priority over bundled defaults
 harness-audit-server --cwd /path/to/repo --rules ./rules
 
-# 明确要求"只用四值格"，而不是碰巧没找到规则
+# Explicitly require "four-valued grid only", rather than accidentally finding no rules
 harness-audit-server --cwd /path/to/repo --rules none
 ```
 
 ```python
 from audit_sidecar import JudgmentBase, RuleEngine, MCPProxy
 
-proxy = MCPProxy(cwd=repo, rules_dir="rules")   # 库默认不加载规则，显式选择才生效
+proxy = MCPProxy(cwd=repo, rules_dir="rules")   # library default loads no rules; opt in explicitly
 ```
 
-服务端与库的默认值不同，是有意的：**服务端**装完就该拦，所以自动加载包内规则；
-**库**的调用方可能只是要四值格，所以不传 `rules_dir` 就是纯四值格。`--rules none`
-与"自动探测没找到"是两件事：前者是操作者的选择，后者是意外。
+The server and the library differ on purpose: **the server** should block once installed, so
+it loads bundled rules automatically; **the library** caller may want the bare grid, so
+omitting `rules_dir` gives the pure grid. `--rules none` and "auto-detection found nothing"
+are two different things: the former is the operator's choice, the latter an accident.
 
-### 自审计跟着升级
+### Self-audit follows the upgrade
 
-判据库让策略离开了代码，也就让**失效模式**离开了代码。所以自审计多了一组已知答案的
-样本，检查三件事：规则**确实加载了**、违规的运行**被判 FAIL/INVALID**、判词**说出了
-是哪条 `rule_id`**。三者缺一，规则层就只是装饰。
+The judgment base moves policy out of code, and with it the **failure modes**. So self-audit
+gained a group of samples with known answers, checking three things: the rules **were actually
+loaded**, violating runs are **judged FAIL/INVALID**, and the verdict **names the `rule_id`
+responsible**. If any of the three fails, the rule layer is decoration.
 
-trace 里因此多了 `rule_id` / `rules_matched` / `rules_violated`，
-详见 [`examples/README.md`](examples/README.md)。
+Traces therefore carry `rule_id` / `rules_matched` / `rules_violated`; see
+[`examples/README.md`](examples/README.md).
 
 ---
 
-## Conditional Immune Response (条件触发的免疫响应)
+## Conditional Immune Response
 
-前两节解决的是"**判得准**"，这一节解决"**判得起**"。
+The first two sections address **judging correctly**; this one addresses **being able to
+afford it**.
 
-全量见证是正确但昂贵的：一次 git 变更集要 snapshot 加 diff，一次内容校验要读整个文件。
-如果一次无关紧要的追加和一次覆盖核心配置付一样的代价，那这条防线在长会话里迟早会被
-关掉——**而"关掉"和"从来没有"是同一个结果**。
+Full witnessing is correct but expensive: a git change set means a snapshot plus a diff, a
+content check means reading a whole file. If an irrelevant append costs the same as
+overwriting core configuration, this line of defence will eventually be switched off in a long
+session — **and "switched off" has the same outcome as "never existed".**
 
-所以按生物学分两级：
+So there are two tiers, borrowed from biology:
 
-| | Tier 1 先天免疫 | Tier 2 适应性免疫 |
+| | Tier 1 innate | Tier 2 adaptive |
 |:--|:--|:--|
-| 触发 | 规则声明 `risk_level: low`（省略即视为 low），且系统未发炎 | `risk_level: high`、规则要求见证、或系统已发炎 |
-| 见证 | 存在性 + mtime（命令前后各一次 `stat`） | git 变更集 + 内容读回 |
-| 开销 | 无 git 进程，不读文件 | 一次 snapshot、一次 diff、一次读文件 |
-| 能看见 | "它到底动没动" | "动的是不是只有它" |
-| 看不见 | 顺手多改的第三个文件 | —— |
+| Trigger | rule declares `risk_level: low` (omitted counts as low) and the system is not inflamed | `risk_level: high`, a rule requires a witness, or the system is already inflamed |
+| Witness | existence + mtime (one `stat` before and after the command) | git change set + content read-back |
+| Cost | no git process, no file read | one snapshot, one diff, one file read |
+| Can see | "did it touch at all" | "was it the only thing it touched" |
+| Cannot see | a third file changed along the way | — |
 
-### 炎症风暴
+### The inflammatory storm
 
-一个刚被证伪的系统，不该继续相信廉价检查。所以判词会累积：
+A system that has just been contradicted should not keep trusting cheap checks. So verdicts
+accumulate:
 
-- **连续 2 次 `FAIL`**，或**1 次 `INVALID`** → 进入 `INFLAMED`；
-- 发炎期间**所有调用**强制走 Tier 2，包括它自己的策略声明为 low 的调用；
-- 需要**连续 5 次 `PASS`** 才恢复 `NORMAL`。
+- **2 consecutive `FAIL`s**, or **1 `INVALID`** → enter `INFLAMED`;
+- while inflamed, **every call** is forced to Tier 2, including calls whose own policy declares low;
+- **5 consecutive `PASS`es** are required to return to `NORMAL`.
 
-`INVALID` 的门槛更低，因为它意味着"没看见"——一个看不见的防线已经在失效了。
+`INVALID` has the lower threshold because it means "I did not see" — a blind line of defence
+is already failing.
 
-**愈合刻意比受伤慢。** 两次失败点火，五次通过才熄灭；恢复期内再失败一次，进度归零。
-对称的响应挡不住任何东西。
+**Healing is deliberately slower than injury.** Two failures light it, five passes put it out;
+one more failure during recovery resets the progress to zero. A symmetric response stops
+nothing.
 
-### 炎症不会因为重启而消失
+### Inflammation does not vanish on restart
 
-只在内存里记录的炎症，是一个**越狱通道**：崩掉 sidecar、重启，嫌疑归零。而"能让 sidecar
-崩溃"恰恰是被审 Agent 能做到的事。所以炎症会落盘。
+Inflammation held only in memory is a **jailbreak channel**: crash the sidecar, restart, and
+suspicion is back to zero. And "can crash the sidecar" is exactly what an audited agent can
+do. So inflammation is persisted.
 
 ```
-<trace 目录>/.immune_state.json
+<trace dir>/.immune_state.json
 {"version": 1, "state": "INFLAMED", "danger_count": 2,
  "recovery_progress": 0, "recovery_passes": 5, ...}
 ```
 
-- 每次判词后**原子写入**（同目录临时文件 + `fsync` + `os.replace`），所以崩溃不会留下
-  半截文件——半截文件恰恰会丢掉正在记录的那次炎症。
-- 启动时读回。**缺失** = 正常首跑；**损坏 / 版本未知 / 字段非法** = 记 `ERROR`
-  （日志里叫 *amnesia event*），因为悄悄遗忘与"被弄遗忘"在外部完全一样。
-- **一切歧义都朝怀疑的方向取整。** `INFLAMED` 但危险计数为 0 → 仍然发炎；
-  恢复进度超出阈值 → 压到阈值前一步。一份被篡改的记录可以让系统**更**警惕，
-  不能让它更放松。
+- **Atomic write after every verdict** (temp file in the same directory + `fsync` +
+  `os.replace`), so a crash cannot leave a half-written file — a half-written file would drop
+  exactly the inflammation being recorded.
+- Read back at startup. **Missing** = a normal first run; **corrupt / unknown version /
+  invalid field** = record `ERROR` (an *amnesia event* in the log), because quietly forgetting
+  and being made to forget look identical from outside.
+- **Every ambiguity is rounded toward suspicion.** `INFLAMED` with a danger count of 0 → still
+  inflamed; recovery progress beyond the threshold → clamped to one step short of it. A
+  tampered record may make the system **more** wary, never more relaxed.
 
 ```bash
-# 默认：就放在 trace 旁边
+# Default: right next to the trace
 harness-audit-server --cwd /path/to/repo
 
-# 放到 Agent 写不到的地方（推荐：被审进程能写状态文件就能删它）
+# Somewhere the agent cannot write (recommended: a process that can write the state file can delete it)
 harness-audit-server --cwd /path/to/repo --immune-state /var/lib/audit/immune.json
 
-# 显式要求失忆——这是唯一的失忆入口
+# Explicitly request amnesia — this is the only amnesia entry point
 harness-audit-server --cwd /path/to/repo --immune-state none
 ```
 
-> **残余风险：** 文件是普通 JSON，没有签名。能写该路径的 Agent 仍可删改它。
-> 抗篡改需要放到被审进程写不到的位置，或加 HMAC——MVP 未做。
-> `test_inflammation_survives_a_restart` 证明的只是"重启不再自动洗清"，
-> 不是"无法伪造"。
+> **Residual risk:** the file is plain JSON and unsigned. An agent able to write that path can
+> still delete or alter it. Tamper resistance requires placing it where the audited process
+> cannot write, or adding an HMAC — not done in the MVP.
+> `test_inflammation_survives_a_restart` proves only that "a restart no longer clears it
+> automatically", not that "it cannot be forged".
 
-### 真实的 trace：同一策略，两种代价
+### A real trace: same policy, two costs
 
-[`examples/sample_trace.jsonl`](examples/sample_trace.jsonl) 的 id=5..7 是同一次会话：
+id=5..7 of [`examples/sample_trace.jsonl`](examples/sample_trace.jsonl) are one session:
 
-| id | 调用 | tier | `immune_state` | 判词 |
+| id | Call | tier | `immune_state` | Verdict |
 |--:|:--|:--|:--|:--|
-| 5 | `write_file missing_dir/target.py` | tier2（声明为 high） | NORMAL | **FAIL** |
-| 6 | `append_file no_such_dir/log.txt` | tier1（声明为 low） | **INFLAMED** | **FAIL** |
-| 7 | `append_file log.txt` | **tier2**（同一条 low 规则） | INFLAMED | **PASS** |
+| 5 | `write_file missing_dir/target.py` | tier2 (declared high) | NORMAL | **FAIL** |
+| 6 | `append_file no_such_dir/log.txt` | tier1 (declared low) | **INFLAMED** | **FAIL** |
+| 7 | `append_file log.txt` | **tier2** (same low rule) | INFLAMED | **PASS** |
 
-id=7 和 id=6 是同一条规则、同一个工具，代价却不同：**发炎把低风险调用也提升到了全量
-校验**。这就是 `--rules` 之外的第二个调度器——一个由历史而不是由声明驱动的调度器。
+id=7 and id=6 are the same rule and the same tool, at different cost: **inflammation promoted
+even a low-risk call to full verification**. This is the second scheduler besides `--rules` —
+one driven by history rather than by declaration.
 
-### 不放松，只是看得少
+### No relaxation, just less looking
 
-这是硬约束：**分级只决定"采集哪些见证"，不决定"见证意味着什么"**。
+This is a hard constraint: **tiering decides which witnesses are collected, not what a
+witness means**.
 
-- Tier 1 的 `PASS` 是**在更弱证据上的 PASS**，不是在相反证据上的 PASS：
-  报告成功但文件没有变化，Tier 1 照样判 `FAIL`（`test_innate_tier_still_catches_false_completion`）。
-- 规则要求 `git_diff` 见证 → 自动升级 Tier 2，因为 stat 满足不了它；
-  硬塞进 Tier 1 只会让它变成永久的 `INVALID`。
-- **没有任何规则的工具一律 Tier 2**：**"没声明"不等于"低风险"**，
-  否则加一个 `rules/` 目录反而会让那些没被提到的工具变弱。
-- Tier 1 的 `PASS` 在 `reason` 里带 `[innate tier: existence and mtime only, no git change set]`，
-  trace 里记 `tier` / `witness_scope` / `witness_mtime`。
+- A Tier 1 `PASS` is **a PASS on weaker evidence**, not a PASS against contrary evidence:
+  report success with no file change and Tier 1 still says `FAIL`
+  (`test_innate_tier_still_catches_false_completion`).
+- A rule requiring a `git_diff` witness → promoted to Tier 2 automatically, because a stat
+  cannot satisfy it; forcing it into Tier 1 would only make it permanently `INVALID`.
+- **A tool with no rule is always Tier 2**: **"not declared" is not "low risk"**, otherwise
+  adding a `rules/` directory would weaken exactly the tools nobody mentioned.
+- A Tier 1 `PASS` carries `[innate tier: existence and mtime only, no git change set]` in
+  `reason`, and records `tier` / `witness_scope` / `witness_mtime` in the trace.
 
-### 已知盲点（写进代码，而不是写进脚注）
+### Known blind spot (written into the code, not into a footnote)
 
-Tier 1 看不见"顺手多改了一个文件"。`test_adaptive_tier_sees_drift_the_innate_tier_cannot`
-把这个盲点写成了断言：同一个工具，声明 low 时判 `PASS`，声明 high 时判 `FAIL`。
+Tier 1 cannot see "changed one extra file along the way".
+`test_adaptive_tier_sees_drift_the_innate_tier_cannot` turns that blind spot into an assertion:
+the same tool is judged `PASS` when declared low and `FAIL` when declared high.
 
-这也正是 `write_file` 随包声明为 `high` 的理由：覆盖写是唯一一种"内容看起来对、副作用
-却可以完全在别处"的操作；而且**同长度、同一文件系统时间戳刻度内的重写**对 mtime 不可见。
-把它交给廉价层，等于用省下的几毫秒换一个看不见的漏洞。
+This is also why `write_file` ships declared `high`: overwriting is the one operation whose
+content looks right while its side effects can be entirely elsewhere; and **a rewrite of equal
+length within one filesystem timestamp tick** is invisible to mtime. Handing that to the cheap
+tier trades a few saved milliseconds for an invisible hole.
 
-### 怎么用
+### Usage
 
-策略即代码，改一行就换档：
+Policy is code; one line changes the tier:
 
 ```yaml
 rule_id: "append_landed"
 target_tool: "append_file"
-risk_level: "low"      # 改成 "high" 就是一行 diff，会进入评审
+risk_level: "low"      # changing this to "high" is a one-line diff that goes to review
 expectation: "file_modified"
 ```
 
@@ -377,101 +425,104 @@ expectation: "file_modified"
 from audit_sidecar import ImmuneState, MCPProxy
 
 proxy = MCPProxy(cwd=repo, rules_dir="rules", immune_state=ImmuneState())
-proxy.immune_state.is_inflamed()      # 当前是否处于炎症状态
+proxy.immune_state.is_inflamed()      # whether it is currently inflamed
 proxy.immune_state.snapshot()         # {"state": ..., "danger_count": ..., ...}
 ```
 
-阈值可调（`ImmuneState(fail_threshold=3, recovery_passes=6)`），但
-`recovery_passes < fail_threshold` 会被拒绝——愈合比受伤快，是配置错误而不是选择。
+Thresholds are adjustable (`ImmuneState(fail_threshold=3, recovery_passes=6)`), but
+`recovery_passes < fail_threshold` is rejected — healing faster than injury is a
+misconfiguration, not a choice.
 
 ---
 
-## 目录结构
+## Directory layout
 
 ```
 agent-harness-audit/
 ├── README.md
 ├── audit_sidecar/
-│   ├── __init__.py       公开接口
-│   ├── verdict.py        四值判词引擎
-│   ├── confidence.py     信任能荷账户（滑动窗口）
-│   ├── judgment_base.py  外置判据库（加载 rules/*.yaml）
-│   ├── rule_engine.py    规则判词（在四值格之上收紧）
-│   ├── immune_state.py   免疫状态机（炎症 / 恢复 / 落盘）+ 分级路由（tier1 / tier2）
-│   ├── runner.py         见证采集（真实执行 + 独立读回；full / stat 两级）
-│   ├── git_witness.py    Git 见证（真实变更集）
-│   ├── mcp_proxy.py      MCP 拦截（协议层声明 vs 物理效果）
-│   ├── mcp_server.py     stdio JSON-RPC 服务端（console script）
-│   ├── self_audit.py     自审计（mode 4 防线）
-│   ├── cli.py            命令行入口
+│   ├── __init__.py       public interface
+│   ├── verdict.py        four-valued verdict engine
+│   ├── confidence.py     trust-energy account (sliding window)
+│   ├── judgment_base.py  external judgment base (loads rules/*.yaml)
+│   ├── rule_engine.py    rule verdicts (tighten on top of the four-valued grid)
+│   ├── immune_state.py   immune state machine (inflammation / recovery / persistence) + tier routing (tier1 / tier2)
+│   ├── runner.py         witness collection (real execution + independent read-back; full / stat)
+│   ├── git_witness.py    git witness (real change set)
+│   ├── mcp_proxy.py      MCP interception (protocol-layer claim vs physical effect)
+│   ├── mcp_server.py     stdio JSON-RPC server (console script)
+│   ├── self_audit.py     self-audit (mode 4 defence)
+│   ├── cli.py            command-line entry point
 │   └── rules/
-│       ├── write_file.yaml  risk_level: high（覆盖写必走全量）
-│       └── append_file.yaml risk_level: low（追加走先天免疫）
-├── pyproject.toml        打包配置（运行时仅需 PyYAML）
+│       ├── write_file.yaml  risk_level: high (overwrites always take the full path)
+│       └── append_file.yaml risk_level: low (appends take innate immunity)
+├── pyproject.toml        packaging (runtime needs only PyYAML)
 ├── .gitignore
 ├── examples/
-│   ├── sample_trace.jsonl   真实审计留痕（Agent 收到 ok / 账本记 FAIL / 炎症升级）
-│   └── README.md            样例说明
+│   ├── sample_trace.jsonl   real audit trail (agent told ok / ledger records FAIL / inflammation escalates)
+│   └── README.md            sample notes
 └── tests/
     ├── test_verdict.py
     ├── test_confidence.py
     ├── test_judgment_base.py
     ├── test_rule_engine.py
-    ├── test_immune.py        分级免疫（tier 路由 / 炎症 / 恢复 / 重启后仍发炎）
+    ├── test_immune.py        tiered immunity (tier routing / inflammation / recovery / still inflamed after restart)
     ├── test_runner.py
     ├── test_git_witness.py
     ├── test_mcp_proxy.py
-    └── test_e2e_stdio.py   端到端（真子进程 + 真管道）
+    └── test_e2e_stdio.py    end to end (real subprocess + real pipe)
 ```
 
 ---
 
-## 快速开始
+## Quick start
 
 ```bash
-# 1. 安装（会自动带上 PyYAML；默认规则已包含在包里）
-pip install dist/agent_harness_audit-*.whl    # 或 python3 -m pip wheel . --no-deps -w dist/
+# 1. Install (PyYAML comes along; default rules are included in the package)
+pip install dist/agent_harness_audit-*.whl    # or python3 -m pip wheel . --no-deps -w dist/
 
-# 2. 直接跑，不需要任何路径参数
+# 2. Run it, no path arguments required
 harness-audit-server --cwd /path/to/project
 ```
 
 **The package ships with a default rule `no_file_drift` out of the box.**
-装完即生效：`write_file` 必须同时有文件见证与 git 变更集，否则判 `INVALID`。
-随包另有一条 `append_landed`（`risk_level: low`），演示先天免疫：追加只做存在性 +
-mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/`，或用 `$HARNESS_AUDIT_RULES`
-指向任意目录；两者都会覆盖随包默认值。
+It is active on install: `write_file` must have both a file witness and a git change set, or
+the verdict is `INVALID`. A second bundled rule, `append_landed` (`risk_level: low`),
+demonstrates innate immunity: appends are checked for existence + mtime only. To use your own
+policy, put `.yaml` files under `rules/` in the working directory, or point
+`$HARNESS_AUDIT_RULES` at any directory; either overrides the bundled defaults.
 
-> 在**非 git 目录**里运行时，git 见证无法采集，判词为 `INVALID`（`reason` 写明原因），
-> 而不是崩溃——"没有看"不等于"看过了并且通过"。此时可用 `--repo` 指向一个仓库，
-> 或用 `--rules none` 显式接受纯四值格。
+> When run inside a **non-git directory**, the git witness cannot be collected and the verdict
+> is `INVALID` (with the reason stated), not a crash — "did not look" is not "looked and
+> passed". In that case point `--repo` at a repository, or accept the pure grid explicitly with
+> `--rules none`.
 
-源码开发：
+Developing from source:
 
 ```bash
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 445 项（须在仓库根目录运行）
-python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
+python3 -m unittest discover -s tests -p 'test_*.py'   # 445 tests (must run from the repository root)
+python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
-harness-audit-server --cwd /path/to/project # 无需 --rules
+harness-audit-server --cwd /path/to/project # no --rules needed
 ```
 
-编程式使用：
+Programmatic use:
 
 ```python
 from audit_sidecar import ConfidenceAccount, Verdict, VerdictEngine
 
 engine = VerdictEngine()
 
-# 意图是写入新内容；见证（文件哈希）显示还是旧内容；agent 报告成功
+# Intent is to write new content; the witness (file hash) shows the old content; the agent reports success
 verdict = engine.evaluate(
     intent="sha256:new",
     effect="sha256:old",
     check=True,
 )
-assert verdict is Verdict.FAIL        # 假完成
+assert verdict is Verdict.FAIL        # false completion
 
 account = ConfidenceAccount(window=100)
 account.record(verdict)
@@ -479,7 +530,7 @@ account.get_balance()                 # 0.0
 account.get_label()                   # "low"
 ```
 
-跑一条真实命令并取见证（详见下文「见证采集」）：
+Run a real command and take a witness (see "Witness collection" below):
 
 ```python
 from audit_sidecar import SafeRunner
@@ -494,7 +545,7 @@ result = SafeRunner().run_shell(
 print(result.verdict, result.effect_observed, result.check_observed)
 ```
 
-带判据库的判词（详见下文「外置判据库」）：
+A verdict with the judgment base (see "External judgment base" below):
 
 ```python
 from audit_sidecar import JudgmentBase, MCPProxy, RuleEngine
@@ -503,76 +554,81 @@ engine = RuleEngine(JudgmentBase("rules"))
 decision = engine.judge(
     "write_file",
     intent=True,
-    effect=True,                     # 文件见证：写入确实落地了
-    check=True,                      # 工具层对 agent 说成功
-    witnesses={"file", "agent_report"},  # 但没有 git 变更集
+    effect=True,                     # file witness: the write did land
+    check=True,                      # tool layer tells the agent it succeeded
+    witnesses={"file", "agent_report"},  # but no git change set
 )
 print(decision.verdict, decision.rule_id)   # INVALID no_file_drift
 
-# 接入拦截层后，同一判断会自动发生，并写进 trace
+# With the interception layer attached, the same judgment happens automatically and goes into the trace
 proxy = MCPProxy(cwd="/path/to/repo", rules_dir="rules")
 ```
 
 ---
 
-## 判词规则（`verdict.py`）
+## Verdict rules (`verdict.py`)
 
-三个输入：
+Three inputs:
 
-| 参数 | 含义 | 谁提供 |
+| Argument | Meaning | Supplied by |
 |:--|:--|:--|
-| `intent` | 预期动作的可比较表示（如"写入后应有的哈希"） | 任务定义 |
-| `effect` | **独立于 agent** 观测到的副作用；`None` 表示未采集 | 见证采集器 |
-| `check` | agent 自己读到的状态（bool / 状态串 / 带 `.success` 的对象） | agent 自报 |
+| `intent` | a comparable representation of the intended action (e.g. "the hash it should have afterwards") | task definition |
+| `effect` | the side effect observed **independently of the agent**; `None` means not collected | witness collector |
+| `check` | the state the agent itself read (bool / status string / object with `.success`) | agent self-report |
 
-规则按顺序匹配，**先命中先返回**：
+Rules match in order, **first match wins**:
 
-| # | 条件 | 判词 | 含义 |
+| # | Condition | Verdict | Meaning |
 |:--:|:--|:--|:--|
-| 1 | `effect is None` | `INVALID` | 没有见证。**不返回 PASS**，即使 `check=True` |
-| 2 | `intent is None` | `NOT RUN` | 无意图记录，该场景未执行 |
-| 3 | `effect != intent` | `FAIL` | 意图未实现；若 `check` 报成功，即**假完成** |
-| 4 | `check` 报失败 | `FAIL` | **假失败**：副作用已落地，agent 却报错 |
-| 5 | 其余 | `PASS` | 见证与报告一致 |
+| 1 | `effect is None` | `INVALID` | no witness. **Never PASS**, even when `check=True` |
+| 2 | `intent is None` | `NOT RUN` | no intent recorded, the scenario never executed |
+| 3 | `effect != intent` | `FAIL` | intent not realised; if `check` reports success, that is **false completion** |
+| 4 | `check` reports failure | `FAIL` | **false failure**: the side effect landed but the agent reported an error |
+| 5 | otherwise | `PASS` | witness and report agree |
 
-两条刻意的设计决定：
+Two deliberate design decisions:
 
-1. **三个参数强制 keyword-only。** `effect` 与 `check` 形状相同，位置参数一旦写反，
-   会得到一个"看起来很合理"的错判词而不报错。审计工具不能有这种静默失败。
-2. **枚举成员名是 `NOT_RUN`，值是 `"NOT RUN"`。** Python 标识符不能含空格，
-   值保留论文原始拼写。
+1. **All three arguments are keyword-only.** `effect` and `check` have the same shape, and a
+   positional slip produces a "plausible-looking" wrong verdict rather than an error. An
+   audit tool cannot afford that kind of silent failure.
+2. **The enum member is `NOT_RUN` and its value is `"NOT RUN"`.** Python identifiers cannot
+   contain a space; the value keeps the paper's original spelling.
 
-另外 `engine.explain(...)` 返回 `(Verdict, reason)`，reason 是一句可机检的英文说明，
-便于把判词写进日志而不只是打个标签。`evaluate` 与 `explain` 共用同一段判定逻辑，
-不存在两套规则漂移的可能。
+`engine.explain(...)` returns `(Verdict, reason)`, where reason is a machine-checkable English
+sentence, so a verdict can be logged rather than merely tagged. `evaluate` and `explain`
+share one block of decision logic, so two sets of rules cannot drift apart.
 
-`check` 的归一化只接受**可明确解释**的报告；无法识别的字符串（如 `"probably fine"`）
-会抛 `ValueError` 而不是被猜成成功。猜，正是这个工具要消灭的行为。
+Normalisation of `check` accepts only **unambiguously interpretable** reports; an unrecognised
+string (such as `"probably fine"`) raises `ValueError` rather than being guessed as success.
+Guessing is exactly the behaviour this tool exists to eliminate.
 
 ---
 
-## 信任能荷账户（`confidence.py`）
+## Trust-energy account (`confidence.py`)
 
 ```python
-account = ConfidenceAccount(window=100)   # 默认 100
+account = ConfidenceAccount(window=100)   # default 100
 account.record(verdict)
 account.get_balance()   # PASS / (PASS + FAIL + INVALID)
 account.get_label()     # high / medium / low
 ```
 
-- 滑动窗口保留最近 N 次判词，旧事件自动淘汰。
-- **`NOT RUN` 占窗口格位，但不进分母**：它不携带关于 harness 的信息，不该稀释比例。
-- `PASS / (PASS+FAIL+INVALID)`：
+- A sliding window keeps the most recent N verdicts; older events age out.
+- **`NOT RUN` occupies a window slot but not the denominator**: it carries no information
+  about the harness and must not dilute the ratio.
+- `PASS / (PASS+FAIL+INVALID)`:
   - `>= 0.7` → `high`
   - `[0.5, 0.7)` → `medium`
   - `< 0.5` → `low`
-- 窗口内全无有效事件时 `balance = 0.0`、`label = low`：**没证据 ≠ 可信**。
+- With no valid events in the window, `balance = 0.0` and `label = low`: **no evidence is not
+  trust**.
 
 ---
 
-## 见证采集（`runner.py`）
+## Witness collection (`runner.py`)
 
-`SafeRunner` 真实执行 Shell 命令，然后**自己去文件系统读回结果**，不采信命令自己的说法。
+`SafeRunner` really executes a shell command and then **reads the result back from the
+filesystem itself**, rather than believing what the command says about itself.
 
 ```python
 from audit_sidecar import SafeRunner
@@ -586,132 +642,147 @@ result = runner.run_shell(
     expected_content="feature_x=on",
 )
 
-result.check_observed    # True   —— bash 退出码（pipefail 之下）
-result.effect_observed   # True   —— 从文件真实读出来的，与退出码无关
+result.check_observed    # True   -- bash exit code (under pipefail)
+result.effect_observed   # True   -- really read from the file, independent of the exit code
 result.verdict           # Verdict.PASS
 ```
 
-`ExecutionResult` 的字段：`intent`（意图描述）、`effect_observed`（`True`/`False`/`None`）、
-`check_observed`、`verdict`，外加 `exit_code`、`pipe_status`、`witness_path`、`reason`、
-`stdout`、`stderr`、`error` 作为取证留痕。
+`ExecutionResult` fields: `intent` (description), `effect_observed`
+(`True`/`False`/`None`), `check_observed`, `verdict`, plus `exit_code`, `pipe_status`,
+`witness_path`, `reason`, `stdout`, `stderr` and `error` as forensic record.
 
-### 防线一：管道吃掉状态（mode 1）
+### Defence one: a pipeline eats the status (mode 1)
 
-`false | cat` 在默认 bash 里退出 **0**——最后一个 stage 成功了，前面失败没人管。
-一个把活儿管过 `| head`、`| tee`、`| grep` 的 agent 可以因此藏住失败而**并没有撒谎**。
+`false | cat` exits **0** in default bash — the last stage succeeded, and nobody watched the
+earlier failure. An agent that has run its work through `| head`, `| tee` or `| grep` can
+therefore hide a failure **without having lied**.
 
-`SafeRunner` 用 `set -o pipefail` 执行，并把每段的 `PIPESTATUS` 记进 `pipe_status`：
+`SafeRunner` runs with `set -o pipefail` and records each stage's `PIPESTATUS` in `pipe_status`:
 
 ```
-$ bash -c 'false | cat'; echo $?            # 天真读法
+$ bash -c 'false | cat'; echo $?            # naive reading
 0
-$ bash -o pipefail -c 'false | cat'; echo $?  # 审计读法
+$ bash -o pipefail -c 'false | cat'; echo $?  # audit reading
 1
 ```
 
-> 实现细节：命令写在临时 wrapper 脚本里执行，而不是 `bash -c`。这样 `PIPESTATUS`
-> 能在**任何后续命令之前**被读走；同时 wrapper 显式 `exit` 成管道状态，
-> 否则最后那句 `printf` 会把退出码覆盖成 0。
+> Implementation note: the command runs from a temporary wrapper script rather than
+> `bash -c`. This lets `PIPESTATUS` be read **before any subsequent command**, and the wrapper
+> explicitly `exit`s with the pipeline status, since otherwise the final `printf` would
+> overwrite the exit code with 0.
 
-### 防线二：见证坐标漂移（mode 3 变体）
+### Defence two: witness coordinate drift (a mode 3 variant)
 
-这是更隐蔽的一类：agent 在**错误的目录**里干活，而审计也去**同一个错误目录**里查证据。
-它会查到，然后给一个自信的 PASS——工作从未到达目标。
+This is the subtler class: the agent does its work **in the wrong directory**, and the audit
+looks for evidence **in the same wrong directory**. It finds it, and returns a confident
+PASS — the work never reached the target.
 
-`witness_root` 就是为此存在的：命令的 `cwd` 与见证的坐标**分开指定**。
+`witness_root` exists for this: the command's `cwd` and the witness coordinates are
+**specified separately**.
 
 ```python
-# agent 跑在 drift/，但意图的坐标是 project/
+# the agent runs in drift/, but the intent's coordinates are project/
 result = runner.run_shell(
     "echo 'feature=on' >> config.yaml",
-    cwd=drift,                                  # 动作在这里发生
+    cwd=drift,                                  # the action happens here
     expected_file="config.yaml",
-    witness_root=project,                       # 见证在这里读取
+    witness_root=project,                       # the witness is read here
     expected_content="feature=on",
 )
-result.verdict   # Verdict.FAIL —— 假完成
+result.verdict   # Verdict.FAIL -- false completion
 ```
 
-`expected_file` 给绝对路径时直接使用，忽略 `witness_root`。
+When `expected_file` is an absolute path it is used directly and `witness_root` is ignored.
 
-### 真实判决（`python3 -m audit_sidecar.cli` 的 [3] 段）
+### Real verdicts (section [3] of `python3 -m audit_sidecar.cli`)
 
-| 案例 | 命令 | exit | PIPESTATUS | effect | check | 判词 |
+| Case | Command | exit | PIPESTATUS | effect | check | Verdict |
 |:--|:--|--:|:--|:--|:--|:--|
-| A1 管道吃状态 | `false \| cat` | 1 | `1 0` | `None` | False | **INVALID** |
-| A2 同上 + 见证 | `false \| cat > result.txt` | 1 | `1 0` | False | False | **FAIL** |
-| B1 见证跟着漂 | `echo 'feature=on' >> config.yaml`（cwd=drift，见证 drift） | 0 | `0` | True | True | **PASS（审计失明）** |
-| B2 见证钉住意图 | 同上，见证 project | 0 | `0` | False | True | **FAIL** |
+| A1 pipeline eats status | `false \| cat` | 1 | `1 0` | `None` | False | **INVALID** |
+| A2 same + witness | `false \| cat > result.txt` | 1 | `1 0` | False | False | **FAIL** |
+| B1 witness follows drift | `echo 'feature=on' >> config.yaml` (cwd=drift, witness drift) | 0 | `0` | True | True | **PASS (audit blinded)** |
+| B2 witness pinned to intent | same, witness project | 0 | `0` | False | True | **FAIL** |
 
-四点值得注意：
+Four points are worth noting:
 
-- **A1 不是 PASS，也不是靠"猜"变成 FAIL。** 退出码说失败，但没指定任何产物，
-  于是 `effect` 是 `None`，引擎只能给 `INVALID`。**拿不到见证，就不给结论**——
-  这正是四值判词和布尔判词的分界。
-- **A2 才是真正的 FAIL。** 产物存在但是空的，意图没实现；`pipefail` 让退出码与见证一致。
-- **B1 的 PASS 是审计失明，不是 agent 正确。** `project/config.yaml` 从头到尾没被碰过。
-  同一件事在 B2 里被抓住，差别只在见证读哪里。
-- 想抓漂移，**见证必须钉在意图的坐标上**。让见证跟着动作走，等于让嫌疑人自己保管物证。
+- **A1 is not PASS, nor is it "guessed" into FAIL.** The exit code says failure, but no
+  artefact was specified, so `effect` is `None` and the engine can only return `INVALID`.
+  **No witness, no conclusion** — this is precisely where four-valued and boolean verdicts
+  part ways.
+- **A2 is the real FAIL.** The artefact exists but is empty; the intent was not realised, and
+  `pipefail` makes the exit code agree with the witness.
+- **B1's PASS is a blinded audit, not a correct agent.** `project/config.yaml` was never
+  touched. The same situation is caught in B2; the only difference is where the witness is read.
+- To catch drift, **the witness must be pinned to the intent's coordinates.** Letting the
+  witness follow the action is letting the suspect hold the evidence.
 
-### 失败路径
+### Failure paths
 
-| 情形 | `effect` | 判词 | 理由 |
+| Situation | `effect` | Verdict | Reason |
 |:--|:--|:--|:--|
-| `cwd` 不存在 / 无法启动 | False | `NOT_RUN` | 命令根本没跑；`INVALID` 留给"跑了但没有见证" |
-| 超时被 kill | `None` | `INVALID` | kill 后的文件状态是中间态，不能当证据 |
-| 未指定 `expected_file` | `None` | `INVALID` | 没让看，就没看 |
-| 命令含顶层 `exit` | 正常读 | 正常判 | wrapper 提前终止，`pipe_status` 回退为 `(exit_code,)` |
+| `cwd` missing / cannot start | False | `NOT_RUN` | the command never ran; `INVALID` is reserved for "ran but no witness" |
+| killed on timeout | `None` | `INVALID` | file state after a kill is intermediate and cannot serve as evidence |
+| no `expected_file` given | `None` | `INVALID` | it was not asked to look, so it did not look |
+| command contains a top-level `exit` | read normally | judged normally | the wrapper terminates early, so `pipe_status` falls back to `(exit_code,)` |
 
 
 
-## Git 见证（`git_witness.py`）
+## Git witness (`git_witness.py`)
 
-文件存在性只能证明"某个文件被写了"，证明不了"**写对了那个文件**"。Mode 3 最常见的形态是
-agent 在错误的坐标里干活，然后读回自己刚写的文件、报告成功——它的自述和它的读回**完全自洽**，
-只是都不在目标上。
+File existence can prove "some file was written"; it cannot prove "**that file** was written
+correctly". The most common form of mode 3 is an agent working in the wrong coordinates and
+then reading back the file it just wrote and reporting success — its self-report and its
+read-back are **perfectly consistent with each other**, and both are off target.
 
-Git 是唯一一份 agent 没有参与编写的记录。`GitWitness` 读它。
+Git is the only record the agent did not help write. `GitWitness` reads it.
 
 ```python
 from audit_sidecar import GitWitness
 
 witness = GitWitness("/path/to/repo")
-witness.get_changed_files()      # ['wrong_dir/target.py']  仓库根相对、POSIX、已排序
+witness.get_changed_files()      # ['wrong_dir/target.py']  repository-root relative, POSIX, sorted
 witness.repo_root                # '/path/to/repo'
 ```
 
-底层是 `git status --porcelain=v1 -z --untracked-files=all --no-renames`：
+Underneath it is `git status --porcelain=v1 -z --untracked-files=all --no-renames`:
 
-- **`-z`**：不转义文件名，避免引号把路径变成另一个字符串。
-- **`--untracked-files=all`**：新建目录时列出里面的文件。漂移通常长这样，只报目录名会漏。
-- **`--no-renames`**：重命名不产生"两条路径一条记录"，解析时不会吃掉下一条。
-- 覆盖已暂存、未暂存、未跟踪、已删除；被 `.gitignore` 忽略的不出现（git 不报）。
+- **`-z`**: filenames are not escaped, so quoting cannot turn a path into a different string.
+- **`--untracked-files=all`**: lists files inside newly created directories. Drift usually
+  looks like this, and reporting only the directory name would miss it.
+- **`--no-renames`**: a rename does not produce "two paths, one record", so parsing cannot
+  swallow the next entry.
+- Covers staged, unstaged, untracked and deleted; anything ignored by `.gitignore` does not
+  appear (git does not report it).
 
-### 两个必须自己解决的问题
+### Two problems you must solve yourself
 
-**坐标。** `git status` 报的是**仓库根相对**路径。命令在 `sub/` 里正确地改了 `sub/target.py`，
-git 说 `sub/target.py`，而调用方以为 `target.py` —— 直接比较会**把一次正确的编辑判成漂移**。
-`resolve_expected()` 先按命令的 `cwd` 把期望路径映射进仓库根坐标。这条规则和 `witness_root`
-是同一个教训：**比较两个东西之前，先确认它们在同一个坐标系里**。
+**Coordinates.** `git status` reports paths **relative to the repository root**. A command in
+`sub/` correctly editing `sub/target.py` has git say `sub/target.py`, while the caller means
+`target.py` — comparing them directly would **judge a correct edit as drift**.
+`resolve_expected()` first maps the expected path into repository-root coordinates using the
+command's `cwd`. This rule and `witness_root` teach the same lesson: **before comparing two
+things, confirm they are in the same coordinate system**.
 
-**基线。** 工作区在执行命令前通常就是脏的。事后取一次快照无法区分"这条命令改的"和
-"本来就这样"。`snapshot()` 给每个脏路径记一个内容指纹，`changed_since(baseline)` 只报
-**新增或内容真的变了**的路径。没有这一步，一个长期工作的仓库会把所有历史改动都当成这次的证据。
+**Baseline.** The working tree is usually already dirty before the command runs. A single
+snapshot afterwards cannot distinguish "changed by this command" from "already like that".
+`snapshot()` records a content fingerprint for every dirty path, and `changed_since(baseline)`
+reports only paths that are **new or whose content really changed**. Without this step, a
+long-lived repository would present all its historical changes as evidence for this call.
 
 ```python
 baseline = witness.snapshot()
-# ... 执行命令 ...
-witness.changed_since(baseline)   # 只含这次命令造成的变化
+# ... execute the command ...
+witness.changed_since(baseline)   # only changes caused by this command
 ```
 
-### 接入 `SafeRunner`
+### Wiring into `SafeRunner`
 
 ```python
 result = runner.run_shell(
     "mkdir -p wrong_dir && echo 'value=1' > wrong_dir/target.py",
     cwd="/repo",
     intent_desc="edit target.py",
-    expected_files_modified=["target.py"],   # 相对 cwd
+    expected_files_modified=["target.py"],   # relative to cwd
 )
 result.changed_files      # ('wrong_dir/target.py',)
 result.missing_expected   # ('target.py',)
@@ -719,23 +790,29 @@ result.unexpected_changes # ('wrong_dir/target.py',)
 result.verdict            # Verdict.FAIL
 ```
 
-- 基线在命令执行**之前**自动采集。
-- `expected_files_modified` 相对 `cwd`；`cwd` 在仓库外时（配合 `repo_path`）相对仓库根。
-- 与 `expected_file` / `expected_content` 同时给出时是**合取**：任一证人说不，就不给 PASS。
-- 若同时给了产物见证，那个产物文件本身不算"意外改动"。
+- The baseline is taken automatically **before** the command runs.
+- `expected_files_modified` is relative to `cwd`; when `cwd` is outside the repository (with
+  `repo_path`), it is relative to the repository root.
+- Given together with `expected_file` / `expected_content` it is a **conjunction**: any
+  witness saying no means no PASS.
+- If an artefact witness is also given, that artefact file itself does not count as an
+  "unexpected change".
 
-### 严格 vs 宽松：默认取严格
+### Strict vs permissive: strict by default
 
-| 模式 | 判定 | 场景 |
+| Mode | Rule | Scenario |
 |:--|:--|:--|
-| `allow_extra_changes=False`（默认） | 变更集必须**恰好等于**期望集 | 改对了 A 还顺手改了 B → FAIL |
-| `allow_extra_changes=True` | 期望集是变更集的**子集** | 允许构建产物、格式化等附带改动 |
+| `allow_extra_changes=False` (default) | the change set must be **exactly** the expected set | edited A correctly but also B → FAIL |
+| `allow_extra_changes=True` | the expected set is a **subset** of the change set | permits build artefacts, formatting and similar collateral |
 
-默认取严格，因为"改对了还多改别的"比"没改"更危险，也更难在事后发现。
-> 注：这两种模式在你的需求里被同时描述过（"子集即 True" 与 "改了期望之外的文件即 False"），
-> 对"污染"案例给出相反结果。我按后者实现为默认，前者保留为显式开关。
+Strict is the default because "changed the right thing and something else too" is more
+dangerous than "changed nothing", and harder to notice afterwards.
+> Note: the two modes were described both ways in the requirements ("subset means True" and
+> "a file outside the expectation means False"), which give opposite results for the
+> "contamination" case. The latter is implemented as the default and the former kept as an
+> explicit switch.
 
-### Case C 的真实输出（`cli.py` 的 [4] 段）
+### Real output for Case C (section [4] of `cli.py`)
 
 ```
     case                             verdict  changed (from git)                 effect  check
@@ -745,42 +822,48 @@ result.verdict            # Verdict.FAIL
     C3  edited target.py + other.py  FAIL     other.py, target.py                False   True
 ```
 
-**C2 是要点**：agent 的退出码说成功，它自己读回 `wrong_dir/target.py` 也确实读到了正确内容——
-两处自洽，却都不在目标上。只有 git 知道真相，因为 git 是 agent 没有编写过的那份记录。
-C3 演示严格默认：多改一个无关文件也算漂移，不是加分项。
+**C2 is the point**: the agent's exit code says success, and its own read-back of
+`wrong_dir/target.py` really does return the correct content — consistent in both places, and
+both off target. Only git knows the truth, because git is the record the agent did not write.
+C3 demonstrates the strict default: changing one unrelated file also counts as drift, not as
+extra credit.
 
-### 失败路径
+### Failure paths
 
-| 情形 | 行为 |
+| Situation | Behaviour |
 |:--|:--|
-| `repo_path` 不是 git 仓库 | 抛 `GitWitnessError`，**命令不会执行** |
-| `git` 不在 PATH | 抛 `GitWitnessError`（不静默降级成"无变更"） |
-| 期望路径在仓库外 | 抛 `ValueError` |
-| 传了裸字符串而非列表 | 抛 `TypeError`（`"abc"` 会被当成三个路径遍历） |
-| 期望集为空 | 抛 `ValueError`（用 `expected_file` 或干脆不传） |
+| `repo_path` is not a git repository | raises `GitWitnessError`, **the command does not run** |
+| `git` not on PATH | raises `GitWitnessError` (no silent downgrade to "no changes") |
+| expected path outside the repository | raises `ValueError` |
+| bare string instead of a list | raises `TypeError` (`"abc"` would be iterated as three paths) |
+| empty expected set | raises `ValueError` (use `expected_file`, or pass nothing) |
 
-**绝不静默降级**：看不了就说看不了。一个把"无法观测"报成"没有变更"的见证，比没有见证更糟。
+**Never downgrade silently**: if it cannot look, it says so. A witness that reports "cannot
+observe" as "no changes" is worse than no witness.
 
 
 
-## MCP 拦截（`mcp_proxy.py`）
+## MCP interception (`mcp_proxy.py`)
 
-前三层都在审计**命令**。这一层审计**工具层**——这是完全不同的两个被告。
+The first three layers audit **commands**. This layer audits the **tool layer** — an entirely
+different defendant.
 
-在真实 harness 里，命令的退出码先被工具层看到，Agent 只看到工具层的答复。如果封装层吞掉
-一个失败并回 `success`，Agent 会**真诚地**错下去：它的自述与它收到的一切完全自洽，整段
-对话里没有一个字是谎话。这类假完成最难查，因为无处可查。
+In a real harness the command's exit code is seen by the tool layer first, and the agent sees
+only the tool layer's reply. If the wrapper swallows a failure and returns `success`, the agent
+goes wrong **sincerely**: its self-report is perfectly consistent with everything it received,
+and not one word in the conversation is a lie. This class of false completion is the hardest to
+find, because there is nowhere to look.
 
-`MCPProxy` 坐在 Agent 与工具层之间：
+`MCPProxy` sits between the agent and the tool layer:
 
 ```
-Agent ──tool_call──▶ MCPProxy ──▶ 工具层 ──▶ 真实命令
+Agent ──tool_call──▶ MCPProxy ──▶ tool layer ──▶ real command
    ▲                    │                        │
-   └──── 原样返回 ───────┘                        ▼
-        （不修正 Agent 的认知）        独立见证：GitWitness
+   └──── returned as is ┘                        ▼
+        (the agent's beliefs are not corrected)  independent witness: GitWitness
                         │
-                        └──▶ VerdictEngine(intent, effect=物理见证, check=协议层声明)
-                             └──▶ 内部审计日志（Agent 看不到）
+                        └──▶ VerdictEngine(intent, effect=physical witness, check=protocol claim)
+                             └──▶ internal audit log (invisible to the agent)
 ```
 
 ```python
@@ -788,44 +871,47 @@ from audit_sidecar import MCPProxy
 
 proxy = MCPProxy(cwd="/repo")
 
-# agent_reported_success 是工具层递给 Agent 的状态，即"被审计的声明"
+# agent_reported_success is the status the tool layer handed the agent, i.e. the claim under audit
 response = proxy.intercept_tool_call(
     "write_file",
     {"path": "missing_dir/target.py", "content": "x"},
-    agent_reported_success=True,      # 工具层说成功了
+    agent_reported_success=True,      # the tool layer says it succeeded
 )
-response            # {'status': 'ok', 'isError': False, ...}  ← Agent 以为没事
-proxy.audit_log[-1].verdict    # Verdict.FAIL                   ← 审计记录不同意
+response            # {'status': 'ok', 'isError': False, ...}  <- the agent believes all is well
+proxy.audit_log[-1].verdict    # Verdict.FAIL                   <- the audit record disagrees
 ```
 
-### 两条不可让步的原则
+### Two non-negotiable principles
 
-**一、`check` 必须来自协议层，不能从退出码重新推导。**
+**One: `check` must come from the protocol layer and must not be re-derived from the exit code.**
 
-这是本模块存在的唯一理由。图省事写成 `check = reported_success and exit_code == 0`，
-就等于把工具层的答复替换成工具层自己看到的退出码——**让被告给自己作证**。
-实测这个"洗白"会真的翻转判决：
+This is the sole reason this module exists. Writing `check = reported_success and exit_code == 0`
+for convenience replaces the tool layer's reply with the exit code the tool layer itself saw —
+**letting the defendant testify for itself**. Measured, that "whitewash" really does flip
+verdicts:
 
-| 场景 | 正确实现（协议层声明为 check） | 从退出码推导（错误实现） |
+| Scenario | Correct implementation (protocol claim as check) | Deriving from exit code (wrong) |
 |:--|:--|:--|
-| 工具报 success，命令退出 0，但文件没变 | `FAIL` 假完成 | `FAIL` 假完成（凑巧同判） |
-| 工具报 success，命令退出 1，文件没变 | `FAIL` 假完成 | `FAIL` 意图未实现（**诊断错**） |
-| **工具报 failure，命令退出 0，文件真的改了** | **`FAIL` 假失败** | **`PASS`** ← 说谎的工具被洗白 |
+| tool says success, command exits 0, file unchanged | `FAIL` false completion | `FAIL` false completion (same by luck) |
+| tool says success, command exits 1, file unchanged | `FAIL` false completion | `FAIL` intent not realised (**wrong diagnosis**) |
+| **tool says failure, command exits 0, file really changed** | **`FAIL` false failure** | **`PASS`** ← the lying tool is whitewashed |
 
-最后一行是要害。`test_check_is_not_rederived_from_exit_status` 直接断言
-`check_source == "protocol"`、`check_observed is True` 且 `exit_code != 0`，
-一旦有人改动推导方式，测试立刻失败。
+The last row is the crux. `test_check_is_not_rederived_from_exit_status` asserts
+`check_source == "protocol"`, `check_observed is True` and `exit_code != 0`, so any change to
+the derivation fails the test immediately.
 
-**二、代理是被动的。**
+**Two: the proxy is passive.**
 
-返回给 Agent 的响应**原样**反映工具层的声明，绝不掺入见证结论。`MCPProxy` 不纠正 Agent 的
-认知，只把分歧记在自己的日志里。一个会替 Agent 更正的"审计器"就不再是观察者，而变成了
-被审系统的一部分——它一旦出错，就没有第二双眼睛了。
+The response returned to the agent **mirrors** the tool layer's claim exactly and never mixes in
+the witness's conclusion. `MCPProxy` does not correct the agent's beliefs; it only records the
+disagreement in its own log. An "auditor" that corrects the agent on its behalf stops being an
+observer and becomes part of the system under audit — and once it errs, there is no second pair
+of eyes.
 
-`test_response_stays_passive` 钉住这条：谎言场景下响应仍是 `status='ok'`，
-且内容里不出现 `FAIL` 或 `witness` 字样。
+`test_response_stays_passive` pins this down: in the lying scenario the response is still
+`status='ok'`, and neither `FAIL` nor `witness` appears in it.
 
-### Case D 的真实输出（`cli.py` 的 [5] 段）
+### Real output for Case D (section [5] of `cli.py`)
 
 ```
     case                               exit  agent check  actual effect  verdict
@@ -835,8 +921,8 @@ proxy.audit_log[-1].verdict    # Verdict.FAIL                   ← 审计记录
     D3  tool under-reported success    0     False        True           FAIL
 ```
 
-D2 就是你要看的那个：**`Agent Check: True` / `Actual Effect: False`**。原因串还顺手把工具层
-的自我矛盾点出来：
+D2 is the one to look at: **`Agent Check: True` / `Actual Effect: False`**. The reason string
+also points out the tool layer's self-contradiction:
 
 ```
 false completion: report says success, witness says no effect
@@ -844,62 +930,66 @@ false completion: report says success, witness says no effect
 [tool layer reported success, underlying command exited 1]
 ```
 
-D3 是另一侧：写入真的落地了，工具层却报错。Agent 会以为自己失败了，然后重试——
-一个"假失败"引发的重复写入，通常比假完成更难善后。
+D3 is the other side: the write really landed and the tool layer reported an error. The agent
+believes it failed and retries — repeated writes caused by a "false failure" are usually harder
+to clean up than a false completion.
 
-### 参数安全
+### Argument safety
 
-工具参数会被拼进真实执行的 shell 命令，所以**每个插值都过 `shlex.quote`**。
-否则被审计的内容就能变成代码：`content="x; rm -rf /"` 会先写文件再执行。
+Tool arguments are spliced into a really executed shell command, so **every interpolation goes
+through `shlex.quote`**. Otherwise the audited content becomes code: `content="x; rm -rf /"`
+would write the file and then execute.
 
-`tests/test_mcp_proxy.py` 用三个载荷钉住这条（`evil; touch PWNED`、
-`$(touch PWNED2)`、`` `touch PWNED3` ``），断言文件内容与载荷**逐字节相同**且 PWNED 文件不存在。
+`tests/test_mcp_proxy.py` pins this with three payloads (`evil; touch PWNED`,
+`$(touch PWNED2)`, `` `touch PWNED3` ``), asserting the file content matches the payload
+**byte for byte** and that no PWNED file exists.
 
-### 失败路径
+### Failure paths
 
-| 情形 | 行为 |
+| Situation | Behaviour |
 |:--|:--|
-| 未知工具名 | 抛 `UnknownToolError`，**不执行、不记入日志**（拒绝伪造审计记录） |
-| `agent_reported_success` 不是 bool | 抛 `TypeError`（`None` 也拒绝：请用 `False` 表示"没有状态到达 Agent"） |
-| 缺参数 / 参数非字符串 | 抛 `ValueError` / `TypeError` |
-| `expected_files_modified` 传裸字符串 | 抛 `TypeError` |
+| unknown tool name | raises `UnknownToolError`, **not executed, not logged** (refuses to forge an audit record) |
+| `agent_reported_success` not a bool | raises `TypeError` (`None` is refused too: use `False` for "no status reached the agent") |
+| missing / non-string argument | raises `ValueError` / `TypeError` |
+| `expected_files_modified` given a bare string | raises `TypeError` |
 
-**未知工具为什么拒绝而不是返回错误响应**：返回一个通用错误、日志里什么都不记，等于让
-未经审计的调用无声累积。一个"看起来很尽责但有盲区"的拦截层，比没有拦截层更危险——
-因为调用方以为它在看着。生产版应改为"记录 + 放行"，以免打断 Agent 流程；MVP 选择响亮失败。
+**Why an unknown tool is refused rather than answered with an error response**: returning a
+generic error and logging nothing lets unaudited calls accumulate silently. An interception
+layer that "looks diligent but has a blind spot" is more dangerous than none, because the caller
+believes it is watching. Production should record and pass through so the agent's flow is not
+interrupted; the MVP chooses to fail loudly.
 
+## Attaching as a sidecar (stdio)
 
-
-## 作为 Sidecar 接入（stdio）
-
-安装：
+Install:
 
 ```bash
 pip install .
-# 或本地构建：python3 -m pip wheel . --no-deps -w dist/
+# or build locally: python3 -m pip wheel . --no-deps -w dist/
 ```
 
-装好后得到一个可直接启动的 stdio 服务：
+That gives a directly startable stdio service:
 
 ```bash
 harness-audit-server --cwd /path/to/project
-# 等价于：python3 -m audit_sidecar.mcp_server --cwd /path/to/project
+# equivalent to: python3 -m audit_sidecar.mcp_server --cwd /path/to/project
 ```
 
-| 参数 | 默认 | 说明 |
+| Argument | Default | Meaning |
 |:--|:--|:--|
-| `--cwd` | `.` | 被审命令的执行目录 |
-| `--repo` | 同 `--cwd` | Git 见证使用的仓库根 |
-| `--trace` | `<cwd>/audit_trace.jsonl` | 审计留痕（JSONL） |
-| `--immune-state` | `.immune_state.json`（与 `--trace` 同目录） | 炎症计数的持久化文件；`none` 表示只在内存（重启即遗忘，唯一的失忆入口） |
-| `--timeout` | `30` | 单条命令超时（秒） |
-| `--quiet` | 关 | 静默 stderr 诊断 |
+| `--cwd` | `.` | execution directory for the audited commands |
+| `--repo` | same as `--cwd` | repository root used by the git witness |
+| `--trace` | `<cwd>/audit_trace.jsonl` | audit trail (JSONL) |
+| `--immune-state` | `.immune_state.json` (same directory as `--trace`) | persistence file for the inflammation count; `none` keeps it in memory only (forgotten on restart, the only amnesia entry point) |
+| `--timeout` | `30` | per-command timeout (seconds) |
+| `--quiet` | off | silence stderr diagnostics |
 
-### 协议
+### Protocol
 
-换行分隔的 JSON-RPC 2.0，一行一个对象（多数 stdio MCP 传输的行模式即如此）。
+Newline-delimited JSON-RPC 2.0, one object per line (the line mode most stdio MCP transports
+use).
 
-**请求**
+**Request**
 
 ```json
 {"jsonrpc":"2.0","method":"tool_call",
@@ -909,7 +999,7 @@ harness-audit-server --cwd /path/to/project
  "id":1}
 ```
 
-**响应**（Agent 看到的就是这个）
+**Response** (this is what the agent sees)
 
 ```json
 {"jsonrpc":"2.0","id":1,
@@ -917,7 +1007,7 @@ harness-audit-server --cwd /path/to/project
            "content":[{"type":"text","text":"write_file: ok"}]}}
 ```
 
-**审计留痕**（Agent 看不到，写进 `audit_trace.jsonl`）
+**Audit trail** (invisible to the agent, written to `audit_trace.jsonl`)
 
 ```json
 {"id":1,"tool":"write_file","intent":"modify file target.py",
@@ -926,9 +1016,10 @@ harness-audit-server --cwd /path/to/project
  "exit_code":0,"pipe_status":[0],"changed_files":["target.py"], ...}
 ```
 
-### 接入 Agent 客户端
+### Wiring into an agent client
 
-任何支持"把工具调用转发给一个 stdio 子进程"的框架都能接。以常见的 MCP 客户端配置为例：
+Any framework that can forward tool calls to a stdio subprocess will work. A typical MCP client
+configuration:
 
 ```json
 {
@@ -941,17 +1032,22 @@ harness-audit-server --cwd /path/to/project
 }
 ```
 
-把原来直连真实工具的客户端改为连到本代理即可。要点：
+Point the client that previously connected straight at the real tool to this proxy instead. Key
+points:
 
-1. `--cwd` 必须是**被审项目**的目录，不是代理自己的目录。
-2. 如果是 git 项目，`--repo` 一般留空（取 `--cwd`）；跨目录时显式指定。
-3. 轮询 `audit_trace.jsonl` 做告警/仪表盘；**不要**从 stdout 取判词——那里只有 Agent 该看到的东西。
-4. 判词文件按行追加，可安全地被 `tail -f` 或日志采集器并行读取。
-5. **炎症计数默认写在 trace 旁边**（`.immune_state.json`），重启后继续生效。若被审 Agent
-   对该目录有写权限，它就能删除或篡改这个文件——这时把 `--immune-state` 指到 agent
-   写不到的位置（见[炎症不会因为重启而消失](#炎症不会因为重启而消失)）。
+1. `--cwd` must be the **audited project's** directory, not the proxy's own.
+2. For a git project, `--repo` is usually left empty (it takes `--cwd`); specify it explicitly
+   when they differ.
+3. Poll `audit_trace.jsonl` for alerting / dashboards; do **not** take verdicts from stdout —
+   that carries only what the agent is meant to see.
+4. The verdict file is appended line by line and can safely be read in parallel by `tail -f` or
+   a log collector.
+5. **The inflammation count is written next to the trace by default** (`.immune_state.json`) and
+   survives restarts. If the audited agent can write to that directory, it can delete or tamper
+   with the file — in that case point `--immune-state` somewhere the agent cannot write (see
+   [Inflammation does not vanish on restart](#inflammation-does-not-vanish-on-restart)).
 
-### 实测：装完就能拦
+### Measured: it blocks right after install
 
 ```bash
 $ pip install .
@@ -960,202 +1056,237 @@ $ printf '%s\n' \
   '{"jsonrpc":"2.0","method":"tool_call","params":{"tool":"write_file","args":{"path":"nope/ok.py","content":"lie"},"reported_success":true},"id":2}' \
   | harness-audit-server --cwd /repo --quiet
 {"jsonrpc": "2.0", "id": 1, "result": {"status": "ok", ...}}
-{"jsonrpc": "2.0", "id": 2, "result": {"status": "ok", ...}}    ← Agent 两次都被告知成功
+{"jsonrpc": "2.0", "id": 2, "result": {"status": "ok", ...}}    <- the agent was told success twice
 $ cat /repo/audit_trace.jsonl
   id=1 check=True(protocol) effect=True  -> PASS
-  id=2 check=True(protocol) effect=False -> FAIL   ← 谎言在这里
+  id=2 check=True(protocol) effect=False -> FAIL   <- the lie is here
 ```
 
-### 协议层错误
+### Protocol-layer errors
 
-| 情形 | JSON-RPC 错误码 |
+| Situation | JSON-RPC error code |
 |:--|:--|
-| 非法 JSON | `-32700` parse error |
-| 不是 JSON 对象 / `jsonrpc` 非 `2.0` | `-32600` invalid request |
-| `method` 不是 `tool_call` | `-32601` method not found |
-| `params` 缺字段 / 类型不对 / **缺 `reported_success`** | `-32602` invalid params |
-| 未知工具名 | `-32001`（应用码，**不执行、不记 trace**） |
-| 执行期 `OSError` | `-32603` internal error |
+| invalid JSON | `-32700` parse error |
+| not a JSON object / `jsonrpc` not `2.0` | `-32600` invalid request |
+| `method` is not `tool_call` | `-32601` method not found |
+| `params` missing fields / wrong types / **missing `reported_success`** | `-32602` invalid params |
+| unknown tool name | `-32001` (application code, **not executed, not traced**) |
+| `OSError` during execution | `-32603` internal error |
 
-三条刻意的选择：
+Three deliberate choices:
 
-- **`reported_success` 缺失时拒绝，不默认 `True`。** 默认值会凭空造出"被审计的那个声明"，
-  于是每一次调用都会判 PASS——审计变成盖章。
-- **通知（无 `id`）不回响应。** JSON-RPC 明确禁止；回了会让客户端状态机错位。
-  但**仍然执行并记账**。
-- **trace 写失败不中断服务。** 只报 stderr。一个写不了日志就拒绝服务的审计器，
-  会把 Agent 一起拖下水；日志故障是事故，不是理由。
+- **Refuse when `reported_success` is missing; do not default to `True`.** A default would
+  invent "the claim under audit" out of thin air, so every call would judge PASS — auditing
+  becomes rubber-stamping.
+- **Notifications (no `id`) get no response.** JSON-RPC forbids it, and replying would
+  desynchronise the client's state machine. They are **still executed and recorded**.
+- **A failed trace write does not stop the service.** It only reports to stderr. An auditor
+  that refuses to serve when it cannot log would drag the agent down with it; a logging fault
+  is an incident, not an excuse.
 
+## Self-audit (`self_audit.py`)
 
+The paper's failure **mode 4** is "the auditor itself becomes decoration": it always returns
+PASS (or always FAIL), and nobody notices, because the auditor is never audited.
 
-## 自审计（`self_audit.py`）
+`run_self_audit()` feeds the engine samples whose **answers are known**:
 
-论文失败模式 **mode 4** 是"审计器本身变成了装饰品"：它永远返回 PASS（或永远返回 FAIL），
-而没人发现，因为审计器从不被审计。
-
-`run_self_audit()` 用**答案已知**的样本喂给引擎：
-
-| 样本 | 构造 | 期望 |
+| Sample | Construction | Expected |
 |:--|:--|:--|
-| known-bad | 假装写文件（真的没写），哈希仍是旧值，agent 报成功 | `FAIL` |
-| known-good | 真的写入，哈希已变，agent 报成功 | `PASS` |
-| no-witness | agent 报成功，但 `effect=None` | `INVALID` |
+| known-bad | pretend to write (nothing written), hash still old, agent reports success | `FAIL` |
+| known-good | really write, hash changed, agent reports success | `PASS` |
+| no-witness | agent reports success, but `effect=None` | `INVALID` |
 
-只喂 known-bad 是不够的——一个"永远 FAIL"的引擎能通过那条检查。所以后两个样本
-不是陪衬，它们把"永远 PASS"和"永远 FAIL"两种退化都堵死：
+Feeding only known-bad is not enough — an "always FAIL" engine would pass that check. So the
+last two samples are not decoration: they close off both degenerate behaviours, "always PASS"
+and "always FAIL":
 
 ```
-$ python3 -c "..."    # 把 VerdictEngine 换成永远返回 PASS / FAIL 的桩
+$ python3 -c "..."    # swap VerdictEngine for a stub that always returns PASS / FAIL
 baseline                 : True
 always-PASS engine       : False
 always-FAIL engine       : False
 ```
 
-`cli.py` 在启动时先调用它；不通过则打印
-`Self-audit failed, tool is a decoration.` 并 `exit(1)`，**拒绝启动**。
+`cli.py` calls it at startup; on failure it prints
+`Self-audit failed, tool is a decoration.` and calls `exit(1)`, **refusing to start**.
 
-样本用 `tempfile` 真写文件、真算 SHA-256，不是硬编码的假数据；
-若文件系统行为异常导致样本本身不成立（哈希未变/未落地），自审计同样返回 False。
+The samples use `tempfile` to really write files and really compute SHA-256, not hard-coded
+fake data; if abnormal filesystem behaviour makes a sample itself invalid (hash unchanged / not
+landed), self-audit also returns False.
 
 ---
 
-## 测试
+## Tests
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 # Ran 445 tests ... OK (skipped=7)
 ```
 
-> **必须在仓库根目录运行。** 起始目录写的是相对路径 `tests`；换到其他目录执行时
-> unittest 会静默地只收集到一部分模块（实测从 `/tmp` 运行只跑 31 项并报 9 个 error），
-> 而不是干脆地失败——一个少跑了 317 项却"通过"的测试，比一个红掉的测试更危险。
-> 因此 `-s` 与 `-p` 都显式写出：`-p 'test_*.py'` 排除 `tests/` 下将来可能出现的
-> 辅助模块被误当作测试收集。
+> **Must be run from the repository root.** The start directory is the relative path `tests`;
+> from another directory unittest silently collects only some modules (measured: running from
+> `/tmp` collected 31 and reported 9 errors) instead of failing outright — a test run that
+> "passes" while skipping 317 tests is more dangerous than a red one. So both `-s` and `-p` are
+> given explicitly: `-p 'test_*.py'` keeps future helper modules under `tests/` from being
+> collected as tests.
 
-覆盖：
+Coverage:
 
-- **判词**：四种判词各自的触发场景（重点 `INVALID` 不许变 `PASS`、`FAIL` 的假完成/假失败/
-  意图未实现三种分支）、判词优先级、`check` 归一化与拒绝、keyword-only 约束。
-- **免疫分级**：`ImmuneState` 的阈值/连续计数/`NOT RUN` 不计入/恢复期归零/参数校验；
-  `select_tier` 的整张判定表（无规则、声明 low、省略字段、声明 high、规则要求见证、
-  已发炎、无可观测路径）以及三个参数的类型校验；`stat` 见证的观测与拒绝
-  （`expected_content` 不得在廉价层被静默丢弃）；tier 路由在**真实仓库**里的四种组合；
-  发炎后同一条 low 规则确实升级到 git 变更集；五次通过恢复；`INVALID` 一次即发炎；
-  注入的 `ImmuneState` 与调用方共享；响应不泄漏 tier。
-- **炎症持久化**：发炎 / 恢复到一半 / 已痊愈三种状态各自跨实例还原；缺失文件不创建、
-  也不写盘；`NOT RUN` 不重写文件；损坏 JSON、未知版本、未知状态、负计数各自记 ERROR 并回退；
-  伪造的恢复计数被压到阈值前一步（不能跳过等待）；`INFLAMED` 配 0 危险计数仍保持发炎；
-  原子写入不留临时文件；父路径不可写时只记日志不抛异常；`reset()` 持久化；
-  `--immune-state none` 与显式路径。
-- **重启**：真起两个 `python -m audit_sidecar.mcp_server` 子进程，第一个退出后启动第二个，
-  由后者从磁盘读回前者的状态。验证炎症跨进程存活、痊愈跨进程存活、`--immune-state none`
-  如实退回失忆、显式路径优先生效。**这是"重启不能洗白"唯一的实证。**
-- **自身不产生漂移**：状态文件就在被审仓库里，而 git 见证会列未跟踪文件——
-  连续两次 `write_file` 必须都是 PASS 且 `unexpected_changes` 为空，
-  否则审计会把自己的笔记本当作罪证。
-- **账户**：窗口淘汰、`NOT RUN` 占格但不入分母、label 阈值边界（0.7 / 0.5）。
-- **文件见证**：`false | true` 的退出码不被吞、`PIPESTATUS` 逐段记录、天真读法与审计读法的
-  差值、内容校验、缺失产物判假完成、坐标漂移（钉住 / 跟随见证两种对照）、超时与不存在的 `cwd`、
-  临时 wrapper 不落到工作目录。
-- **Git 见证**：全部在**真实临时仓库**里跑真 `git`（`skipUnless(git 与 bash 可用)`），
-  覆盖修改 / 未跟踪 / 新建子目录 / 删除 / 已暂存、排序与 POSIX 路径、`.gitignore` 不出现、
-  非仓库报错、基线排除既有脏改动、同一文件二次编辑、子目录坐标映射、`repo_path` 选中仓库、
-  严格与宽松两种污染策略、两个见证合取。
-- **MCP 拦截**：诚实调用判 PASS、工具吞错判 FAIL、`check` 不得从退出码重推导（回归守卫）、
-  原因串点出工具层自相矛盾、响应保持被动、假失败、静默工具（`true` 却报成功）、
-  未知工具拒绝且不执行、参数注入防护（三种载荷）、含空格路径、契约校验。
-- **端到端**：`subprocess` 真启动子进程、真写 stdin、真读 stdout。验证响应是合法
-  JSON-RPC 且**不泄漏判词**、`audit_trace.jsonl` 记录正确判词（含 `FAIL`）、
-  一次会话多调用、字符串 id 回显、非法 JSON / 未知方法 / 版本错 / 缺 `reported_success`
-  / 非 bool 声明各自的错误码、通知不回响应但**仍执行并记账**、坏请求后继续服务、
-  trace 默认落在 `--cwd`、跨会话追加、启动参数错误退出码为 2。
-- 全部用 `tempfile.TemporaryDirectory()`，不留垃圾（含 git 临时仓库）。
+- **Verdicts**: the trigger for each of the four verdicts (with emphasis on `INVALID` never
+  becoming `PASS`, and the three `FAIL` branches: false completion / false failure / intent not
+  realised), verdict priority, `check` normalisation and refusal, the keyword-only constraint.
+- **Immune tiering**: `ImmuneState` thresholds / consecutive counts / `NOT RUN` excluded /
+  recovery reset / argument validation; the whole decision table of `select_tier` (no rule,
+  declared low, field omitted, declared high, rule requires a witness, already inflamed, no
+  observable path) plus type validation of the three arguments; observation and refusal of the
+  `stat` witness (`expected_content` must not be silently dropped at the cheap tier); the four
+  tier-routing combinations in a **real repository**; the same low rule escalating to a git change
+  set once inflamed; recovery after five passes; one `INVALID` inflaming; an injected
+  `ImmuneState` shared with the caller; responses not leaking the tier.
+- **Inflammation persistence**: inflamed / half-recovered / healed restored across instances; a
+  missing file is neither created nor written; `NOT RUN` does not rewrite the file; corrupt JSON,
+  unknown version, unknown state and negative counts each record ERROR and fall back; a forged
+  recovery count is clamped to one step short of the threshold (the wait cannot be skipped);
+  `INFLAMED` with a danger count of 0 stays inflamed; atomic writes leave no temp file; an
+  unwritable parent only logs; `reset()` persists; `--immune-state none` versus an explicit path.
+- **Restart**: two real `python -m audit_sidecar.mcp_server` subprocesses, the second reading the
+  first's state back from disk after the first exits. Verifies inflammation survives across
+  processes, recovery survives across processes, `--immune-state none` honestly returns to
+  amnesia, and an explicit path takes precedence. **This is the only empirical proof that "a
+  restart cannot clear suspicion".**
+- **The auditor does not create drift itself**: the state file lives in the audited repository
+  and the git witness lists untracked files — two consecutive `write_file` calls must both be
+  PASS with empty `unexpected_changes`, or the audit would treat its own notebook as evidence.
+- **Account**: window eviction, `NOT RUN` taking a slot but not the denominator, label threshold
+  boundaries (0.7 / 0.5).
+- **File witness**: `false | true`'s exit code not swallowed, `PIPESTATUS` recorded per stage,
+  the gap between naive and audit readings, content checks, a missing artefact judged as false
+  completion, coordinate drift (witness pinned / witness following, as a control pair), timeouts
+  and a nonexistent `cwd`, the temporary wrapper not landing in the working directory.
+- **Git witness**: all running real `git` in **real temporary repositories**
+  (`skipUnless(git and bash available)`), covering modify / untracked / new subdirectory /
+  delete / staged, sorting and POSIX paths, `.gitignore` excluded, non-repository error, baseline
+  excluding pre-existing dirt, a second edit to the same file, subdirectory coordinate mapping,
+  `repo_path` selecting the repository, both strict and permissive contamination policies, and
+  the conjunction of two witnesses.
+- **MCP interception**: honest call judged PASS, swallowed error judged FAIL, `check` not
+  re-derived from the exit status (regression guard), the reason string naming the tool layer's
+  self-contradiction, the response staying passive, false failure, a silent tool (`true` yet
+  reporting success), unknown tools refused and not executed, argument-injection protection
+  (three payloads), paths containing spaces, contract validation.
+- **End to end**: `subprocess` really starts a child, really writes stdin and really reads
+  stdout. Verifies the response is valid JSON-RPC and **does not leak the verdict**, that
+  `audit_trace.jsonl` records the correct verdict (including `FAIL`), multiple calls in one
+  session, string id echo, error codes for invalid JSON / unknown method / wrong version /
+  missing `reported_success` / non-bool claim, notifications unanswered but **still executed and
+  recorded**, service continuing after a bad request, the trace defaulting to `--cwd`, appending
+  across sessions, and exit code 2 for bad startup arguments.
+- Everything uses `tempfile.TemporaryDirectory()`, leaving no litter (including temporary git
+  repositories).
 
 ---
 
-## 已知边界（MVP 范围）
+## Known boundaries (MVP scope)
 
-- **没有 Content-Length 分帧。** stdio 传输用换行分隔 JSON；MCP 规范的另一种
-  Content-Length 模式未实现，接第三方客户端前需确认对端用哪种。
-- **没有握手与能力协商。** 不实现 `initialize` / `tools/list` / `notifications`；
-  只有 `tool_call`。真实 MCP 客户端握手会失败，需要一层适配。
-- **工具注册表是内置的。** 只有 `write_file` / `append_file` / `run_command` 三个，
-  工具实现由本仓库生成（命令拼接），不是转发到外部 MCP server。
-- **`reported_success` 仍由客户端传入。** 这是本层最大的诚实性缺口：它守护
-  "工具层 vs 物理世界"，但"客户端 vs 工具层"这一段没有见证。真正的拦截应从协议帧的
-  `result.isError` 解析，而不是相信上送的值。
-- **单进程、单线程、无并发。** 一行一请求串行处理；慢命令会阻塞后续调用。
-  无批处理（JSON-RPC batch 未实现）。
-- **见证只有文件系统与 git**。没有进程退出码族，没有网络副作用；
-  `git` 见证依赖工作树状态，对已 commit 的历史改动不可见（基线是工作区快照）。
-- **Tier 1 有明确盲点。** 先天免疫只看存在性与 mtime，**看不见"顺手多改了一个文件"**；
-  同长度、同一文件系统时间戳刻度内的重写对它完全不可见。这不是缺陷而是取舍，
-  所以覆盖写在 `write_file` 的 `risk_level: "high"` 里，并把盲点写成了一条测试
-  （`test_adaptive_tier_sees_drift_the_innate_tier_cannot`）。
-- **炎症状态跨进程持久化（v0.7.0 起）。** `harness-audit-server` 默认把计数写在
-  `--trace` 旁边的 `.immune_state.json`，每次判词后原子写入，启动时读回。
-  **杀进程重启不再能洗清嫌疑**——这正是它存在的理由：能安排崩溃的是被审的 Agent 自己。
-  用 `--immune-state none` 显式要求失忆（这是唯一的失忆入口），或用 `--immune-state PATH`
-  把文件放到被审目录之外。
+- **No Content-Length framing.** The stdio transport uses newline-delimited JSON; MCP's other
+  Content-Length mode is not implemented, so confirm which one a third-party client uses before
+  connecting.
+- **No handshake or capability negotiation.** `initialize` / `tools/list` / `notifications` are
+  not implemented; only `tool_call`. A real MCP client handshake will fail and needs an adapter
+  layer.
+- **The tool registry is built in.** Only `write_file` / `append_file` / `run_command`, with tool
+  implementations generated by this repository (command splicing) rather than forwarded to an
+  external MCP server.
+- **`reported_success` is still supplied by the client.** This is the largest honesty gap in
+  this layer: it guards "tool layer vs physical world", but the "client vs tool layer" segment has
+  no witness. Real interception should parse `result.isError` from the protocol frame instead of
+  trusting a value passed in.
+- **Single process, single thread, no concurrency.** One request per line, processed serially; a
+  slow command blocks later calls. No batching (JSON-RPC batch is not implemented).
+- **Witnesses are only filesystem and git.** No process exit-code family, no network side
+  effects; the `git` witness depends on working-tree state and cannot see changes already
+  committed (the baseline is a working-tree snapshot).
+- **Tier 1 has a clear blind spot.** Innate immunity looks only at existence and mtime, and
+  **cannot see "changed one extra file along the way"**; a rewrite of equal length within one
+  filesystem timestamp tick is entirely invisible to it. This is a trade-off rather than a defect,
+  which is why overwrites are declared in `write_file`'s `risk_level: "high"` and the blind spot
+  is written as a test (`test_adaptive_tier_sees_drift_the_innate_tier_cannot`).
+- **Inflammatory state is persisted across processes (since v0.7.0).** By default
+  `harness-audit-server` writes the count to `.immune_state.json` next to `--trace`, atomically
+  after each verdict, and reads it back at startup. **Killing the process and restarting no
+  longer clears suspicion** — which is exactly why it exists: the party able to arrange a crash
+  is the audited agent itself. Use `--immune-state none` to request amnesia explicitly (the only
+  amnesia entry point), or `--immune-state PATH` to place the file outside the audited directory.
 
-  **残余风险（不隐藏）：** 状态文件是普通 JSON，没有签名。一个**有权写入该路径**的 Agent
-  仍然可以删掉或改掉它；损坏或缺失时系统回退 `NORMAL` 并在 stderr 记 ERROR
-  （日志里写作 amnesia event）。要做到抗篡改，需要把文件放到 Agent 写不到的地方，
-  或加 HMAC——MVP 未做。**这比"重启即遗忘"强得多，但不是不可伪造的。**
-- **不阻止坏动作。** 没有 hook、没有代理；本工具是旁路判词器，不阻止坏动作发生，
-  只拒绝为它背书。
-- **`pipe_status` 对顶层 `exit` 退化。** 命令里出现顶层 `exit` 会让 wrapper 提前终止，
-  此时拿不到逐段状态，回退为 `(exit_code,)`；判词不受影响。
-- **超时后的状态不采信。** 进程被 kill，文件可能是中间态，因此判 `INVALID` 而不是
-  `FAIL`。保守方向。
-- **git 见证只认工作区**。若命令自己 `git commit` 了，改动就从未提交集合里消失，
-  严格模式下会表现为"期望文件没被改"。这是刻意的保守选择，不是遗漏。
-- **trace 无轮转、无锁。** 只追加不切割；多进程写同一文件时依赖单次 `write` 的原子性
-  （小于 PIPE_BUF 量级通常安全），未做显式加锁。
-- **`intent` 会原样回显客户端路径。** `changed_files` / `missing_expected` /
-  `unexpected_changes` 都是仓库根相对路径（`git status` 坐标系），但 `intent` 记录的是
-  调用参数的原文。客户端传绝对路径，本机路径就会进 trace。分享审计日志前请自查：
-  `grep -cE '/tmp/|/home/' audit_trace.jsonl`。
-- **规则层是 opt-in 的。** `MCPProxy` 不传 `rules_dir` 就是纯四值格；服务端才自动探测
-  `./rules`。不给规则不会静默改变老调用的判词。
-- **`rules/` 随包发布（v0.6.1 起）。** 默认规则在 `audit_sidecar/rules/` 内，
-  作为 package data 打进 wheel，所以 `pip install` 之后**不需要任何配置**即可生效。
-  解析顺序是 `$HARNESS_AUDIT_RULES` → 当前目录 `./rules` → 包内 `rules/`，
-  前两者用于覆盖默认策略。`$HARNESS_AUDIT_RULES` 指向不存在的目录会**报错**，
-  而不是悄悄退回默认策略——否则操作者会以为自己的规则在跑。
-- **规则只覆盖 `write_file` 与 `append_file`。** 随包带两条：`no_file_drift`
-  （`risk_level: high`）与 `append_landed`（`risk_level: low`）；`run_command`
-  没有规则，直接走格子并默认 Tier 2。规则表达力也有限：只有三个
-  `witness_type`、一个 `expectation: file_modified` 和两个 `risk_level`，
-  写成别的一律加载报错——宁可拒绝，也不静默忽略。
-- **非 git 目录下只有文件见证。** 需要变更集的工具（`write_file`）在非 git 目录
-  判 `INVALID`：不是"通过"，是"没看到"。要么 `--repo` 指向仓库，要么
-  `--rules none` 明示接受较弱策略。
-- **规则不做跨工具推理。** 每条规则独立判定，没有"先 A 后 B"的顺序约束，也没有
-  规则之间的依赖。
-- **无持久化。** 账户与审计日志都在内存里，进程退出即丢（trace 文件除外）。
+  **Residual risk (not hidden):** the state file is plain JSON, unsigned. An agent with **write
+  access to that path** can still delete or alter it; on corruption or absence the system falls
+  back to `NORMAL` and records ERROR on stderr (an amnesia event in the log). Tamper resistance
+  requires placing the file where the agent cannot write, or adding an HMAC — not done in the
+  MVP. **This is much stronger than "forgotten on restart", but it is not unforgeable.**
+- **Bad actions are not prevented.** No hooks, no proxy enforcement; this is a sidecar verdict
+  tool, which does not stop a bad action, only declines to endorse it.
+- **`pipe_status` degrades for a top-level `exit`.** A top-level `exit` in the command terminates
+  the wrapper early, so per-stage status is unavailable and it falls back to `(exit_code,)`;
+  the verdict is unaffected.
+- **State after a timeout is not trusted.** The process was killed and files may be intermediate,
+  so the verdict is `INVALID` rather than `FAIL`. Conservatism in the safe direction.
+- **The git witness only sees the working tree.** If the command runs `git commit` itself, the
+  change disappears from the uncommitted set and strict mode reports "the expected file was not
+  changed". That is a deliberate conservative choice, not an omission.
+- **The trace has no rotation and no locking.** Append-only, never split; concurrent writers rely
+  on the atomicity of a single `write` (usually safe below PIPE_BUF), with no explicit locking.
+- **`intent` echoes the client's path verbatim.** `changed_files` / `missing_expected` /
+  `unexpected_changes` are repository-root relative (the `git status` coordinate system), but
+  `intent` records the call argument as given. If the client passes absolute paths, local paths
+  enter the trace. Before sharing an audit log, check yourself:
+  `grep -cE '/tmp/|/home/' audit_trace.jsonl`.
+- **The rule layer is opt-in.** `MCPProxy` without `rules_dir` is the pure four-valued grid; only
+  the server auto-detects `./rules`. Providing no rules does not silently change the verdicts of
+  existing calls.
+- **`rules/` ships with the package (since v0.6.1).** Default rules live in `audit_sidecar/rules/`
+  and are packed into the wheel as package data, so **no configuration is needed** after
+  `pip install`. Resolution order is `$HARNESS_AUDIT_RULES` → `./rules` in the current directory →
+  bundled `rules/`, the first two overriding the defaults. `$HARNESS_AUDIT_RULES` pointing at a
+  nonexistent directory **raises an error** rather than quietly falling back, since otherwise the
+  operator would believe their rules were running.
+- **Rules cover only `write_file` and `append_file`.** Two ship with the package: `no_file_drift`
+  (`risk_level: high`) and `append_landed` (`risk_level: low`); `run_command` has no rule, goes
+  straight to the grid, and defaults to Tier 2. Rule expressiveness is limited too: only three
+  `witness_type`s, one `expectation: file_modified` and two `risk_level`s; anything else fails to
+  load — refusal over silent ignoring.
+- **Only the file witness exists in a non-git directory.** Tools needing a change set
+  (`write_file`) are judged `INVALID` there: not "passed", but "not seen". Either point `--repo`
+  at a repository, or accept the weaker policy explicitly with `--rules none`.
+- **Rules perform no cross-tool reasoning.** Each rule judges independently; there are no "A then
+  B" ordering constraints and no dependencies between rules.
+- **No persistence.** The account and the audit log live in memory and vanish with the process
+  (except the trace file).
 
-## 路线图
+## Roadmap
 
-1. **见证采集**：
-   - 文件系统：已具备（存在性 + 内容子串）。
-   - Git 变更集：已具备（`git_witness.py`）。
-   - 待扩展：内容哈希、进程退出码族、网络副作用。
-   - mtime：已用于 Tier 1（存在性 + mtime，见[条件触发的免疫响应](#conditional-immune-response-条件触发的免疫响应)），
-     精度处理与内容哈希仍未做。
-2. **MCP 拦截**（语义与传输已具备，握手未接）：
-   - 已具备：`MCPProxy` 的调用边界、被动响应、工具注册表、注入防护；
-     `mcp_server.py` 的 stdio JSON-RPC 服务端与 JSONL 审计留痕。
-   - 待扩展：从协议帧的 `result.isError` 取声明而非由客户端上送、`initialize` 握手与
-     `tools/list`、Content-Length 分帧、转发到外部 MCP server、并发与批处理。
-3. **外置判据库**（已具备基础形态）：
-   - 已具备：`rules/*.yaml` 加载与严格校验、按工具选规则、单调收紧、`rule_id` 入 trace、
-     规则层自审计。
-   - 待扩展：更多 `expectation`（`file_created` / `content_matches` / `no_unexpected_changes`）、
-     规则继承与分组、按路径作用域（`target_path` glob）、规则版本与生效日期、
-     远程判据库与签名。
-4. 账户持久化与跨会话聚合；把判词流导出为可复核的审计日志。
+1. **Witness collection**:
+   - Filesystem: available (existence + content substring).
+   - Git change set: available (`git_witness.py`).
+   - To extend: content hashes, process exit-code family, network side effects.
+   - mtime: already used by Tier 1 (existence + mtime, see
+     [Conditional Immune Response](#conditional-immune-response)); precision handling and content
+     hashing are still missing.
+2. **MCP interception** (semantics and transport available, handshake not wired):
+   - Available: `MCPProxy`'s call boundary, passive response, tool registry, injection
+     protection; `mcp_server.py`'s stdio JSON-RPC server and JSONL audit trail.
+   - To extend: take the claim from the protocol frame's `result.isError` rather than from the
+     client, `initialize` handshake and `tools/list`, Content-Length framing, forwarding to an
+     external MCP server, concurrency and batching.
+3. **External judgment base** (basic form available):
+   - Available: `rules/*.yaml` loading and strict validation, per-tool rule selection, monotonic
+     tightening, `rule_id` in the trace, rule-layer self-audit.
+   - To extend: more `expectation`s (`file_created` / `content_matches` /
+     `no_unexpected_changes`), rule inheritance and grouping, path scoping (`target_path` glob),
+     rule versions and effective dates, a remote judgment base with signatures.
+4. Account persistence and cross-session aggregation; exporting the verdict stream as a
+   reviewable audit log.
 
-## 许可
+## License
 
-代码 MIT；论文文本 CC BY 4.0。
+Code MIT; paper text CC BY 4.0.
