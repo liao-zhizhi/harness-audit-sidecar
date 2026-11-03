@@ -33,6 +33,7 @@ from .immune_state import STATE_FILENAME
 from .judgment_base import RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .runner import SafeRunner
+from .tools.citation_audit import register_citation_tool
 
 __all__ = ["JsonRpcServer", "TraceWriter", "main", "TRACE_FILENAME"]
 
@@ -395,6 +396,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (ValueError, FileNotFoundError, RuleError) as problem:
         _LOG.error("could not start the proxy: %s", problem)
         return 2
+
+    # A citation's witness is a registration agency, not a filesystem effect,
+    # so it cannot come from the shell-command registry. Registering it here
+    # makes `validate_citation` answerable over the same JSON-RPC surface --
+    # and judged by the same lattice -- as the file tools.
+    register_citation_tool(proxy)
 
     server = JsonRpcServer(proxy, trace)
     try:

@@ -8,6 +8,8 @@ Public surface::
 
     Verdict          four-valued verdict (PASS / FAIL / INVALID / NOT RUN)
     VerdictEngine    judge one (intent, effect, check) case
+    CitationWitness  resolve a DOI/arXiv id and compare it with a claim
+    CitationAuditProxy  audit citations with the same lattice
     JudgmentBase     load the external judgment base (rules/*.yaml)
     RuleEngine       judge with the lattice, then tighten by rule
     ImmuneState      inflammation state that scopes how much a call is worth
@@ -21,6 +23,7 @@ The audit logic is standard library; PyYAML is used only to read the rules.
 from __future__ import annotations
 
 from .confidence import ConfidenceAccount
+from .citation_witness import CitationWitness
 from .git_witness import GitWitness, GitWitnessError
 from .immune_state import ImmuneState, select_tier
 from .judgment_base import JudgmentBase, RuleError, default_rules_dir, packaged_rules_dir
@@ -29,10 +32,13 @@ from .rule_engine import RuleDecision, RuleEngine
 from .runner import ExecutionResult, SafeRunner
 from .self_audit import run_self_audit
 from .verdict import Verdict, VerdictEngine
+from .tools.citation_audit import CitationAuditProxy
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
+    "CitationAuditProxy",
+    "CitationWitness",
     "ConfidenceAccount",
     "ExecutionResult",
     "GitWitness",

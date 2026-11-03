@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-harness-audit"
-version = "0.7.0"
+version = "0.8.0"
 description = "Execution-layer audit sidecar for AI agent harnesses: four-valued verdicts judged against independently collected witnesses."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -49,7 +49,7 @@ harness-audit-server = "audit_sidecar.mcp_server:main"
 
 [tool.setuptools]
 # Only the package itself: tests and scratch output are not part of the wheel.
-packages = ["audit_sidecar"]
+packages = ["audit_sidecar", "audit_sidecar.tools"]
 
 [tool.setuptools.package-data]
 # py.typed marks the package as typed. rules/*.yaml ships the default policy

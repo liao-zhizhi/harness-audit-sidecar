@@ -219,6 +219,14 @@ class MCPProxy:
         self._registry = dict(_DEFAULT_REGISTRY)
         if registry:
             self._registry.update(registry)
+        # Tools whose witness is collected in-process rather than by running a
+        # shell command (see ``audit_sidecar/tools/citation_audit.py``). Kept
+        # separate from ``_registry`` because their value is a witness, not a
+        # command line, and conflating the two would let a caller smuggle an
+        # unexecuted "command" past the runner.
+        self._witness_handlers: Dict[
+            str, Callable[[Dict[str, Any], bool], ExecutionResult]
+        ] = {}
         self._audit_log: List[ExecutionResult] = []
         self._responses: List[Dict[str, Any]] = []
 
@@ -307,6 +315,37 @@ class MCPProxy:
             raise TypeError("builder must be callable")
         self._registry[name] = builder
 
+    def register_witness_tool(
+        self,
+        name: str,
+        handler: Callable[[Dict[str, Any], bool], ExecutionResult],
+    ) -> None:
+        """Register a tool that collects its own witness in-process.
+
+        ``handler(args, agent_reported_success)`` must return an
+        :class:`ExecutionResult`; the verdict inside it is recorded verbatim, so
+        the handler is responsible for having consulted an independent source.
+        Unlike a shell tool there is no command to sandbox -- which is exactly
+        why such a tool must not be registered through :meth:`register_tool`,
+        where the absence of a real command would otherwise look audited.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("tool name must be a non-empty string")
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        if name in _DEFAULT_REGISTRY:
+            raise ValueError(
+                "tool {!r} is a built-in command tool; refusing to shadow it "
+                "with an in-process witness".format(name)
+            )
+        self._witness_handlers[name] = handler
+
+    @property
+    def immune_state(self) -> ImmuneState:
+        """The state every verdict advances. Exposed so a witness tool can join
+        the same ledger instead of keeping a private one."""
+        return self._immune
+
     def intercept_tool_call(
         self,
         tool_name: str,
@@ -336,6 +375,19 @@ class MCPProxy:
             )
         if not isinstance(args, dict):
             raise TypeError("args must be a dict, got {!r}".format(type(args).__name__))
+
+        handler = self._witness_handlers.get(tool_name)
+        if handler is not None:
+            result = handler(args, agent_reported_success)
+            if not isinstance(result, ExecutionResult):
+                # A handler that returns the wrong shape would crash the trace
+                # writer on the next line. Refuse here, where the cause is
+                # obvious, rather than three frames deeper.
+                raise TypeError(
+                    "witness handler for {!r} returned {!r}, expected "
+                    "ExecutionResult".format(tool_name, type(result).__name__)
+                )
+            return self._record(tool_name, agent_reported_success, result)
 
         builder = self._registry.get(tool_name)
         if builder is None:
@@ -378,6 +430,20 @@ class MCPProxy:
             # would take the whole sidecar down on an ordinary first run in a
             # scratch directory, and leave no trace to explain why.
             result = self._unwitnessed(invocation, agent_reported_success, problem)
+        return self._record(tool_name, agent_reported_success, result)
+
+    def _record(
+        self,
+        tool_name: str,
+        agent_reported_success: bool,
+        result: ExecutionResult,
+    ) -> Dict[str, Any]:
+        """Log one verdict, advance the immune state, and answer the caller.
+
+        Both the shell path and the in-process witness path end here, so a
+        citation PASS is counted by the same ledger as a file-write PASS and
+        cannot drift into a friendlier rule of its own.
+        """
         self._audit_log.append(result)
         # Every verdict advances the immune state, and the state is read at the
         # *start* of the next call. Escalating on the verdict one has just

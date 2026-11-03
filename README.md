@@ -2,11 +2,11 @@
 
 **Agent 执行层审计工具**
 
-> **项目状态：MVP / 早期版本（v0.7.0）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.8.0）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
-> 分级免疫响应（含跨进程持久化）与 stdio 服务端，核心闭环
-> （执行 → 见证 → 判词 → 留痕）已跑通并有 302 项测试；
+> 分级免疫响应（含跨进程持久化）、引用见证（DOI/arXiv 物理解析）与 stdio 服务端，核心闭环
+> （执行 → 见证 → 判词 → 留痕）已跑通并有 348 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -367,7 +367,7 @@ mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover tests          # 302 项
+python3 -m unittest discover tests          # 348 项
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -938,7 +938,7 @@ always-FAIL engine       : False
 
 ```bash
 python3 -m unittest discover tests -v
-# Ran 302 tests ... OK
+# Ran 348 tests ... OK
 ```
 
 覆盖：
