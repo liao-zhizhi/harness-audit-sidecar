@@ -185,6 +185,40 @@ showing the `-g` flag and the pre-build deletion as a deliberate precondition.
 
 ---
 
+## 7. Cryptography — a hash chain claimed to detect a deletion
+
+**The Mistake.** The brief for the append-only ledger named the threat precisely: *anyone can
+delete the last line of `audit_trace.jsonl` to clean themselves*. The implementation that
+follows from that sentence, if you are not careful, is a plain hash chain — `entry[n]`
+commits to `entry[n-1]` — and the accompanying claim that tampering is now detected. It is
+not. Deleting the **last** entry leaves a prefix that is still a perfectly valid chain:
+every `prev_hash` links, every `entry_hash` recomputes, and `verify_chain()` returns `PASS`.
+A chain proves that entries were not *altered*. It says nothing about entries that were
+*removed*, and the removal case was the one being defended against.
+
+**How it was caught.** By writing the deletion test before writing the documentation. The
+first run of the truncation case returned `PASS`, which is exactly the failure this file
+exists to record — the mechanism was sound and the claim attached to it was false. The
+suite now contains `test_without_an_anchor_truncation_still_verifies`, which asserts the
+blind spot rather than papering over it.
+
+**The Fix.** Two things, both required, neither sufficient alone:
+
+1. **A head anchor outside the file.** `seal()` writes `{seq, head_hash}` to a sibling path;
+   verification then requires that the entry at `anchor.seq` still hashes to
+   `anchor.head_hash`, and a truncated file has no such entry. `MembraneGateway` always
+   anchors and never offers the unanchored mode.
+2. **Storage the adversary cannot write.** If the attacker can rewrite the ledger *and* the
+   anchor, both are consistent again. A local-only scheme cannot prevent a wholesale
+   rewrite. Publishing the head — a commit, another host, a read-only medium — is what
+   turns the anchor into evidence, and that step is out of this repository's control.
+
+**Evidence.** `tests/test_membrane.py`, three cases side by side: middle-entry edit →
+`FAIL` at `seq` 2; tail deletion with an anchor → `FAIL`, `"truncated"`; tail deletion
+without an anchor → `PASS`. The third case is deliberate.
+
+---
+
 ## Addendum — an error made while writing this file
 
 One entry above was initially misdiagnosed, and the mistake is worth keeping because it is

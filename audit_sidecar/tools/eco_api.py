@@ -130,6 +130,19 @@ _DURATION_S_FIELDS: Tuple[str, ...] = (
 _VERDICTS = ("PASS", "FAIL", "INVALID", "NOT RUN")
 
 
+def _is_call(record: Dict[str, Any]) -> bool:
+    """True when a record describes one audited call.
+
+    A hash-chained ledger interleaves registrations, grants and denials with the
+    calls themselves. Those are bookkeeping, not trace lines, and a reader that
+    counted them as unparseable would report a healthy ledger as a corrupted
+    trace. Records with no ``record_type`` at all are legacy trace lines and are
+    calls by definition.
+    """
+    record_type = record.get("record_type")
+    return record_type is None or record_type == "call"
+
+
 # ---------------------------------------------------------------------------
 # trace reading
 # ---------------------------------------------------------------------------
@@ -281,7 +294,7 @@ def get_energy_gradient(
     if problem is not None:
         return _invalid_gradient(problem, skipped=skipped)
 
-    recent = _window(records, window)
+    recent = _window([record for record in records if _is_call(record)], window)
     if not recent:
         return _invalid_gradient(
             "the trace holds no records; nothing has been measured yet",
@@ -467,14 +480,20 @@ def get_evolution_history(trace_path: Any) -> Dict[str, Any]:
             "regressions": [],
             "keystone": None,
             "skipped_lines": skipped,
+            "bookkeeping": 0,
             "reason": problem,
         }
 
     sequence: List[str] = []
     per_tool: Dict[str, List[str]] = {}
+    bookkeeping = 0
     for record in records:
         verdict = record.get("verdict")
         if verdict not in _VERDICTS:
+            if not _is_call(record):
+                # A grant or a denial is a ledger entry, not a corrupted verdict.
+                bookkeeping += 1
+                continue
             # An unrecognised verdict is not silently bucketed as INVALID: that
             # would turn "this reader is out of date" into "the system failed".
             skipped += 1
@@ -545,6 +564,7 @@ def get_evolution_history(trace_path: Any) -> Dict[str, Any]:
         "regressions": regressions,
         "keystone": keystone,
         "skipped_lines": skipped,
+        "bookkeeping": bookkeeping,
         "reason": "; ".join(reason_parts) if reason_parts else "measured in full",
     }
 

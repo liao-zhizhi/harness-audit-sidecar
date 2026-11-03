@@ -25,6 +25,39 @@
 `INVALID`，不返回 `0`。现有 trace schema 记录判词，不记录取得判词的代价；"零成本"
 会被读成一次测量，而它其实是"未测量"。
 
+### 半透膜接口：势差、单向锁定、违约代价
+
+上一节的三个函数是**被动读取**——它们描述环境，却不改变谁能做什么。真正的接口要有
+势差：跨膜必须先付代价，而且**验收标准不能由请求方自己定**。
+
+`audit_sidecar/tools/membrane.py` 的 `MembraneGateway` 是唯一入口：
+
+```python
+gw = MembraneGateway("audit.jsonl")            # 自动带头锚点 + fsync
+gw.register_artefact("write", "out/spec.yaml") # 先登记期望（膜外进行）
+w = gw.request_action_warrant(
+    {"kind": "file", "path": "out/spec.yaml", "digest": "sha256:..."}, "write")
+gw.redeem(w)                                    # 一次性
+```
+
+| 性质 | 实现方式 | 边界 |
+|---|---|---|
+| **势差** | 摘要由膜**重新计算**，且必须命中**请求到达前**的登记 | 未登记 → `NOT_REGISTERED`。若 Agent 能自定验收标准，势差为零 |
+| **单向锁定** | 每条 grant/denial/registration/redeem 都是哈希链上的一环；Warrant 绑定签发位置的 `seq + chain_head` | 回滚日志 → 未兑现的 Warrant 立即失效 |
+| **违约代价** | 拒绝**先写账本再抛** `MembraneRejectError`（含稳定 `reason` 码） | 不记录拒绝，等于把"拒绝"伪装成"没发生" |
+| **统一入口** | `ImmuneState` 只以标量字典（`brake()`）离开；五律由本网关计算 | 这是**接口边界，不是沙箱**——同进程代码仍可 `import` 底层对象 |
+
+拒绝码：`NO_WITNESS` / `MALFORMED_WITNESS` / `ARTEFACT_MISSING` / `DIGEST_MISMATCH` /
+`NOT_REGISTERED` / `UNKNOWN_CAPABILITY` / `BRAKE_TRIPPED` / `WARRANT_ROLLED_BACK` /
+`WARRANT_EXHAUSTED` / `LEDGER_BROKEN`。
+
+**关于"删掉最后一行"这个漏洞——必须说清楚。** 纯哈希链**挡不住**它：删掉末尾后，
+剩下的前缀仍然是自洽的链，`verify_chain()` 会返回 `PASS`。链证明的是"记录未被改写"，
+不是"记录未被移除"。要防移除，需要**头锚点**（`seal()` 把 `{seq, head_hash}` 写到
+独立路径），而锚点又必须存放在攻击者**写不到**的地方（提交、另一台主机、只读介质）——
+否则改账本再改锚点，两者依旧自洽。这是本地纯文件方案的硬边界，本仓库不宣称能越过它。
+详见 [ERRATA.md](ERRATA.md) 第 7 条。
+
 **内部：八律（L1–L7 + 罚金账本）**由运行时自身执行。其中 L1–L4、L6、L7 在
 `agent-metabolism-os` 中，而 **L5 别构制动由本仓库承载**——触发它所需的矛盾证据
 来自审计方，而不是调度方。本仓库通过 `ImmuneState` 把 L5 暴露给代谢网关：
@@ -33,12 +66,12 @@
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **项目状态：MVP / 早期版本（v0.8.3）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.8.4）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
 > 分级免疫响应（含跨进程持久化）、引用见证（DOI/arXiv 物理解析）、外部生态接口
-> （五律纯函数）与 stdio 服务端，核心闭环
-> （执行 → 见证 → 判词 → 留痕）已跑通并有 388 项测试；
+> （五律纯函数）、半透膜接口（哈希链账本 + 势差鉴权）与 stdio 服务端，核心闭环
+> （执行 → 见证 → 判词 → 留痕）已跑通并有 435 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -399,7 +432,7 @@ mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 388 项（须在仓库根目录运行）
+python3 -m unittest discover -s tests -p 'test_*.py'   # 435 项（须在仓库根目录运行）
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -970,7 +1003,7 @@ always-FAIL engine       : False
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 388 tests ... OK (skipped=7)
+# Ran 435 tests ... OK (skipped=7)
 ```
 
 > **必须在仓库根目录运行。** 起始目录写的是相对路径 `tests`；换到其他目录执行时
