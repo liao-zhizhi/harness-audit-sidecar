@@ -2,6 +2,8 @@
 
 **Agent 执行层审计工具**
 
+> See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
+
 > **项目状态：MVP / 早期版本（v0.8.1）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
