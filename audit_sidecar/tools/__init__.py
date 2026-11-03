@@ -13,4 +13,4 @@ import graph.
 
 from __future__ import annotations
 
-__all__ = ["citation_audit"]
+__all__ = ["citation_audit", "eco_api"]

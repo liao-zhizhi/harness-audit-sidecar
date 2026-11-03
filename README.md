@@ -2,13 +2,43 @@
 
 **Agent 执行层审计工具**
 
+## Bio-Inspired Architecture（仿生架构）
+
+本系统采用"内外双修"的分层：**内部按八律运行，外部按五律被接入**。两套定律不共享
+状态，只共享判词词汇——这是刻意的，因为一个读自己被审计对象账本的制动器，可以被
+同一个缺陷同时污染。
+
+**外部接口：五律（`audit_sidecar/tools/eco_api.py`）**
+
+| 律 | 生态学原型 | 本系统中的可调用形式 |
+|---|---|---|
+| 1 | 能量梯度 | `get_energy_gradient()` —— 每调用 Token / 时间成本及其斜率 |
+| 2 | 边缘到主流演替 | `get_evolution_history()` —— 判词时序，及每个工具是否"毕业" |
+| 3 | 废物资源化 | `get_recyclable_waste()` —— `ERRATA.md` 中有多少失败被提炼为常驻规则 |
+| 4 | 关键种 | `get_evolution_history()["keystone"]` —— 移除后损失最多证据的工具 |
+| 5 | 承载力 | `get_energy_gradient(..., capacity=)` 的 `headroom` —— 距拒绝服务还剩多少余量 |
+
+律 1–3 是接口需求中明确指定的三条；律 4、5 是本实现的补充提案，在 `LAWS` 中以
+`"specified": False` 标注，不冒充需求。需求以「等」字收尾，并未定义第四、第五条。
+
+**一个刻意的拒绝**：trace 缺少 Token / 耗时字段时，`get_energy_gradient` 返回
+`INVALID`，不返回 `0`。现有 trace schema 记录判词，不记录取得判词的代价；"零成本"
+会被读成一次测量，而它其实是"未测量"。
+
+**内部：八律（L1–L7 + 罚金账本）**由运行时自身执行。其中 L1–L4、L6、L7 在
+`agent-metabolism-os` 中，而 **L5 别构制动由本仓库承载**——触发它所需的矛盾证据
+来自审计方，而不是调度方。本仓库通过 `ImmuneState` 把 L5 暴露给代谢网关：
+`MetabolicGateway(immune_state=...).get_current_laws_status()["L5_Brake"]`。这一层
+故意不从本仓库导入到代谢侧，只按协议鸭子类型对接，保持两侧可独立安装。
+
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **项目状态：MVP / 早期版本（v0.8.2）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.8.3）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
-> 分级免疫响应（含跨进程持久化）、引用见证（DOI/arXiv 物理解析）与 stdio 服务端，核心闭环
-> （执行 → 见证 → 判词 → 留痕）已跑通并有 348 项测试；
+> 分级免疫响应（含跨进程持久化）、引用见证（DOI/arXiv 物理解析）、外部生态接口
+> （五律纯函数）与 stdio 服务端，核心闭环
+> （执行 → 见证 → 判词 → 留痕）已跑通并有 388 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -369,7 +399,7 @@ mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 348 项（须在仓库根目录运行）
+python3 -m unittest discover -s tests -p 'test_*.py'   # 388 项（须在仓库根目录运行）
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -940,7 +970,7 @@ always-FAIL engine       : False
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 348 tests ... OK
+# Ran 388 tests ... OK (skipped=7)
 ```
 
 > **必须在仓库根目录运行。** 起始目录写的是相对路径 `tests`；换到其他目录执行时
