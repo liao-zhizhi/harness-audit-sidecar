@@ -129,18 +129,30 @@ _DURATION_S_FIELDS: Tuple[str, ...] = (
 
 _VERDICTS = ("PASS", "FAIL", "INVALID", "NOT RUN")
 
+#: Record types that carry a cost worth measuring. An LLM call spends tokens
+#: without producing a verdict -- nothing was witnessed about it -- so it is a
+#: cost sample and *not* a trace line. Counting it as a corrupted trace would
+#: make a healthy ledger look damaged; counting it as a PASS would fabricate a
+#: judgement nobody made.
+_COST_RECORD_TYPES = (None, "call", "llm")
+
+#: Record types whose ``verdict`` field is a judgement.
+_VERDICT_RECORD_TYPES = (None, "call")
+
+
+def _is_cost_sample(record: Dict[str, Any]) -> bool:
+    """True when a record's cost fields are worth including in the gradient."""
+    return record.get("record_type") in _COST_RECORD_TYPES
+
+
+def _is_verdict_record(record: Dict[str, Any]) -> bool:
+    """True when a record's ``verdict`` field claims to be a judgement."""
+    return record.get("record_type") in _VERDICT_RECORD_TYPES
+
 
 def _is_call(record: Dict[str, Any]) -> bool:
-    """True when a record describes one audited call.
-
-    A hash-chained ledger interleaves registrations, grants and denials with the
-    calls themselves. Those are bookkeeping, not trace lines, and a reader that
-    counted them as unparseable would report a healthy ledger as a corrupted
-    trace. Records with no ``record_type`` at all are legacy trace lines and are
-    calls by definition.
-    """
-    record_type = record.get("record_type")
-    return record_type is None or record_type == "call"
+    """Back-compatible alias used by the legacy readers."""
+    return _is_cost_sample(record)
 
 
 # ---------------------------------------------------------------------------
@@ -490,8 +502,9 @@ def get_evolution_history(trace_path: Any) -> Dict[str, Any]:
     for record in records:
         verdict = record.get("verdict")
         if verdict not in _VERDICTS:
-            if not _is_call(record):
-                # A grant or a denial is a ledger entry, not a corrupted verdict.
+            if not _is_verdict_record(record):
+                # A grant, a denial or an LLM cost sample is a ledger entry, not
+                # a corrupted verdict.
                 bookkeeping += 1
                 continue
             # An unrecognised verdict is not silently bucketed as INVALID: that

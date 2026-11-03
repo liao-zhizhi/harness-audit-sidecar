@@ -92,7 +92,13 @@ _REJECT_DIGEST_MISMATCH = "DIGEST_MISMATCH"
 _REJECT_NOT_REGISTERED = "NOT_REGISTERED"
 _REJECT_UNKNOWN_CAPABILITY = "UNKNOWN_CAPABILITY"
 _REJECT_BRAKE_TRIPPED = "BRAKE_TRIPPED"
+_REJECT_PENALTY_CRITICAL = "PENALTY_CRITICAL"
 _REJECT_LEDGER_BROKEN = "LEDGER_BROKEN"
+
+#: The penalty ledger's worst grade. Spelled here rather than imported because
+#: this package never imports ``agent_metabolism``; the two vocabularies are
+#: joined by contract and the join is pinned by a test in the sidecar suite.
+_PENALTY_CRITICAL = "CRITICAL"
 
 
 class MembraneRejectError(Exception):
@@ -186,7 +192,13 @@ class MembraneGateway:
         immune_state: any object answering ``is_inflamed()`` or carrying a
             ``state`` string. Duck-typed: this package never imports the
             auditor, and the auditor never imports this. The object is retained
-            privately and never handed back out.
+            privately and never handed back out. L5: transient, recoverable.
+        penalty_ledger: any object with a ``penalty_state`` string, in practice
+            an ``agent_metabolism.penalty.PenaltyLedger``. L3's write gate: a
+            ``CRITICAL`` ledger closes ``strict_capabilities`` even when the
+            immune state is calm. Damage does not heal on its own the way
+            inflammation does, so it is a separate input rather than a stricter
+            reading of the same one.
         errata_path: optional ``ERRATA.md`` for the waste-recycling law.
         capacity: optional per-call token budget for the carrying-capacity law.
         strict_capabilities: which capabilities the brake closes.
@@ -197,6 +209,7 @@ class MembraneGateway:
         ledger: Any,
         *,
         immune_state: Any = None,
+        penalty_ledger: Any = None,
         errata_path: Any = None,
         capacity: Optional[float] = None,
         strict_capabilities: Any = None,
@@ -218,7 +231,29 @@ class MembraneGateway:
                     )
                 )
 
+        # Two safety layers, two vocabularies, and they must not be swapped.
+        # ``ImmuneState`` says NORMAL/INFLAMED; ``PenaltyLedger`` says
+        # HEALTHY/WARNING/CRITICAL. Both used to carry an attribute literally
+        # named ``state``, so handing a penalty ledger to ``immune_state=`` read
+        # "CRITICAL" as "not INFLAMED" and reported a healthy brake at the worst
+        # possible moment. The names are now distinct and the roles are checked
+        # here, so the mistake is a TypeError at wiring time instead of a calm
+        # answer at the wrong time.
+        if penalty_ledger is not None and callable(getattr(penalty_ledger, "is_inflamed", None)):
+            raise TypeError(
+                "penalty_ledger looks like an immune state; pass it as "
+                "immune_state= -- the two answer different questions and their "
+                "state vocabularies do not overlap"
+            )
+        if immune_state is not None and hasattr(immune_state, "penalty_state"):
+            raise TypeError(
+                "immune_state looks like a PenaltyLedger (it has penalty_state); "
+                "pass it as penalty_ledger= so a CRITICAL ledger is read as "
+                "damage rather than as a calm brake"
+            )
+
         self._immune = immune_state
+        self._penalty = penalty_ledger
         self._errata_path = errata_path
         self._capacity = capacity
         #: capability -> set of digests registered before the request arrived.
@@ -332,6 +367,16 @@ class MembraneGateway:
                     capability, ", ".join(CAPABILITIES)
                 ),
                 capability=capability if isinstance(capability, str) else None,
+            )
+
+        if self._penalty_tripped() and capability in self._strict:
+            return self._reject(
+                _REJECT_PENALTY_CRITICAL,
+                "the penalty ledger is CRITICAL ({!r} is closed); trust "
+                "bankruptcy stops new writes even with charge to spare".format(
+                    capability
+                ),
+                capability=capability,
             )
 
         if self._brake_tripped() and capability in self._strict:
@@ -528,12 +573,6 @@ class MembraneGateway:
         """Read the brake without ever exposing the object behind it."""
         immune = self._immune
         if immune is None:
-            # No brake attached means no brake *evidence*. Treating that as
-            # "calm" would let an unattached safety layer look healthy; treating
-            # it as "tripped" would make the gateway unusable before it is
-            # wired. The compromise: it does not close the gate, and
-            # ``brake()`` reports ``attached: False`` so the omission is visible
-            # rather than inferred.
             return False
         probe = getattr(immune, "is_inflamed", None)
         if callable(probe):
@@ -546,19 +585,81 @@ class MembraneGateway:
             return state == "INFLAMED"
         return True
 
+    def _penalty_state(self) -> Optional[str]:
+        """The attached ledger's grade, read by its own name only."""
+        ledger = self._penalty
+        if ledger is None:
+            return None
+        state = getattr(ledger, "penalty_state", None)
+        return state if isinstance(state, str) else None
+
+    def _penalty_tripped(self) -> bool:
+        """True when accumulated damage has closed the write gate.
+
+        Separate from :meth:`_brake_tripped` because the two inputs are
+        different questions with different lifetimes: inflammation is transient
+        and heals after enough passes, whereas a ``CRITICAL`` ledger is
+        long-lived damage. An unattached ledger reads as *not tripped* and is
+        reported as ``attached: False``, the same treatment the brake gets --
+        an absent safety layer must be visible, not inferred.
+        """
+        return self._penalty_state() == _PENALTY_CRITICAL
+
     def brake(self) -> Dict[str, Any]:
-        """L5 as data: three scalars, never the object itself."""
+        """L5 and the penalty gate as data: scalars, never the objects."""
         attached = self._immune is not None
         state = getattr(self._immune, "state", None) if attached else None
         danger = getattr(self._immune, "danger_count", None) if attached else None
+        penalty_attached = self._penalty is not None
         return {
             "attached": attached,
             "tripped": self._brake_tripped() if attached else None,
             "state": state if isinstance(state, str) else None,
             "danger_count": danger if isinstance(danger, int) else None,
+            "penalty_attached": penalty_attached,
+            "penalty_state": self._penalty_state(),
+            "penalty_tripped": self._penalty_tripped() if penalty_attached else None,
         }
 
     # -- unified entry points ---------------------------------------------
+
+    def append_denial(
+        self,
+        tool: str,
+        reason: str,
+        *,
+        agent: Optional[str] = None,
+        capability: Optional[str] = None,
+        **extra: Any,
+    ) -> Dict[str, Any]:
+        """Record a refusal that happened *before* anything ran.
+
+        Written as ``record_type="deny"``, not as a call with a ``FAIL``
+        verdict, because the two are opposite evidence. "The agent was stopped"
+        means the boundary held; "the agent produced something wrong" means it
+        did not. Readers that count verdicts skip this record type, so a blocked
+        request cannot inflate a damage counter -- while the record itself stays
+        in the hash chain, so "I refused" is still provable afterwards.
+
+        No ``verdict`` field is written at all. The lattice's four values all
+        describe a judgement about work that was witnessed; a refusal is not one
+        of those, and inventing a value for it would be the same false precision
+        this record type exists to avoid.
+        """
+        payload: Dict[str, Any] = {
+            "event": "denied",
+            "tool": tool,
+            "reason": reason,
+            "outcome": "DENIED",
+        }
+        if agent is not None:
+            payload["agent"] = agent
+        if capability is not None:
+            payload["capability"] = capability
+        payload.update(extra)
+        entry = self._ledger.append(payload, record_type="deny")
+        self._ledger.seal()
+        return entry
 
     def append_call(
         self,
@@ -719,6 +820,12 @@ class MembraneGateway:
         raise MembraneRejectError(reason, message)
 
     def __repr__(self) -> str:
-        return "MembraneGateway(ledger={!r}, brake_attached={}, anchored={})".format(
-            self._ledger.path, self._immune is not None, self._ledger.anchor_path is not None
+        return (
+            "MembraneGateway(ledger={!r}, brake_attached={}, "
+            "penalty_attached={}, anchored={})".format(
+                self._ledger.path,
+                self._immune is not None,
+                self._penalty is not None,
+                self._ledger.anchor_path is not None,
+            )
         )

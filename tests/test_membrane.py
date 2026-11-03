@@ -538,6 +538,146 @@ class TestLedgerPrimitives(_MembraneCase):
         self.assertEqual(len(ledger), 1)
 
 
+class _StubBrake:
+    """A minimal L5: calm, with the vocabulary the immune layer uses."""
+
+    def __init__(self, inflamed: bool = False) -> None:
+        self._inflamed = inflamed
+
+    def is_inflamed(self) -> bool:
+        return self._inflamed
+
+    @property
+    def state(self) -> str:
+        return "INFLAMED" if self._inflamed else "NORMAL"
+
+    @property
+    def danger_count(self) -> int:
+        return 0
+
+
+class _StubPenalty:
+    """A minimal penalty ledger: the attribute name is the whole point."""
+
+    def __init__(self, state: str) -> None:
+        self.penalty_state = state
+        self.total_penalty = 50.0
+        self.trust_score = 75.0
+
+
+class TestPenaltyWriteGate(_MembraneCase):
+    """L3's write gate, finally wired to an enforcement point.
+
+    The audit found that ``evaluate_regime`` computed EMERGENCY at 10% charge
+    with a CRITICAL ledger, and nothing refused the write. The regime was a
+    report, not a gate. These pin the gate.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.artefact = os.path.join(self._dir.name, "config.json")
+        with open(self.artefact, "wb") as handle:
+            handle.write(b'{"mode": "original"}\n')
+
+    def _gateway(self, penalty_state, brake=None):
+        return MembraneGateway(
+            self.ledger_path,
+            immune_state=brake if brake is not None else _StubBrake(),
+            penalty_ledger=_StubPenalty(penalty_state),
+        )
+
+    def _witness(self):
+        return {
+            "kind": "file",
+            "path": self.artefact,
+            "digest": "sha256:" + sha256_file(self.artefact),
+        }
+
+    def test_a_critical_ledger_closes_writes_while_the_brake_is_calm(self):
+        gateway = self._gateway("CRITICAL")
+        gateway.register_artefact("write", self.artefact)
+        with self.assertRaises(MembraneRejectError) as caught:
+            gateway.request_action_warrant(self._witness(), "write")
+        self.assertEqual(caught.exception.reason, "PENALTY_CRITICAL")
+
+    def test_a_healthy_ledger_leaves_writes_open(self):
+        """The control: same wiring, same witness, only the grade differs."""
+        gateway = self._gateway("HEALTHY")
+        gateway.register_artefact("write", self.artefact)
+        warrant = gateway.request_action_warrant(self._witness(), "write")
+        self.assertEqual(warrant.capability, "write")
+
+    def test_reads_stay_open_when_damage_has_closed_writes(self):
+        # Being unable to look at what broke is how a bad situation becomes an
+        # unexaminable one.
+        gateway = self._gateway("CRITICAL")
+        gateway.register_artefact("read", self.artefact)
+        warrant = gateway.request_action_warrant(self._witness(), "read")
+        self.assertEqual(warrant.capability, "read")
+
+    def test_the_denial_is_written_to_the_chain(self):
+        gateway = self._gateway("CRITICAL")
+        gateway.register_artefact("write", self.artefact)
+        with self.assertRaises(MembraneRejectError):
+            gateway.request_action_warrant(self._witness(), "write")
+        denials = [
+            entry
+            for entry in gateway.ledger.entries()
+            if entry.get("reason") == "PENALTY_CRITICAL"
+        ]
+        self.assertEqual(len(denials), 1)
+        self.assertEqual(gateway.verify()["status"], "PASS")
+
+    def test_a_penalty_ledger_cannot_be_wired_as_the_brake(self):
+        # The original defect: both objects used to expose ``.state``, so this
+        # silently read "CRITICAL" as "not INFLAMED" and reported a calm brake.
+        with self.assertRaises(TypeError) as caught:
+            MembraneGateway(self.ledger_path, immune_state=_StubPenalty("CRITICAL"))
+        self.assertIn("penalty_ledger", str(caught.exception))
+
+    def test_an_immune_state_cannot_be_wired_as_the_penalty_ledger(self):
+        with self.assertRaises(TypeError):
+            MembraneGateway(self.ledger_path, penalty_ledger=_StubBrake())
+
+    def test_brake_reports_the_two_layers_separately(self):
+        report = self._gateway("CRITICAL").brake()
+        self.assertFalse(report["tripped"])
+        self.assertTrue(report["penalty_tripped"])
+        self.assertEqual(report["penalty_state"], "CRITICAL")
+
+    def test_an_unattached_ledger_is_reported_as_unattached(self):
+        gateway = MembraneGateway(self.ledger_path, immune_state=_StubBrake())
+        report = gateway.brake()
+        self.assertFalse(report["penalty_attached"])
+        self.assertIsNone(report["penalty_tripped"])
+        self.assertIsNone(report["penalty_state"])
+
+
+class TestDenialRecord(_MembraneCase):
+    """A refused request is evidence, not a verdict.
+
+    F1: refusals were written as FAIL, so the immune layer counted a successful
+    block as damage and inflamed itself. The record type is what keeps the two
+    apart for every reader downstream.
+    """
+
+    def test_append_denial_writes_a_deny_record_with_no_verdict(self):
+        gateway = MembraneGateway(self.ledger_path)
+        gateway.append_denial("write_file", "NO_EXPECTED_HASH", agent="liar")
+
+        entry = list(gateway.ledger.entries())[-1]
+        self.assertEqual(entry["record_type"], "deny")
+        self.assertEqual(entry["outcome"], "DENIED")
+        self.assertEqual(entry["reason"], "NO_EXPECTED_HASH")
+        self.assertNotIn("verdict", entry)
+
+    def test_a_deny_does_not_break_the_chain(self):
+        gateway = MembraneGateway(self.ledger_path)
+        gateway.append_denial("t", "NO_EXPECTED_HASH")
+        self.assertEqual(gateway.verify()["status"], "PASS")
+        self.assertEqual(gateway.verify()["entries"], 1)
+
+
 class TestCapabilityVocabulary(unittest.TestCase):
     def test_strict_capabilities_are_a_subset_of_the_vocabulary(self):
         from audit_sidecar.tools.membrane import STRICT_CAPABILITIES

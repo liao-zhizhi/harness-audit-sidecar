@@ -64,14 +64,34 @@ gw.redeem(w)                                    # 一次性
 `MetabolicGateway(immune_state=...).get_current_laws_status()["L5_Brake"]`。这一层
 故意不从本仓库导入到代谢侧，只按协议鸭子类型对接，保持两侧可独立安装。
 
+**膜同时执行 L3 的写闸门。** 只算不拦的政策等于装饰：`evaluate_regime` 在电量
+10% + 罚金 `CRITICAL` 时会算出 `EMERGENCY`，但过去没有任何一处在写入时拒绝。
+现在膜接受 `penalty_ledger=`，罚金 `CRITICAL` 时直接以 `PENALTY_CRITICAL` 关闭
+`write` / `execute`，与炎症制动彼此独立、各自报告：
+
+```python
+gateway = MembraneGateway(ledger, immune_state=immune, penalty_ledger=penalty)
+gateway.request_action_warrant(witness, "write")   # MembraneRejectError: PENALTY_CRITICAL
+```
+
+两者故意分开，因为它们问不同的问题、寿命也不同：炎症会在若干次通过后自愈，
+罚金不会。相应地，`PenaltyLedger` 的状态属性叫 `penalty_state` 而不是 `state`——
+两个词汇表（`HEALTHY/WARNING/CRITICAL` 与 `NORMAL/INFLAMED`）不该共用一个词，
+把其中一个接到另一个的槽位上现在会直接抛 `TypeError`，而不是安静地返回"一切正常"。
+
+**被拦截 ≠ 失败。** 在执行前被挡下的请求记为 `record_type="deny"`（`outcome="DENIED"`，
+不带任何判词），不进入损伤计数；执行后没拿到授权的仍然记 `FAIL`。把两者都记成
+`FAIL`，会让系统被自己的成功防御激成炎症——两次攻击就发炎，比任何真实假完成都早。
+
+
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **项目状态：MVP / 早期版本（v0.8.4）—— 接口可能变化，暂不建议用于生产环境。**
+> **项目状态：MVP / 早期版本（v0.8.5）—— 接口可能变化，暂不建议用于生产环境。**
 >
 > 已实现四值判词引擎、信任能荷账户、自审计回路、三种见证源、外置判据库、条件触发的
 > 分级免疫响应（含跨进程持久化）、引用见证（DOI/arXiv 物理解析）、外部生态接口
 > （五律纯函数）、半透膜接口（哈希链账本 + 势差鉴权）与 stdio 服务端，核心闭环
-> （执行 → 见证 → 判词 → 留痕）已跑通并有 435 项测试；
+> （执行 → 见证 → 判词 → 留痕）已跑通并有 445 项测试；
 > 但缺少完整 MCP 握手、并发处理与外部 server 转发，且 `reported_success`
 > 仍由客户端上送（见「已知边界」）。**欢迎试用与反馈，请勿直接接入关键流程。**
 >
@@ -432,7 +452,7 @@ mtime 校验。想用自己的策略，把 `.yaml` 放进工作目录的 `rules/
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 435 项（须在仓库根目录运行）
+python3 -m unittest discover -s tests -p 'test_*.py'   # 445 项（须在仓库根目录运行）
 python3 -m audit_sidecar.cli                # demo，先跑自审计，不通过则拒绝启动
 
 harness-audit-server --cwd /path/to/project # 无需 --rules
@@ -1003,7 +1023,7 @@ always-FAIL engine       : False
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 435 tests ... OK (skipped=7)
+# Ran 445 tests ... OK (skipped=7)
 ```
 
 > **必须在仓库根目录运行。** 起始目录写的是相对路径 `tests`；换到其他目录执行时
