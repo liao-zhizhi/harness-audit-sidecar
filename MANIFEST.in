@@ -3,6 +3,7 @@
 # docs and tests so that `pip download --no-binary :all:` yields a buildable,
 # inspectable source tree.
 include LICENSE
+include LICENSE-CC-BY
 include README.md
 include ERRATA.md
 include demo_rule_registry.py

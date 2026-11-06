@@ -1396,18 +1396,23 @@ Coverage:
 
 ## License
 
-Code MIT — see [`LICENSE`](LICENSE). Copyright (c) 2026 Zhizhi Liao. Paper text CC BY 4.0.
+> Code and reproduction scripts are licensed under the MIT License. The paper text
+> (Markdown and PDF) is licensed under CC BY 4.0.
 
-The MIT License is the instrument that grants permission: use, copy, modify, merge,
-publish, distribute, sublicense, and sell, subject only to keeping the copyright and
-permission notice. It also carries the warranty and liability disclaimer that makes the
-grant workable — the Software is provided "AS IS", and the author is not liable for
-damages arising from it.
+Copyright (c) 2026 Zhizhi Liao. See [`LICENSE`](LICENSE) for the code and
+[`LICENSE-CC-BY`](LICENSE-CC-BY) for the prose.
 
-The split between the two licences follows the two kinds of artefact here. The code is
-meant to be integrated and re-run, so it is MIT: a sidecar that cannot be embedded in
-someone else's harness is not a sidecar. The prose is meant to be cited rather than
-modified, so it is CC BY 4.0, which requires attribution and permits reuse.
+The MIT License is the instrument that grants permission to the code: use, copy,
+modify, merge, publish, distribute, sublicense, and sell, subject only to keeping the
+copyright and permission notice. It also carries the warranty and liability disclaimer
+that makes the grant workable — the Software is provided "AS IS", and the author is not
+liable for damages arising from it.
+
+The split follows the two kinds of artefact. The code is meant to be integrated and
+re-run, so it is MIT: a sidecar that cannot be embedded in someone else's harness is not
+a sidecar. The prose is meant to be cited and quoted, so it is CC BY 4.0, which requires
+attribution and permits reuse including commercial reuse — which is the point of
+publishing an audit method at all.
 
 Neither licence grants a certification, and neither is an audit. Running this sidecar
 produces a record of what it witnessed; it does not produce an accreditation, and a
