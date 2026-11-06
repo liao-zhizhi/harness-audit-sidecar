@@ -23,6 +23,17 @@ not be:
    workspace would report every historical edit as fresh evidence.
 
 Only the standard library is used; git is invoked through ``subprocess``.
+
+**An unreadable file is not a changed file.** The fingerprint needs to read
+content, so it can fail (EACCES, EIO, EMFILE under descriptor pressure). An
+earlier version turned that failure into the token ``"<status>:unreadable"``,
+which differs from the baseline digest and therefore *looks exactly like a
+change*. An agent could then satisfy ``expected_files_modified`` by running
+``chmod 000`` on the target and doing no work at all: the witness reported a
+move, the verdict came back ``PASS``. That is the failure this module exists
+to catch, committed by the module. ``changed_since`` now raises
+``GitWitnessError`` when either side of a comparison is unreadable, and the
+runner converts that into "no witness" (``INVALID``), never into evidence.
 """
 
 from __future__ import annotations
@@ -37,6 +48,15 @@ from typing import Dict, List, Optional, Sequence
 __all__ = ["GitWitness", "GitWitnessError"]
 
 _LOG = logging.getLogger(__name__)
+
+# Marker appended to a fingerprint whose content could not be read. It is not
+# a digest and must never be compared as one; ``changed_since`` refuses it.
+_UNREADABLE = "__unreadable__"
+
+
+def _is_unreadable(state: str) -> bool:
+    """True when a snapshot entry means "could not look", not "did not move"."""
+    return state.endswith(":" + _UNREADABLE)
 
 DEFAULT_TIMEOUT = 15.0
 
@@ -137,15 +157,30 @@ class GitWitness:
         A path counts as changed when it is new, its git status code changed,
         or its working-tree content changed. This is what isolates the effect
         of one command from whatever dirt the workspace already carried.
+
+        Raises
+        ------
+        GitWitnessError
+            When a compared path could not be fingerprinted on either side.
+            "I could not read it" is not "it changed": returning it as a move
+            would let a chmod satisfy an expectation with no work done.
         """
         if not isinstance(baseline, dict):
             raise TypeError("baseline must be a dict from snapshot()")
         current = self.snapshot()
-        moved = [
-            path
-            for path, state in current.items()
-            if baseline.get(path) != state
-        ]
+        moved = []
+        for path, state in current.items():
+            previous = baseline.get(path)
+            for side, value in (("baseline", previous), ("current", state)):
+                if value is not None and _is_unreadable(value):
+                    raise GitWitnessError(
+                        "cannot fingerprint {!r} in the {} snapshot; an "
+                        "unreadable file is not evidence of a change".format(
+                            path, side
+                        )
+                    )
+            if previous != state:
+                moved.append(path)
         return sorted(moved)
 
     def resolve_expected(
@@ -193,8 +228,11 @@ class GitWitness:
                 for chunk in iter(lambda: handle.read(65536), b""):
                     digest.update(chunk)
         except OSError as problem:
-            _LOG.warning("could not fingerprint %s: %s", absolute, problem)
-            return "{}:unreadable".format(status)
+            # Never let this look like a change: see the module docstring.
+            _LOG.error(
+                "could not fingerprint %s: %s; treating the witness as "
+                "unreadable rather than changed", absolute, problem)
+            return "{}:{}".format(status, _UNREADABLE)
         return "{}:{}".format(status, digest.hexdigest())
 
     def _status_map(self) -> Dict[str, str]:

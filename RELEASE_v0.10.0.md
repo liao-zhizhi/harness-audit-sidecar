@@ -27,7 +27,8 @@ different responses instead of being averaged into one alarm.
 
 A nine-cycle reference run. Substrate at each wake falls from 19.265 to 17.041 mM:
 
-- total change −11.5%, per-cycle ≈1.3% — below any per-round threshold
+- total change −11.5%, per-cycle ≈1.3% of the initial level — below any per-round
+  threshold (≈1.5% against each step's own level; the docs say which)
 - linear fit slope −0.2788 mM/cycle, **R² = 0.9997**
 - extrapolated zero crossing ≈ cycle 70; the nine "clean cycles" are the first 13% of the decay
 

@@ -21,3 +21,4 @@ audit_trace.jsonl
 # what keeps examples/sample_trace.jsonl in the repository even if the
 # ignore rule is later widened (for example to *.jsonl).
 !examples/sample_trace.jsonl
+.coverage

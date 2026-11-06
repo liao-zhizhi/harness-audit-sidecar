@@ -81,8 +81,8 @@ interesting.
 > Same derivation gave us a failure a point-in-time verdict cannot see: a loop that looks
 > periodic but is a decaying transient. In our reference run the substrate at each wake fell
 > 19.265 → 17.041 mM over nine cycles. Nine near-identical peaks. Fitted: slope −0.2788/cycle,
-> **R² = 0.9997**, extrapolated zero around cycle 70. Per-cycle loss ≈1.3% — below any
-> per-round threshold, which is exactly why it's dangerous. We ship `analyze_chronic_drift`,
+> **R² = 0.9997**, extrapolated zero around cycle 70. Per-cycle loss ≈1.3% of the initial
+> level — below any per-round threshold, which is exactly why it's dangerous. We ship `analyze_chronic_drift`,
 > which requires **both** high R² and material magnitude, because R² measures regularity, not
 > size: gate on R² alone and a 1e-7 wobble becomes an alarm.
 >

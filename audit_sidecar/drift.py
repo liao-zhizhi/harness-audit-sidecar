@@ -13,7 +13,8 @@ run behind this module, the substrate level at each wake was 19.265, 18.982,
 ... 17.041 mM over nine cycles. Plotted, that is nine near-identical peaks.
 Fitted, it is a line with ``R^2 = 0.9997`` and a slope of -0.2788 mM/cycle.
 
-Per-round loss was about 1.3%, below any per-round alarm threshold. The
+Per-round loss was 1.3% of the initial level (1.5% if each step is measured
+against its own level), below any per-round alarm threshold. The
 extrapolated zero crossing was round 70. Nine "clean cycles" were the first
 13% of the decay.
 
@@ -64,6 +65,7 @@ __all__ = [
 # Pattern labels. Only meaningful when the verdict is FAIL.
 PATTERN_CHRONIC = "chronic"   # quiet and material: the R6 case
 PATTERN_VISIBLE = "visible"   # material but noisy: ordinary, catchable trend
+PATTERN_RECOVERED = "recovered-drawdown"  # dipped hard, came back: nearly died
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,10 @@ class DriftReport:
         does would be the kind of extrapolation this module refuses elsewhere.
         If the caller's first sample is cycle 1, the cycle number is this
         value plus one (the reference run reports 69.05 here, i.e. cycle 70).
+    max_drawdown:
+        Largest peak-to-trough fall, as a signed fraction of the running peak
+        (``-0.11`` means an 11% drawdown). ``None`` when the running peak is
+        zero or the series is empty.
     reason:
         One line explaining the verdict, suitable for a log or a receipt.
     """
@@ -110,6 +116,7 @@ class DriftReport:
     total_change: float
     relative_total_change: Optional[float]
     steps_to_zero: Optional[float]
+    max_drawdown: Optional[float]
     reason: str
 
     @property
@@ -136,20 +143,49 @@ def _ols(values: Sequence[float]) -> tuple:
     return slope, intercept, 1.0 - ss_res / ss_tot
 
 
+def _max_drawdown(values: Sequence[float]) -> Optional[float]:
+    """Largest peak-to-trough fall, as a signed fraction of the running peak.
+
+    Net change cannot see a drawdown that recovered. A series that falls 40%
+    and climbs back has ``total_change == 0`` and used to be reported as
+    ``PASS`` -- a system that nearly died scoring as perfectly healthy. This
+    is the endpoint-relative blind spot of a cumulative sum, and the reason
+    ``phi`` alone is not enough.
+    """
+    peak = values[0]
+    worst = 0.0
+    for value in values:
+        if value > peak:
+            peak = value
+        if peak == 0:
+            # A relative drawdown from zero is undefined; do not invent one.
+            continue
+        fall = (value - peak) / abs(peak)
+        if fall < worst:
+            worst = fall
+    if peak == 0 and worst == 0.0:
+        return None
+    return worst
+
+
 def analyze_chronic_drift(
     values: Sequence[float],
     *,
     min_points: int = 6,
     r2_threshold: float = 0.98,
     min_total_change: float = 0.01,
+    min_drawdown: float = 0.10,
 ) -> DriftReport:
     """Fit ``values`` and decide whether it is drifting.
 
     Parameters
     ----------
     values:
-        One measurement per cycle, in order. Units are the caller's; the
-        thresholds are relative, so no unit conversion is needed.
+        One measurement per cycle, in order. **Sample at the same phase of
+        every cycle.** Feeding the raw time series (intra-cycle peaks and
+        troughs included) makes ``r2`` describe the oscillation rather than
+        the trend, and the drift gate then fails on a genuine decay. The
+        reference series is the wake value of each cycle, not the trace.
     min_points:
         Fewest samples that may be fitted. Default 6 -- see the module
         docstring for why a short series is refused rather than extrapolated.
@@ -160,13 +196,20 @@ def analyze_chronic_drift(
         Magnitude gate, as a fraction (0.01 = 1% over the whole window).
         Applied to the relative change when ``values[0]`` is non-zero,
         otherwise to the absolute change.
+    min_drawdown:
+        Peak-to-trough gate, as a fraction (0.10 = 10%). Only consulted when
+        the net change is *not* material, i.e. exactly the case where a dip
+        recovered and the endpoint sum cancelled it out. This is a policy
+        input, not a measurement: a system that fell 10% and came back did
+        survive, and whether that counts as an incident is the operator's
+        call, not this function's.
     """
     n_total = len(values)
     if n_total == 0:
         return DriftReport(
             verdict=Verdict.NOT_RUN, pattern=None, n=0, slope=0.0, intercept=0.0,
             r2=0.0, total_change=0.0, relative_total_change=None,
-            steps_to_zero=None,
+            steps_to_zero=None, max_drawdown=None,
             reason="no samples: nothing was measured",
         )
 
@@ -177,7 +220,7 @@ def analyze_chronic_drift(
         return DriftReport(
             verdict=Verdict.INVALID, pattern=None, n=n_total, slope=0.0,
             intercept=0.0, r2=0.0, total_change=0.0,
-            relative_total_change=None, steps_to_zero=None,
+            relative_total_change=None, steps_to_zero=None, max_drawdown=None,
             reason="non-finite sample at index {}: cannot fit across a gap".format(bad[0]),
         )
 
@@ -185,7 +228,7 @@ def analyze_chronic_drift(
         return DriftReport(
             verdict=Verdict.INVALID, pattern=None, n=n_total, slope=0.0,
             intercept=0.0, r2=0.0, total_change=0.0,
-            relative_total_change=None, steps_to_zero=None,
+            relative_total_change=None, steps_to_zero=None, max_drawdown=None,
             reason="{} samples < min_points {}: a trend from this is an opinion".format(
                 n_total, min_points),
         )
@@ -203,11 +246,27 @@ def analyze_chronic_drift(
     if slope < 0 and intercept > 0:
         steps_to_zero = -intercept / slope
 
+    drawdown = _max_drawdown(values)
+
     if not material:
+        # Net change says "fine". A recovered dip says "it nearly died". These
+        # are different questions and the endpoint sum cannot answer the second.
+        if drawdown is not None and abs(drawdown) >= min_drawdown:
+            return DriftReport(
+                verdict=Verdict.FAIL, pattern=PATTERN_RECOVERED, n=n_total,
+                slope=slope, intercept=intercept, r2=r2,
+                total_change=total_change, relative_total_change=relative,
+                steps_to_zero=steps_to_zero, max_drawdown=drawdown,
+                reason=("recovered drawdown: fell {:.2%} peak-to-trough and "
+                        "returned, so the net change is {:.2%} -- the endpoint "
+                        "sum hides that it almost reached zero").format(
+                            abs(drawdown), magnitude),
+            )
         return DriftReport(
             verdict=Verdict.PASS, pattern=None, n=n_total, slope=slope,
             intercept=intercept, r2=r2, total_change=total_change,
             relative_total_change=relative, steps_to_zero=None,
+            max_drawdown=drawdown,
             reason="no material drift: total change {:.3%} < {:.3%}".format(
                 magnitude, min_total_change),
         )
@@ -217,6 +276,7 @@ def analyze_chronic_drift(
             verdict=Verdict.FAIL, pattern=PATTERN_CHRONIC, n=n_total, slope=slope,
             intercept=intercept, r2=r2, total_change=total_change,
             relative_total_change=relative, steps_to_zero=steps_to_zero,
+            max_drawdown=drawdown,
             reason=("chronic drift: {:.2%} over {} cycles at r2={:.4f} -- "
                     "systematic and below any per-cycle threshold").format(
                         magnitude, n_total, r2),
@@ -226,6 +286,7 @@ def analyze_chronic_drift(
         verdict=Verdict.FAIL, pattern=PATTERN_VISIBLE, n=n_total, slope=slope,
         intercept=intercept, r2=r2, total_change=total_change,
         relative_total_change=relative, steps_to_zero=steps_to_zero,
+        max_drawdown=drawdown,
         reason="visible drift: {:.2%} over {} cycles but r2={:.4f} < {:.2f}".format(
             magnitude, n_total, r2, r2_threshold),
     )

@@ -33,6 +33,7 @@ from .immune_state import STATE_FILENAME
 from .judgment_base import RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .runner import SafeRunner
+from .self_audit import run_self_audit
 from .tools.citation_audit import register_citation_tool
 
 __all__ = ["JsonRpcServer", "TraceWriter", "main", "TRACE_FILENAME"]
@@ -375,6 +376,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not os.path.isdir(cwd):
         _LOG.error("working directory does not exist: %s", cwd)
         return 2
+
+    # Prove this server can still say no before it is allowed to say anything.
+    # The demo CLI has always done this; the server -- the path an agent
+    # actually connects to -- did not, which made the gate a decoration on the
+    # only path that matters. An auditor that cannot reject its own known-bad
+    # fixtures produces decoration verdicts, so it refuses to start.
+    rules_dir = _resolve_rules_dir(options.rules)
+    if not run_self_audit(rules_dir):
+        _LOG.error(
+            "self-audit failed: refusing to serve verdicts. The verdict engine "
+            "or the judgment base no longer rejects its own known-bad cases, so "
+            "every PASS this server produced would be decoration.")
+        return 3
 
     trace_path = options.trace or os.path.join(cwd, TRACE_FILENAME)
     try:

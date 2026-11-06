@@ -31,7 +31,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .git_witness import GitWitness
+from .git_witness import GitWitness, GitWitnessError
 from .immune_state import TIER_ADAPTIVE, TIER_INNATE
 from .verdict import Verdict, VerdictEngine
 
@@ -353,6 +353,10 @@ class SafeRunner:
         missing: Tuple[str, ...] = ()
         unexpected: Tuple[str, ...] = ()
         witness_mtime: Optional[float] = None
+        # Set when a witness was requested but could not be read. It must end
+        # the run as INVALID: the receipt may not claim "no effect" on behalf
+        # of a witness that never got to look.
+        observed_unknown = False
 
         if timed_out:
             effect_observed: Optional[bool] = None
@@ -384,12 +388,25 @@ class SafeRunner:
             effect_observed = True
 
             if witness_path is not None:
-                if not self._witness(witness_path, expected_content):
+                landed = self._witness(witness_path, expected_content)
+                if landed is None:
+                    # The artefact exists but could not be read: that is an
+                    # absence of evidence, not evidence of absence. Collapsing
+                    # it to False would print "witness says no effect" in the
+                    # receipt, which is a statement the witness never made.
+                    observed_unknown = True
+                elif not landed:
                     effect_observed = False
 
             if git_witness is not None and baseline is not None:
                 assert expected_paths is not None
-                changed = tuple(git_witness.changed_since(baseline))
+                try:
+                    changed = tuple(git_witness.changed_since(baseline))
+                except GitWitnessError as problem:
+                    # An unreadable path in the change set is not a change.
+                    _LOG.warning("git witness could not be completed: %s", problem)
+                    observed_unknown = True
+                    changed = ()
                 wanted = tuple(expected_paths)
                 # When a file witness is also in play, that artefact is part of
                 # the intent by definition, so it is not "unexpected" drift.
@@ -404,6 +421,12 @@ class SafeRunner:
                     effect_observed = False
                 if unexpected and not allow_extra_changes:
                     effect_observed = False
+
+        if observed_unknown:
+            # An unreadable witness outranks anything else the block concluded:
+            # whatever is in ``changed``/``missing`` was computed from a
+            # partial read, so none of it is evidence.
+            effect_observed = None
 
         # Map the three observations onto the engine's lattice.
         #
@@ -459,7 +482,14 @@ class SafeRunner:
             rules_violated = ()
 
         if effect_observed is None and verdict is Verdict.INVALID:
-            reason = "{} (no independent witness requested)".format(reason)
+            if observed_unknown:
+                # Distinguish the two ways to have no witness. The receipt must
+                # not tell the reader "you asked for nothing" when the truth is
+                # "I was asked and could not look".
+                reason = "{} (a witness was requested but could not be read; " \
+                         "this is INVALID, not FAIL)".format(reason)
+            else:
+                reason = "{} (no independent witness requested)".format(reason)
 
         if verdict is Verdict.FAIL and (missing or unexpected):
             detail = []
@@ -732,8 +762,12 @@ class SafeRunner:
         return tuple(modified), mtimes
 
     @staticmethod
-    def _witness(path: str, expected_content: Optional[str]) -> bool:
-        """Read the witnessed artefact. Returns whether the intent landed."""
+    def _witness(path: str, expected_content: Optional[str]) -> Optional[bool]:
+        """Read the witnessed artefact. Returns whether the intent landed.
+
+        ``None`` means "the artefact is there but could not be read", which is
+        an absence of evidence and must not be reported as a failed intent.
+        """
         if not os.path.exists(path):
             return False
         if os.path.isdir(path):
@@ -743,7 +777,7 @@ class SafeRunner:
             content = _read_text(path)
         except OSError as problem:
             _LOG.warning("witness %s could not be read: %s", path, problem)
-            return False
+            return None
         if expected_content is None:
             return True
         return expected_content in content

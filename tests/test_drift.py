@@ -99,6 +99,76 @@ class CriteriaTest(unittest.TestCase):
         self.assertIsNone(report.steps_to_zero)
 
 
+class RecoveredDrawdownTest(unittest.TestCase):
+    """The endpoint blind spot: net change cannot see a dip that recovered.
+
+    ``total_change`` is what a cumulative sum measures, and a V-shaped series
+    has ``total_change == 0``. Before this gate existed, a system that fell 40%
+    and climbed back scored ``PASS`` -- the exact failure mode of watching an
+    average instead of the path. Reported as its own pattern because the
+    response differs: nothing is still decaying, but something almost died.
+    """
+
+    V_SHAPE = [100, 92, 84, 76, 68, 60, 62, 70, 78, 86, 94, 100]
+
+    def setUp(self) -> None:
+        self.report = analyze_chronic_drift(self.V_SHAPE)
+
+    def test_v_shape_is_not_pass(self) -> None:
+        self.assertIs(self.report.verdict, Verdict.FAIL)
+        self.assertEqual(self.report.pattern, "recovered-drawdown")
+
+    def test_net_change_really_is_zero(self) -> None:
+        # Why the old criterion missed it, asserted rather than described.
+        self.assertAlmostEqual(self.report.relative_total_change, 0.0)
+
+    def test_drawdown_is_measured(self) -> None:
+        self.assertAlmostEqual(self.report.max_drawdown, -0.40, places=2)
+
+    def test_small_dip_is_still_pass(self) -> None:
+        # The gate must not become a noise alarm: a 2% dip and recovery is
+        # within ordinary variation.
+        report = analyze_chronic_drift([1.0, 0.98, 1.0, 1.01, 1.0, 0.99, 1.0])
+        self.assertIs(report.verdict, Verdict.PASS)
+
+    def test_drawdown_threshold_is_a_policy_input(self) -> None:
+        series = [100, 90, 100, 100, 100, 100]
+        self.assertIs(
+            analyze_chronic_drift(series, min_drawdown=0.05).verdict, Verdict.FAIL)
+        self.assertIs(
+            analyze_chronic_drift(series, min_drawdown=0.50).verdict, Verdict.PASS)
+
+    def test_reference_series_reports_its_drawdown(self) -> None:
+        # A monotone decay has drawdown equal to its total fall; the two gates
+        # agree here, and the net-change branch decides the label.
+        self.assertAlmostEqual(
+            analyze_chronic_drift(R6_SERIES).max_drawdown, -0.1154, places=3)
+
+
+class SamplingContractTest(unittest.TestCase):
+    """r2 describes the trend only if the input is one sample per cycle.
+
+    Feeding the raw trace (peaks and troughs) makes r2 measure the oscillation
+    instead. Pinned as a test so the contract is visible rather than implied.
+    """
+
+    def test_intra_cycle_oscillation_destroys_the_regularity_signal(self) -> None:
+        trend = [10.0 - 0.3 * i for i in range(9)]
+        with_oscillation = []
+        for level in trend:
+            with_oscillation.extend([level + 0.4, level - 0.4])
+        per_cycle = analyze_chronic_drift(trend)
+        raw_trace = analyze_chronic_drift(with_oscillation)
+        self.assertGreaterEqual(per_cycle.r2, 0.98)
+        self.assertEqual(per_cycle.pattern, "chronic")
+        # 0.86, measured -- under the gate. The decay is still reported (FAIL),
+        # but as "visible", i.e. the quiet-drift signal is lost. That is the
+        # cost of feeding the wrong series, and it is why the contract is
+        # stated in the docstring instead of assumed.
+        self.assertLess(raw_trace.r2, 0.98)
+        self.assertEqual(raw_trace.pattern, "visible")
+
+
 class RefusalTest(unittest.TestCase):
     """Same rule as the verdict lattice: do not answer what was not measured."""
 

@@ -118,7 +118,7 @@ flares, earlier than any real false completion.
 > (hash-chain ledger + potential-difference authorisation), the rule interface (digest-verified
 > external rule packages, mounted through the membrane), a stdio server, and chronic drift
 > detection (`analyze_chronic_drift`, §"The two failures"). The core loop
-> (execute → witness → verdict → record) runs, backed by 529 tests (522 passing, 7 skipped);
+> (execute → witness → verdict → record) runs, backed by 556 tests (549 passing, 7 skipped);
 > but the full MCP handshake, concurrency and forwarding to an external server are missing,
 > and `reported_success` is still supplied by the client (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
@@ -255,12 +255,13 @@ Plotted: nine near-identical peaks. Fitted: a line with
 | quantity | value |
 |:--|--:|
 | total change | **−11.5%** over 9 cycles |
-| per-cycle loss | **≈1.3%** |
+| per-cycle loss | **≈1.3%** (11.5%/9, relative to the first cycle; ≈1.5% if each step is measured against its own level) |
 | linear fit | slope **−0.2788** mM/cycle |
 | **R²** | **0.9997** |
 | extrapolated zero crossing | ≈ cycle **70** |
 
-No per-round alarm fires at 1.3%. The nine "clean cycles" were the first 13% of the decay.
+No per-round alarm fires: the loss is 1.3-1.5% depending on which denominator you
+pick, and every per-round threshold is set well above that. The nine "clean cycles" were the first 13% of the decay.
 Cumulative blood loss: each loss is below the noise floor of a single round, and the sum kills
 the system.
 
@@ -300,6 +301,13 @@ The detector reuses the same verdict vocabulary and the same refusals as the res
 | stationary | `PASS` | no material change |
 | material + regular | `FAIL` / `chronic` | the R6 case |
 | material + noisy | `FAIL` / `visible` | real, but catchable |
+| net change ~0, but fell ≥10% and came back | `FAIL` / `recovered-drawdown` | the endpoint sum cancels; something almost died |
+
+The last row is a correction found by auditing this module itself. A V-shaped series has
+`total_change == 0`, so the cumulative sum — the same quantity as Φ — reported `PASS` for a
+system that dropped 40% and recovered. Net loss cannot see a dip that was repaid. The
+detector now also reports `max_drawdown` and refuses `PASS` when it exceeds `min_drawdown`
+(default 10%, a policy input, not a measurement).
 
 A constant series reports `r2 = 1.0` by convention and is still `PASS`: the magnitude gate is
 what decides, not the fit quality. All of the above is asserted in `tests/test_drift.py`,
@@ -730,7 +738,7 @@ Developing from source:
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 529 tests (must run from the repository root)
+python3 -m unittest discover -s tests -p 'test_*.py'   # 556 tests (must run from the repository root)
 python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
 harness-audit-server --cwd /path/to/project # no --rules needed
@@ -1337,10 +1345,18 @@ always-FAIL engine       : False
 
 `cli.py` calls it at startup; on failure it prints
 `Self-audit failed, tool is a decoration.` and calls `exit(1)`, **refusing to start**.
+`harness-audit-server` calls it too, before serving a single request, and exits `3` on
+failure — until v0.10.0 only the demo CLI ran the gate, so the path an agent actually
+connects to was never checked. That gap is recorded in [`SELF_AUDIT.md`](SELF_AUDIT.md)
+along with the rest of the defects this gate failed to catch.
 
 The samples use `tempfile` to really write files and really compute SHA-256, not hard-coded
 fake data; if abnormal filesystem behaviour makes a sample itself invalid (hash unchanged / not
 landed), self-audit also returns False.
+
+`tests/test_self_audit_defects.py` is the regression suite for the self-audit itself, which
+had none before this audit: a broken judgment base, an empty explicit base, a missing base,
+and the server's refusal to start.
 
 ---
 
@@ -1348,7 +1364,7 @@ landed), self-audit also returns False.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 529 tests ... OK (skipped=7)
+# Ran 556 tests ... OK (skipped=7)
 ```
 
 > **Must be run from the repository root.** The start directory is the relative path `tests`;
@@ -1463,6 +1479,29 @@ Coverage:
   changed". That is a deliberate conservative choice, not an omission.
 - **The trace has no rotation and no locking.** Append-only, never split; concurrent writers rely
   on the atomicity of a single `write` (usually safe below PIPE_BUF), with no explicit locking.
+- **A trace that cannot be written does not block a verdict.** If the file is read-only or the
+  disk is full, `TraceWriter.write` logs on stderr and returns; the agent still gets its answer.
+  The verdict is enforced but unrecorded, which is a quieter failure than an unenforced one.
+  Recorded as `LIM-1` in [`SELF_AUDIT.md`](SELF_AUDIT.md), with the recommended fix
+  (an `audit_recorded` field in the response, or a fail-closed switch) left to the operator.
+- **A witness that cannot be read is `INVALID`, not `FAIL`.** Since v0.10.0 an unreadable target
+  file (EACCES, EIO, descriptor exhaustion) produces `INVALID` with `effect_observed=None`.
+  Before the fix it produced `FAIL` with `reason: "witness says no effect"` — a sentence the
+  witness never said. An unreadable path in the git change set used to be worse: the fingerprint
+  string differed from the baseline digest, so it *looked like a change*, and
+  `chmod 000 target.py` produced `PASS` with no work done.
+- **A process killed by the OOM killer is judged `FAIL`, not `INVALID`.** The intent was not
+  realised and the receipt says so, but the receipt carries no cause: the model and the machine
+  produce the same word. Under R5 that is a false failure manufactured by the environment;
+  attributing it needs the signal number, which is not classified yet.
+- **There is no witness for abstention.** The lattice can verify that something happened; it
+  cannot verify that something *did not* happen. A tool call whose intent is "leave this file
+  alone" has nothing to point at, so a correctly reported non-action can only ever be `INVALID`.
+  `allow_extra_changes=False` covers the narrow case of "changed something else", not "was
+  supposed to do nothing".
+- **A verdict is about outcomes, not effort.** If the world already matches the intent, a command
+  that does nothing is `PASS`. That is correct for an outcome witness and wrong for an
+  "prove you did the work" audit, and the two must not be confused.
 - **`intent` echoes the client's path verbatim.** `changed_files` / `missing_expected` /
   `unexpected_changes` are repository-root relative (the `git status` coordinate system), but
   `intent` records the call argument as given. If the client passes absolute paths, local paths
