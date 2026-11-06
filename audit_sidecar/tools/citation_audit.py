@@ -338,5 +338,35 @@ def register_citation_tool(
     citations = CitationAuditProxy(
         witness=witness, immune_state=proxy.immune_state
     )
-    proxy.register_witness_tool(TOOL_NAME, citations.handler)
+    proxy.register_witness_tool(
+        TOOL_NAME,
+        citations.handler,
+        description=(
+            "Resolve a DOI or arXiv id against the registration agency and "
+            "compare it with the claimed title/author. The witness is the "
+            "agency's response, not the caller's assertion."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "doi": {
+                    "type": "string",
+                    "description": "DOI to resolve, e.g. 10.1038/nature12373.",
+                },
+                "arxiv_id": {
+                    "type": "string",
+                    "description": "arXiv id to resolve, e.g. 2401.00001.",
+                },
+                "expected_title": {
+                    "type": "string",
+                    "description": "Title the citation claims for this work.",
+                },
+                "expected_author": {
+                    "type": "string",
+                    "description": "Family name the citation claims.",
+                },
+            },
+            "anyOf": [{"required": ["doi"]}, {"required": ["arxiv_id"]}],
+        },
+    )
     return citations

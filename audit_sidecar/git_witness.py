@@ -98,9 +98,16 @@ class GitWitness:
             top = self._git_out(
                 ["rev-parse", "--show-toplevel"], cwd=repo_path
             ).strip()
-        except GitWitnessError:
+        except GitWitnessError as problem:
+            # Keep git's own diagnosis. Replacing it with a fixed "not a git
+            # repository" sent operators looking for a missing `git init` when
+            # the real cause was a uid mismatch on a bind mount, which git
+            # reports as "detected dubious ownership". The two need different
+            # fixes, so the message has to say which one it is.
             raise GitWitnessError(
-                "not a git repository: {}".format(os.path.abspath(repo_path))
+                "cannot read a git repository at {}: {}".format(
+                    os.path.abspath(repo_path), problem
+                )
             ) from None
         if not top:
             raise GitWitnessError(

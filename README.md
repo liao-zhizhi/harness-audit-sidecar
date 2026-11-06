@@ -122,7 +122,7 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.10.0) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.10.1) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
@@ -130,10 +130,11 @@ flares, earlier than any real false completion.
 > external ecology interface (five laws as pure functions), the semi-permeable membrane
 > (hash-chain ledger + potential-difference authorisation), the rule interface (digest-verified
 > external rule packages, mounted through the membrane), a stdio server, and chronic drift
-> detection (`analyze_chronic_drift`, §"The two failures"). The core loop
-> (execute → witness → verdict → record) runs, backed by 559 tests (552 passing, 7 skipped);
-> but the full MCP handshake, concurrency and forwarding to an external server are missing,
-> and `reported_success` is still supplied by the client (see "Known boundaries").
+> detection (`analyze_chronic_drift`, §"The two failures"), and the MCP handshake
+> (`initialize` / `tools/list` / `tools/call`). The core loop
+> (execute → witness → verdict → record) runs, backed by 588 tests (581 passing, 7 skipped);
+> but concurrency and forwarding to an external MCP server are missing, and the claim under
+> audit is still not observable on `tools/call` (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
 >
 > **Read this first**: [`examples/sample_trace.jsonl`](examples/sample_trace.jsonl)
@@ -149,10 +150,11 @@ decided by the agent's own report; it can only be decided by an independent witn
 > loop, **three witness sources** (filesystem / git change set / MCP protocol-layer claim),
 > the **external judgment base (`rules/*.yaml`)**, the **condition-triggered tiered immune
 > response** (innate stat, adaptive full, including inflammatory storm and recovery),
-> and a **`pip install`-able stdio server** (`harness-audit-server`).
-> **Not implemented:** the full MCP handshake (`initialize` / `tools/list`), claims taken from
-> protocol frames, more witness sources (process exit-code family / network side effects), and
-> cross-process persistence of inflammatory state.
+> a **`pip install`-able stdio server** (`harness-audit-server`), and an **MCP-compatible
+> handshake** (`initialize` / `notifications/initialized` / `ping` / `tools/list` / `tools/call`).
+> **Not implemented:** claims parsed from protocol frames (the client still supplies the claim),
+> more witness sources (process exit-code family / network side effects), concurrency, and
+> forwarding to an external MCP server.
 > See "Known boundaries" and "Roadmap".
 
 The audit logic itself uses only the Python standard library; **the only third-party
@@ -1266,8 +1268,7 @@ use).
 
 ### Wiring into an agent client
 
-Any framework that can forward tool calls to a stdio subprocess will work. A typical MCP client
-configuration:
+Any framework that can launch a stdio MCP server will work. A typical client configuration:
 
 ```json
 {
@@ -1280,8 +1281,11 @@ configuration:
 }
 ```
 
-Point the client that previously connected straight at the real tool to this proxy instead. Key
-points:
+The client will call `initialize`, send `notifications/initialized`, then discover the tools with
+`tools/list` and call them with `tools/call` — no adapter needed. The same server also accepts the
+legacy `tool_call` method, so a hand-written script keeps working.
+
+Key points:
 
 1. `--cwd` must be the **audited project's** directory, not the proxy's own.
 2. For a git project, `--repo` is usually left empty (it takes `--cwd`); specify it explicitly
@@ -1310,15 +1314,42 @@ $ cat /repo/audit_trace.jsonl
   id=2 check=True(protocol) effect=False -> FAIL   <- the lie is here
 ```
 
+### Running in a container
+
+```bash
+docker build -t harness-audit-sidecar:0.10.1 .
+mkdir -p .audit-state
+docker run --rm -i \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD:/work" -v "$PWD/.audit-state:/state" \
+  harness-audit-sidecar:0.10.1
+```
+
+`-i` is required: the server speaks stdio, and without an open stdin it exits after a handshake
+that never arrives. `--user` is not cosmetic — two failures follow from getting it wrong, and
+both were reproduced while writing this section:
+
+| Without `--user` | What you see | Why |
+|:--|:--|:--|
+| container runs as uid 10001, the mount belongs to you | `cannot read a git repository at /work: ... detected dubious ownership` | git refuses another user's repo |
+| same | `Permission denied` writing the working tree | every `write_file` fails physically |
+
+So the image ships `git` (the change-set witness is read from it; without git every declared
+change set degrades to `INVALID`) and the entry point refuses to start unless the engine still
+rejects its own known-bad fixtures. `EXPOSE 8080` is reserved for the local REST API, which does
+not exist yet — nothing listens on it, and the stdio server does not need it.
+
 ### Protocol-layer errors
 
 | Situation | JSON-RPC error code |
 |:--|:--|
 | invalid JSON | `-32700` parse error |
 | not a JSON object / `jsonrpc` not `2.0` | `-32600` invalid request |
-| `method` is not `tool_call` | `-32601` method not found |
-| `params` missing fields / wrong types / **missing `reported_success`** | `-32602` invalid params |
-| unknown tool name | `-32001` (application code, **not executed, not traced**) |
+| unknown `method` | `-32601` method not found |
+| `tools/list` or `tools/call` before `initialize` | `-32002` server not initialized |
+| `params` missing fields / wrong types / **missing `reported_success`** on `tool_call` | `-32602` invalid params |
+| unknown tool name on `tools/call` | `-32602` (MCP's documented code for this case) |
+| unknown tool name on the legacy `tool_call` | `-32001` (application code, **not executed, not traced**) |
 | `OSError` during execution | `-32603` internal error |
 
 Three deliberate choices:
@@ -1331,6 +1362,44 @@ Three deliberate choices:
 - **A failed trace write does not stop the service.** It only reports to stderr. An auditor
   that refuses to serve when it cannot log would drag the agent down with it; a logging fault
   is an incident, not an excuse.
+
+### MCP handshake
+
+A standard client handshake works as-is. `initialize` negotiates the protocol version, and only
+capabilities this server implements are advertised:
+
+```
+$ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1.0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | harness-audit-server --cwd /repo --quiet
+{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18",
+  "capabilities": {"tools": {"listChanged": false}},
+  "serverInfo": {"name": "harness-audit-sidecar", "version": "0.10.1"}}}
+{"jsonrpc": "2.0", "id": 2, "result": {"tools": [
+  {"name": "append_file", "description": "...", "inputSchema": {...}},
+  {"name": "run_command", ...}, {"name": "validate_citation", ...}, {"name": "write_file", ...}]}}
+```
+
+Supported versions: `2025-06-18`, `2025-03-26`, `2024-11-05`. A request for any other version is
+answered with the newest supported one, which is what the spec asks for; the client decides
+whether to continue. Four decisions worth stating:
+
+- **`tools/*` before `initialize` is refused (`-32002`), not tolerated.** Initialization is
+  required to be the first interaction; accepting the omission hides a client bug until a
+  capability mismatch surfaces somewhere less obvious. The refusal happens **before** executing:
+  a rejected call must not have written the file.
+- **`instructions` is omitted from the handshake result.** It is the one handshake field that
+  reaches the model, and telling an agent it is being audited removes the false completions the
+  audit exists to measure.
+- **`tool_call` is exempt from the handshake.** It predates it, and gating it would invalidate
+  every trace recorded before v0.10.1.
+- **`tools/call` has no claim field in MCP** — the response *is* the report. So the claim comes
+  from `params._audit.reported_success` when a client supplies it (out-of-band, so it never
+  reaches the model and cannot be set by it), and otherwise from the meaning of a non-error tool
+  result. Every trace record says which, in `claim_basis` (`explicit` or `tool-return`), because
+  an implicit claim is a weaker statement than a supplied one.
 
 ## Self-audit (`self_audit.py`)
 
@@ -1445,19 +1514,30 @@ Coverage:
 
 ## Known boundaries (MVP scope)
 
-- **No Content-Length framing.** The stdio transport uses newline-delimited JSON; MCP's other
-  Content-Length mode is not implemented, so confirm which one a third-party client uses before
-  connecting.
-- **No handshake or capability negotiation.** `initialize` / `tools/list` / `notifications` are
-  not implemented; only `tool_call`. A real MCP client handshake will fail and needs an adapter
-  layer.
-- **The tool registry is built in.** Only `write_file` / `append_file` / `run_command`, with tool
-  implementations generated by this repository (command splicing) rather than forwarded to an
-  external MCP server.
-- **`reported_success` is still supplied by the client.** This is the largest honesty gap in
-  this layer: it guards "tool layer vs physical world", but the "client vs tool layer" segment has
-  no witness. Real interception should parse `result.isError` from the protocol frame instead of
-  trusting a value passed in.
+- **Framing is newline-delimited UTF-8, which is what MCP specifies.** Messages are JSON-RPC 2.0
+  objects separated by `\n`; the transport has no `Content-Length` header (that is LSP, not MCP).
+  An earlier version of this section said MCP had a "Content-Length mode" — it does not, and
+  tolerating the claim would only have hidden a broken client.
+- **Handshake implemented since v0.10.1.** `initialize` (with version negotiation and capability
+  advertisement), `notifications/initialized`, `ping`, `tools/list` and `tools/call` are served;
+  `tools/*` before `initialize` answer `-32002`. The legacy `tool_call` method is kept, and is
+  exempt from the handshake, so every session recorded before this version still replays.
+- **No server-initiated requests.** The server never sends `sampling` / `roots` / `elicitation`
+  requests, and emits no `list_changed` notifications; `initialize` therefore advertises only
+  `tools: {listChanged: false}`. Asking for a capability this server does not use would be a
+  promise it cannot keep.
+- **Declared tools are the built-in ones plus any registered witness tool.** `tools/list` reports
+  `write_file` / `append_file` / `run_command` / `validate_citation`, with the JSON Schema the
+  builders actually enforce. A tool registered without a schema is still listed, with a
+  permissive one, because hiding it would keep it callable while claiming it does not exist.
+- **The tool registry is built in.** Tool implementations are generated by this repository
+  (command splicing) rather than forwarded to an external MCP server.
+- **`reported_success` is supplied by the client on `tool_call`, and absent on `tools/call`.**
+  This is the largest honesty gap in this layer: it guards "tool layer vs physical world", but
+  the "client vs tool layer" segment has no witness. Over MCP the claim can only come from
+  `params._audit.reported_success` (out-of-band, never reaches the model) or from the meaning of
+  a non-error tool result — the trace records which, as `claim_basis`, rather than letting the
+  weaker one read like the stronger.
 - **Single process, single thread, no concurrency.** One request per line, processed serially; a
   slow command blocks later calls. No batching (JSON-RPC batch is not implemented).
 - **Witnesses are only filesystem and git.** No process exit-code family, no network side
@@ -1551,12 +1631,14 @@ Coverage:
    - mtime: already used by Tier 1 (existence + mtime, see
      [Conditional Immune Response](#conditional-immune-response)); precision handling and content
      hashing are still missing.
-2. **MCP interception** (semantics and transport available, handshake not wired):
+2. **MCP interception** (handshake and transport available):
    - Available: `MCPProxy`'s call boundary, passive response, tool registry, injection
-     protection; `mcp_server.py`'s stdio JSON-RPC server and JSONL audit trail.
+     protection; `mcp_server.py`'s stdio JSON-RPC server and JSONL audit trail; and since
+     v0.10.1 the `initialize` / `notifications/initialized` / `ping` / `tools/list` /
+     `tools/call` surface, with version negotiation and per-tool JSON Schemas.
    - To extend: take the claim from the protocol frame's `result.isError` rather than from the
-     client, `initialize` handshake and `tools/list`, Content-Length framing, forwarding to an
-     external MCP server, concurrency and batching.
+     client, forwarding to an external MCP server, server-initiated requests, concurrency and
+     JSON-RPC batching.
 3. **External judgment base** (basic form available):
    - Available: `rules/*.yaml` loading and strict validation, per-tool rule selection, monotonic
      tightening, `rule_id` in the trace, rule-layer self-audit.

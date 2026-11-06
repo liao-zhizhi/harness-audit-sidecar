@@ -128,6 +128,22 @@ class GetChangedFilesTest(GitRepositoryTestCase):
             with self.assertRaises(GitWitnessError):
                 GitWitness(plain)
 
+    def test_non_repository_error_keeps_gits_own_diagnosis(self) -> None:
+        # The generic "not a git repository" was reported for *every* failure
+        # of `rev-parse`, including "detected dubious ownership" from a
+        # container whose uid does not own the bind mount. Those two failures
+        # need different fixes, so the message has to carry git's own words.
+        with tempfile.TemporaryDirectory() as plain:
+            with self.assertRaises(GitWitnessError) as caught:
+                GitWitness(plain)
+        message = str(caught.exception)
+        self.assertIn("cannot read a git repository at", message)
+        # Assert on the parts of git's output that are not localized: this
+        # machine's git reports in Chinese, so any English phrase from git
+        # would make the test pass or fail depending on the operator's locale.
+        self.assertIn("rev-parse", message)
+        self.assertIn("failed (128)", message)
+
     def test_missing_directory_raises(self) -> None:
         with self.assertRaises(GitWitnessError):
             GitWitness(os.path.join(self.root, "nope"))

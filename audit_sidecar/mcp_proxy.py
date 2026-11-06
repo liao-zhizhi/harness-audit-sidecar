@@ -152,6 +152,88 @@ _DEFAULT_REGISTRY: Dict[str, Callable[[Dict[str, Any]], ToolInvocation]] = {
     "run_command": _build_run_command,
 }
 
+# The argument contract of each built-in tool, in MCP tool-definition shape.
+#
+# It lives beside the builders rather than in the transport module because the
+# builders are what actually enforce it: a schema in ``mcp_server`` could drift
+# from ``_require`` and advertise a parameter the builder rejects, which is
+# precisely the kind of documentation that lies. ``run_command``'s
+# ``expected_files_modified`` is the load-bearing one -- it is the only way a
+# caller tells the git witness what the command was supposed to touch, and a
+# model that never learns about it gets an INVALID for an honest call.
+_DEFAULT_SCHEMAS: Dict[str, Dict[str, Any]] = {
+    "write_file": {
+        "description": (
+            "Write a file, replacing its contents. The write is witnessed "
+            "against the filesystem on disk."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "File to write. Relative paths resolve against the "
+                        "audited working directory."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Exact bytes to write.",
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+    "append_file": {
+        "description": "Append to a file, creating it if absent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File to append to."},
+                "content": {"type": "string", "description": "Text to append."},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    "run_command": {
+        "description": (
+            "Run a shell command in the audited working directory. Declare "
+            "expected_files_modified so the git change set can be used as a "
+            "witness; without a declared expectation the call cannot be "
+            "judged PASS."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Shell command line to execute.",
+                },
+                "expected_files_modified": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Paths this command is supposed to modify, relative "
+                        "to the working directory. The change set must equal "
+                        "this set exactly."
+                    ),
+                },
+            },
+            "required": ["command"],
+        },
+    },
+}
+
+# Schema advertised for a tool registered without one. Permissive on purpose:
+# inventing required fields for someone else's handler would make the server
+# reject calls the handler accepts.
+_OPAQUE_INPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": True,
+}
+
 
 class MCPProxy:
     """Minimal interception layer that judges what a tool told the agent.
@@ -219,6 +301,13 @@ class MCPProxy:
         self._registry = dict(_DEFAULT_REGISTRY)
         if registry:
             self._registry.update(registry)
+        # Tool definitions advertised over MCP. Kept separate from the
+        # registry because a tool's *description* is a protocol concern that
+        # may be added, changed or withheld without touching how the call is
+        # built -- and because a witness tool has no builder at all.
+        self._schemas: Dict[str, Dict[str, Any]] = {
+            name: dict(spec) for name, spec in _DEFAULT_SCHEMAS.items()
+        }
         # Tools whose witness is collected in-process rather than by running a
         # shell command (see ``audit_sidecar/tools/citation_audit.py``). Kept
         # separate from ``_registry`` because their value is a witness, not a
@@ -307,18 +396,50 @@ class MCPProxy:
         )
 
     def register_tool(
-        self, name: str, builder: Callable[[Dict[str, Any]], ToolInvocation]
+        self,
+        name: str,
+        builder: Callable[[Dict[str, Any]], ToolInvocation],
+        *,
+        description: Optional[str] = None,
+        input_schema: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not isinstance(name, str) or not name:
             raise ValueError("tool name must be a non-empty string")
         if not callable(builder):
             raise TypeError("builder must be callable")
         self._registry[name] = builder
+        self._describe(name, description, input_schema)
+
+    def _describe(
+        self,
+        name: str,
+        description: Optional[str],
+        input_schema: Optional[Dict[str, Any]],
+    ) -> None:
+        """Record the advertised definition of ``name``.
+
+        Called by both registration paths. A partial definition is merged into
+        whatever is already known (built-ins start from their schema), so a
+        caller may override just the description without restating the schema.
+        """
+        spec = dict(self._schemas.get(name, {}))
+        if description is not None:
+            if not isinstance(description, str):
+                raise TypeError("description must be a string")
+            spec["description"] = description
+        if input_schema is not None:
+            if not isinstance(input_schema, dict):
+                raise TypeError("input_schema must be an object")
+            spec["inputSchema"] = input_schema
+        self._schemas[name] = spec
 
     def register_witness_tool(
         self,
         name: str,
         handler: Callable[[Dict[str, Any], bool], ExecutionResult],
+        *,
+        description: Optional[str] = None,
+        input_schema: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Register a tool that collects its own witness in-process.
 
@@ -328,6 +449,10 @@ class MCPProxy:
         Unlike a shell tool there is no command to sandbox -- which is exactly
         why such a tool must not be registered through :meth:`register_tool`,
         where the absence of a real command would otherwise look audited.
+
+        ``description`` and ``input_schema`` are optional and only affect what
+        ``tools/list`` advertises. Omitting them is allowed, but the tool then
+        appears with an opaque schema, which a model cannot call correctly.
         """
         if not isinstance(name, str) or not name:
             raise ValueError("tool name must be a non-empty string")
@@ -339,6 +464,38 @@ class MCPProxy:
                 "with an in-process witness".format(name)
             )
         self._witness_handlers[name] = handler
+        self._describe(name, description, input_schema)
+
+    @property
+    def tool_names(self) -> Tuple[str, ...]:
+        """Every tool this proxy can audit, sorted for a stable ``tools/list``.
+
+        Both registration paths are included: a client that cannot see a tool
+        in ``tools/list`` will never call it, so an absent name here is an
+        unreachable witness rather than a private one.
+        """
+        return tuple(sorted(set(self._registry) | set(self._witness_handlers)))
+
+    def describe_tools(self) -> List[Dict[str, Any]]:
+        """The MCP ``tools/list`` payload: name, description, inputSchema.
+
+        A tool registered without a definition is still listed, with a
+        permissive schema. Hiding it would be worse: the handler would remain
+        callable while ``tools/list`` claimed it did not exist, and a client
+        that trusts discovery would quietly stop auditing that tool.
+        """
+        definitions: List[Dict[str, Any]] = []
+        for name in self.tool_names:
+            spec = self._schemas.get(name, {})
+            definitions.append(
+                {
+                    "name": name,
+                    "description": spec.get("description")
+                    or "{} (no description registered)".format(name),
+                    "inputSchema": spec.get("inputSchema") or dict(_OPAQUE_INPUT_SCHEMA),
+                }
+            )
+        return definitions
 
     @property
     def immune_state(self) -> ImmuneState:

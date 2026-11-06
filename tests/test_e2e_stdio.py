@@ -239,11 +239,32 @@ class ProtocolErrorE2ETest(StdioServerTestCase):
 
     def test_unknown_method_yields_method_not_found(self) -> None:
         stdout, _stderr, code = self.run_server(
-            [{"jsonrpc": "2.0", "method": "tools/list", "id": 2}]
+            [{"jsonrpc": "2.0", "method": "resources/list", "id": 2}]
         )
         self.assertEqual(code, 0)
         response = json.loads(stdout.strip())
         self.assertEqual(response["error"]["code"], -32601)
+
+    def test_mcp_method_before_initialize_is_refused(self) -> None:
+        # MCP requires initialization to be the first interaction. Answering
+        # tools/list anyway would hide the client's missing handshake until a
+        # capability mismatch surfaced much later.
+        stdout, _stderr, code = self.run_server(
+            [{"jsonrpc": "2.0", "method": "tools/list", "id": 2}]
+        )
+        self.assertEqual(code, 0)
+        response = json.loads(stdout.strip())
+        self.assertEqual(response["error"]["code"], -32002)
+        self.assertIn("initialize", response["error"]["message"])
+
+    def test_legacy_tool_call_needs_no_handshake(self) -> None:
+        # tool_call predates the handshake and is what every recorded session
+        # in this project used; gating it would invalidate that history.
+        stdout, _stderr, code = self.run_server(
+            [_request(1, "write_file", {"path": "target.py", "content": "h\n"}, True)]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.strip())["result"]["status"], "ok")
 
     def test_wrong_jsonrpc_version_is_rejected(self) -> None:
         stdout, _stderr, code = self.run_server(

@@ -1,17 +1,35 @@
 """Stdio JSON-RPC sidecar: the wire between an agent and its tool layer.
 
 The proxy in ``mcp_proxy`` models the call boundary. This module puts it on a
-pipe so a real agent client can talk to it.
+pipe so a real agent client can talk to it, speaking MCP.
 
-Wire format is newline-delimited JSON-RPC 2.0, one object per line. That is the
-framing used by most stdio MCP transports in their line mode: no Content-Length
-headers, no batching, and no framing ambiguity to get wrong.
+Wire format
+-----------
+Newline-delimited JSON-RPC 2.0 over UTF-8, one object per line. That is the
+MCP stdio transport as specified (2025-06-18, "Transports"): *"Messages are
+delimited by newlines, and MUST NOT contain embedded newlines."* There is no
+``Content-Length`` header in MCP -- that framing belongs to the Language
+Server Protocol, and an earlier version of this file's notes repeated the
+confusion. ``json.dumps`` escapes control characters, so a serialized message
+can never contain a literal newline and the framing is unambiguous.
+
+Methods
+-------
+``initialize``             protocol version and capability negotiation
+``notifications/initialized``  state transition, never answered
+``ping``                   liveness, returns ``{}``
+``tools/list``             the audited tools, with JSON Schemas
+``tools/call``             execute + audit one tool call (MCP standard)
+``tool_call``              legacy pre-handshake alias, kept for compatibility
 
 Two properties matter more than the protocol details:
 
 * **The response is passive.** The agent receives exactly what the tool layer
   claimed, and nothing about the verdict. Leaking the verdict would let the
-  agent detect the audit and adapt, which destroys the audit's value.
+  agent detect the audit and adapt, which destroys the audit's value. The same
+  rule is why ``initialize`` omits MCP's optional ``instructions`` field: a
+  server that announces "your calls are being judged" has turned a detector
+  into a deterrent.
 * **The verdict goes to a trace file, not the wire.** A JSONL record per call,
   flushed immediately, so the audit survives the process being killed. If the
   trace cannot be written the call is still answered -- an unwritable log must
@@ -29,6 +47,7 @@ import os
 import sys
 from typing import Any, Dict, Iterable, List, Optional, TextIO
 
+from . import __version__
 from .immune_state import STATE_FILENAME
 from .judgment_base import RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy, UnknownToolError
@@ -36,9 +55,25 @@ from .runner import SafeRunner
 from .self_audit import run_self_audit
 from .tools.citation_audit import register_citation_tool
 
-__all__ = ["JsonRpcServer", "TraceWriter", "main", "TRACE_FILENAME"]
+__all__ = [
+    "JsonRpcServer",
+    "TraceWriter",
+    "main",
+    "TRACE_FILENAME",
+    "PROTOCOL_VERSIONS",
+    "LATEST_PROTOCOL_VERSION",
+]
 
 TRACE_FILENAME = "audit_trace.jsonl"
+
+# Protocol revisions this server can serve. They differ in transports and in
+# optional features, none of which this server uses: the tool surface
+# (initialize / tools/list / tools/call) is unchanged across all three, so
+# advertising them is a claim the code can keep. Ordered newest first.
+PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+LATEST_PROTOCOL_VERSION = PROTOCOL_VERSIONS[0]
+
+SERVER_NAME = "harness-audit-sidecar"
 
 # JSON-RPC 2.0 reserved error codes.
 PARSE_ERROR = -32700
@@ -47,8 +82,20 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
-# Application-level code for a tool name the proxy has no spec for.
+# MCP application code: a request arrived before the handshake.
+SERVER_NOT_INITIALIZED = -32002
+
+# Application-level code for a tool name the proxy has no spec for, on the
+# legacy ``tool_call`` method. ``tools/call`` answers -32602 instead, following
+# the MCP example for an unknown tool; both are kept because the legacy code is
+# pinned by an existing end-to-end test and by the trace of every past session.
 UNKNOWN_TOOL = -32001
+
+# How the claim under audit was obtained. Both are recorded on every trace
+# record: an implicit claim is a weaker statement than a supplied one, and a
+# trace that cannot tell them apart overstates the weaker one.
+CLAIM_EXPLICIT = "explicit"      # params._audit.reported_success, supplied by the client
+CLAIM_TOOL_RETURN = "tool-return"  # what a non-error MCP tool result means by definition
 
 _LOG = logging.getLogger("audit_sidecar.mcp_server")
 
@@ -68,6 +115,10 @@ def _error(message_id: Any, code: int, message: str) -> Dict[str, Any]:
         "id": message_id,
         "error": {"code": code, "message": message},
     }
+
+
+def _result(message_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": message_id, "result": result}
 
 
 class TraceWriter:
@@ -108,6 +159,9 @@ def _trace_record(
     reported_success: bool,
     result: Any,
     immune_state: Optional[str] = None,
+    *,
+    mcp_method: str = "tool_call",
+    claim_basis: str = CLAIM_EXPLICIT,
 ) -> Dict[str, Any]:
     return {
         "id": message_id,
@@ -115,6 +169,12 @@ def _trace_record(
         "args_keys": sorted(args.keys()),
         "intent": result.intent,
         "agent_reported_success": reported_success,
+        # Which wire method produced this record, and how the claim behind it
+        # was obtained. Without these two, a call made over ``tools/call``
+        # (where MCP has no claim field at all) is indistinguishable from one
+        # where the client explicitly supplied the claim under audit.
+        "mcp_method": mcp_method,
+        "claim_basis": claim_basis,
         "check_observed": result.check_observed,
         "check_source": result.check_source,
         "effect_observed": result.effect_observed,
@@ -144,17 +204,55 @@ def _trace_record(
 
 
 class JsonRpcServer:
-    """Line-delimited JSON-RPC 2.0 front end for ``MCPProxy``."""
+    """Line-delimited JSON-RPC 2.0 front end for ``MCPProxy``.
+
+    Implements the MCP handshake (``initialize`` plus the ``initialized``
+    notification) and the tool surface (``tools/list``, ``tools/call``).
+
+    The handshake is *enforced* for the MCP methods: a ``tools/call`` before
+    ``initialize`` is answered with :data:`SERVER_NOT_INITIALIZED` instead of
+    being executed. The specification requires initialization to be the first
+    interaction, and a server that silently tolerates the omission hides a
+    client bug that will surface later as a confusing capability mismatch.
+    The legacy ``tool_call`` method is exempt, so sessions recorded by earlier
+    versions keep working; it is a pre-handshake API, not an MCP one.
+    """
 
     def __init__(
         self,
         proxy: MCPProxy,
         trace: TraceWriter,
         stdout: Optional[TextIO] = None,
+        *,
+        server_name: str = SERVER_NAME,
+        server_version: Optional[str] = None,
     ) -> None:
         self._proxy = proxy
         self._trace = trace
         self._stdout = stdout if stdout is not None else sys.stdout
+        self._server_name = server_name
+        self._server_version = (
+            server_version if server_version is not None else __version__
+        )
+        self._initialized = False
+        #: Set by ``notifications/initialized``. Not used to gate anything --
+        #: the server sends no requests, so there is nothing for it to unblock
+        #: -- but kept so a trace reader can tell a full handshake from an
+        #: ``initialize`` that the client never confirmed.
+        self._client_ready = False
+        self._protocol_version: Optional[str] = None
+        self._client_info: Optional[Dict[str, Any]] = None
+
+    # -- negotiated state ---------------------------------------------
+
+    @property
+    def initialized(self) -> bool:
+        return self._initialized
+
+    @property
+    def protocol_version(self) -> Optional[str]:
+        """The version agreed in ``initialize``, or ``None`` before it."""
+        return self._protocol_version
 
     # -- public API ---------------------------------------------------
 
@@ -168,6 +266,12 @@ class JsonRpcServer:
         if not stripped:
             # Blank lines are transport noise, not protocol violations.
             return []
+        # A UTF-8 BOM is not JSON. Some Windows clients emit one anyway, and
+        # rejecting the first message of a session for it turns an interop
+        # quirk into a failed handshake.
+        stripped = stripped.lstrip("\ufeff").strip()
+        if not stripped:
+            return []
 
         try:
             message = json.loads(stripped)
@@ -175,6 +279,8 @@ class JsonRpcServer:
             return [_error(None, PARSE_ERROR, "parse error: {}".format(problem))]
 
         if not isinstance(message, dict):
+            # JSON-RPC batches are arrays; MCP removed batching in 2025-06-18,
+            # so an array is a protocol error here rather than a list of calls.
             return [_error(None, INVALID_REQUEST, "request must be a JSON object")]
 
         message_id = message.get("id")
@@ -189,24 +295,31 @@ class JsonRpcServer:
             return [_error(message_id, INVALID_REQUEST, "jsonrpc must be '2.0'")]
 
         method = message.get("method")
-        if method != "tool_call":
+        if not isinstance(method, str) or not method:
             if is_notification:
                 return []
             return [
-                _error(
-                    message_id,
-                    METHOD_NOT_FOUND,
-                    "unknown method: {!r}".format(method),
-                )
+                _error(message_id, INVALID_REQUEST, "method must be a non-empty string")
             ]
 
+        params = message.get("params")
+
+        if method == "initialize" and is_notification:
+            # An initialize with no id cannot be answered, so the client would
+            # never learn the negotiated version. Refusing to enter the state
+            # is better than half-performing a handshake.
+            _LOG.warning("ignoring initialize sent as a notification (no id)")
+            return []
+
         try:
-            response = self._handle_tool_call(message_id, message.get("params"))
+            response = self._dispatch(message_id, method, params)
         except _RequestError as failure:
             if is_notification:
                 return []
             return [_error(message_id, failure.code, failure.message)]
 
+        # A notification is executed (side effects and audit record included)
+        # but never answered -- that is the whole point of the id-less form.
         if is_notification:
             return []
         return [response]
@@ -219,7 +332,192 @@ class JsonRpcServer:
                 self._write(response)
         return 0
 
-    # -- internals ----------------------------------------------------
+    # -- dispatch -----------------------------------------------------
+
+    def _dispatch(
+        self, message_id: Any, method: str, params: Any
+    ) -> Dict[str, Any]:
+        if method == "initialize":
+            return self._handle_initialize(message_id, params)
+
+        if method.startswith("notifications/"):
+            self._handle_notification(method, params)
+            # Unreachable for a notification (handle_line drops the response)
+            # but a client that puts an id on a notification is a request for
+            # an empty result, which is the least surprising answer.
+            return _result(message_id, {})
+
+        if method == "ping":
+            return _result(message_id, {})
+
+        if method == "tools/list":
+            self._require_initialized(method)
+            return _result(message_id, self._handle_tools_list(params))
+
+        if method == "tools/call":
+            self._require_initialized(method)
+            return _result(message_id, self._handle_tools_call(message_id, params))
+
+        if method == "tool_call":
+            # Legacy alias from before the handshake existed. Deliberately not
+            # gated: it is what every recorded session in this project used.
+            return self._handle_tool_call(message_id, params)
+
+        raise _RequestError(
+            METHOD_NOT_FOUND, "unknown method: {!r}".format(method)
+        )
+
+    def _require_initialized(self, method: str) -> None:
+        if not self._initialized:
+            raise _RequestError(
+                SERVER_NOT_INITIALIZED,
+                "server not initialized: send 'initialize' before {!r}".format(method),
+            )
+
+    def _handle_notification(self, method: str, params: Any) -> None:
+        if method == "notifications/initialized":
+            self._client_ready = True
+            return
+        # notifications/cancelled, notifications/roots/list_changed and anything
+        # a newer revision adds: acknowledging is not permitted, ignoring is
+        # required. Log at debug level so a typo'd notification name is
+        # diagnosable without polluting the wire.
+        _LOG.debug("ignoring notification %s", method)
+
+    # -- initialize ---------------------------------------------------
+
+    def _handle_initialize(self, message_id: Any, params: Any) -> Dict[str, Any]:
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise _RequestError(INVALID_PARAMS, "params must be an object")
+
+        requested = params.get("protocolVersion")
+        if not isinstance(requested, str) or not requested:
+            raise _RequestError(
+                INVALID_PARAMS,
+                "params.protocolVersion must be a non-empty string; version "
+                "negotiation cannot start without the client's version",
+            )
+
+        # Spec: echo the requested version when it is supported, otherwise
+        # answer with the newest version this server supports and let the
+        # client decide whether to continue.
+        if requested in PROTOCOL_VERSIONS:
+            negotiated = requested
+        else:
+            negotiated = LATEST_PROTOCOL_VERSION
+            _LOG.warning(
+                "client requested unsupported protocol version %r; answering %r",
+                requested,
+                negotiated,
+            )
+
+        self._initialized = True
+        self._protocol_version = negotiated
+        client_info = params.get("clientInfo")
+        self._client_info = client_info if isinstance(client_info, dict) else None
+
+        return _result(
+            message_id,
+            {
+                "protocolVersion": negotiated,
+                # Only the capability this server actually implements. Claiming
+                # `resources` or `prompts` here would make a conforming client
+                # call methods that answer -32601.
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {
+                    "name": self._server_name,
+                    "version": self._server_version,
+                },
+                # `instructions` is omitted on purpose: it is the one field
+                # that reaches the model, and telling the model it is under
+                # audit removes the false completions we exist to measure.
+            },
+        )
+
+    # -- tools --------------------------------------------------------
+
+    def _handle_tools_list(self, params: Any) -> Dict[str, Any]:
+        if params is not None and not isinstance(params, dict):
+            raise _RequestError(INVALID_PARAMS, "params must be an object")
+        # Pagination: the tool set is fixed at startup and small, so the whole
+        # list is one page and `nextCursor` is omitted (the spec's signal for
+        # "no more pages"). A supplied cursor is ignored rather than rejected,
+        # because a client replaying an old cursor should get the list, not an
+        # error it cannot act on.
+        return {"tools": self._proxy.describe_tools()}
+
+    def _handle_tools_call(self, message_id: Any, params: Any) -> Dict[str, Any]:
+        if not isinstance(params, dict):
+            raise _RequestError(INVALID_PARAMS, "params must be an object")
+
+        tool = params.get("name")
+        if not isinstance(tool, str) or not tool:
+            raise _RequestError(
+                INVALID_PARAMS, "params.name must be a non-empty string"
+            )
+
+        args = params.get("arguments", {})
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise _RequestError(INVALID_PARAMS, "params.arguments must be an object")
+
+        claim, basis = self._resolve_claim(params, tool)
+
+        try:
+            response = self._execute(
+                message_id, tool, args, claim, "tools/call", basis
+            )
+        except UnknownToolError:
+            # MCP's example for an unknown tool is -32602, not a custom code.
+            # Answering in the reserved range keeps generic JSON-RPC clients
+            # able to classify the failure.
+            raise _RequestError(
+                INVALID_PARAMS, "Unknown tool: {}".format(tool)
+            ) from None
+
+        # Exactly the two fields the specification defines for a tool result.
+        # The proxy's extra "status" field is dropped: a strict client is
+        # entitled to validate this object.
+        return {
+            "content": response.get("content", []),
+            "isError": bool(response.get("isError")),
+        }
+
+    def _resolve_claim(self, params: Dict[str, Any], tool: str) -> tuple:
+        """Work out what the claim under audit is for a ``tools/call``.
+
+        MCP has no field for "what the agent was told": the response *is* the
+        report. So the claim has to come from one of two places.
+
+        ``params._audit.reported_success`` -- an out-of-band field, not part of
+        ``arguments``, so it never reaches the model and cannot be set by it.
+        This is the only way to audit the *caller's* claim over MCP.
+
+        Otherwise the claim is the meaning of a non-error MCP tool result: a
+        tool that fails is required to set ``isError``, so returning a normal
+        result asserts success. That is a real claim about the world, and it is
+        the one this server must not break -- which is why the audit records
+        ``claim_basis: "tool-return"`` instead of pretending a client supplied
+        it.
+        """
+        audit = params.get("_audit")
+        if audit is None:
+            return True, CLAIM_TOOL_RETURN
+        if not isinstance(audit, dict):
+            raise _RequestError(INVALID_PARAMS, "params._audit must be an object")
+        reported = audit.get("reported_success")
+        if not isinstance(reported, bool):
+            raise _RequestError(
+                INVALID_PARAMS,
+                "params._audit.reported_success must be a boolean; the claim "
+                "cannot be inferred because the audit exists to judge it",
+            )
+        return reported, CLAIM_EXPLICIT
+
+    # -- shared execution ---------------------------------------------
 
     def _handle_tool_call(self, message_id: Any, params: Any) -> Dict[str, Any]:
         if not isinstance(params, dict):
@@ -246,9 +544,30 @@ class JsonRpcServer:
             )
 
         try:
-            response = self._proxy.intercept_tool_call(tool, args, reported_success)
+            response = self._execute(
+                message_id, tool, args, reported_success, "tool_call", CLAIM_EXPLICIT
+            )
         except UnknownToolError as problem:
+            # The legacy code, kept because sessions recorded before the
+            # handshake existed are keyed on it. ``tools/call`` answers -32602
+            # instead, per the MCP example for an unknown tool.
             raise _RequestError(UNKNOWN_TOOL, str(problem)) from None
+        return _result(message_id, response)
+
+    def _execute(
+        self,
+        message_id: Any,
+        tool: str,
+        args: Dict[str, Any],
+        reported_success: bool,
+        mcp_method: str,
+        claim_basis: str,
+    ) -> Dict[str, Any]:
+        """Run one audited call, append its trace record, return the response."""
+        try:
+            response = self._proxy.intercept_tool_call(tool, args, reported_success)
+        except UnknownToolError:
+            raise
         except (ValueError, TypeError) as problem:
             raise _RequestError(INVALID_PARAMS, str(problem)) from None
         except OSError as problem:
@@ -265,11 +584,17 @@ class JsonRpcServer:
                 reported_success,
                 result,
                 self._proxy.immune_state.state,
+                mcp_method=mcp_method,
+                claim_basis=claim_basis,
             )
         )
-        return {"jsonrpc": "2.0", "id": message_id, "result": response}
+        return response
 
     def _write(self, payload: Dict[str, Any]) -> None:
+        # No separators trickery needed for framing: json.dumps escapes every
+        # control character, so the serialized object cannot contain a literal
+        # newline. ensure_ascii=False keeps non-ASCII text as UTF-8 rather than
+        # \u escapes, which is what the transport specifies.
         self._stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         self._stdout.flush()
 
@@ -362,6 +687,29 @@ def _resolve_immune_state(
     )
 
 
+def _configure_stdio() -> None:
+    """Pin both stdio directions to UTF-8 with newline framing.
+
+    The transport specifies UTF-8, but Python picks its stream encoding from
+    the locale, and a container started with no ``LANG`` can end up on ASCII
+    for stdout -- which turns any non-ASCII tool argument into a
+    ``UnicodeEncodeError`` at the moment of writing a response, i.e. a crash
+    inside the protocol layer over a data value.
+
+    Decoding is lenient on the way in: one stray byte should produce a
+    ``-32700`` parse error, not take the session down. Encoding is strict on
+    the way out, because everything written there was produced by this process.
+    """
+    for stream, errors in ((sys.stdin, "replace"), (sys.stdout, "strict")):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors=errors, newline="\n")
+        except (ValueError, OSError):  # detached or already-consumed stream
+            _LOG.debug("could not reconfigure %r to UTF-8", stream)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the console script and ``python -m``."""
     options = _parse_args(argv if argv is not None else sys.argv[1:])
@@ -371,6 +719,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         stream=sys.stderr,
         format="%(levelname)s %(name)s: %(message)s",
     )
+
+    _configure_stdio()
 
     cwd = os.path.abspath(options.cwd)
     if not os.path.isdir(cwd):
@@ -395,6 +745,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         trace = TraceWriter(os.path.abspath(trace_path))
     except OSError as problem:
         _LOG.error("could not open trace %s: %s", trace_path, problem)
+        if isinstance(problem, PermissionError):
+            # The commonest cause is a uid mismatch on a container bind mount:
+            # the process runs as 10001 while the mount belongs to the host
+            # user. Saying so saves an hour of looking at permissions tables.
+            _LOG.error(
+                "the trace directory is not writable by uid %s. In a container, "
+                "run with `--user \"$(id -u):$(id -g)\"` and point --trace at a "
+                "host directory that user owns",
+                os.getuid(),
+            )
         return 2
 
     try:

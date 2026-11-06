@@ -1,0 +1,15 @@
+# Keep the build context to the package itself. Copying .git or a stale build/
+# would make the image depend on host state and the build non-reproducible.
+.git
+.gitignore
+build
+dist
+*.egg-info
+__pycache__
+*.pyc
+tests
+examples
+marketing
+paper_draft
+audit_trace.jsonl
+.immune_state.json
