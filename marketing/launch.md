@@ -103,6 +103,18 @@ interesting.
 > first, and the chronic check is a cumulative quantity — how much margin has already been spent,
 > and how many cycles are left — not how much this round wobbled.
 >
+> **We audited our own auditor.** Before launching, we ran a systemic self-audit — not a code
+> review, a search for the same shape we had just described. It found a bug where `chmod 000`
+> on a target file could trick our git-witness into a false `PASS`: an unreadable file was
+> fingerprinted with a string in the slot where a digest belongs, so "could not read it" was
+> recorded as "it changed". One `chmod`, no work done, full trust credit. We fixed it, and
+> published the audit that found it. The remaining limits are documented too — including the
+> one we cannot fix: **validating "inaction" is fundamentally impossible in this architecture**,
+> because a witness is positive by construction. An audit tool that hides its own failures is
+> exactly what we are trying to kill. We don't claim to be perfect; we claim to make our failure
+> modes **visible and bounded**. [`SELF_AUDIT.md`](https://github.com/liao-zhizhi/harness-audit-sidecar/blob/master/SELF_AUDIT.md),
+> nine limits, all of them ours.
+>
 > Honest limits, since someone will ask: the kinetic constants are placeholders, so the drift
 > example establishes the mechanism, not a biological measurement. We have not measured a
 > benchmark improvement from any of this. The deadlock and drift claims are falsifiable and we
@@ -152,6 +164,14 @@ interesting.
 > 四值判词（PASS / FAIL / INVALID / NOT RUN）与这套架构，来自对代谢动力学的严格推演：
 > 失败在 (底物, 能荷) 平面上是二维的，`FAIL` 与 `INVALID` 是对角两格，第四格在动力学上
 > 不可达——那一格就是幻觉的定义。
+>
+> **我们审计了自己的审计器。** 发布之前做了一轮系统性自我证伪，找到这样一个 bug：
+> 对目标文件执行 `chmod 000`，能让我们的 git 见证返回一个**假 PASS**——不可读的指纹
+> 被填进了本该放 digest 的位置，于是"读不到"被记成了"改动过"。一条 chmod，什么都没做，
+> 拿到满分信任。修好了，并把找出它的那份审查一并公开。剩下的限制也全部公开，
+> 包括那条修不掉的：**在这套架构里，验证"不作为"在原理上不可能**，因为见证天生是正向的。
+> 一个藏起自己失败的审计工具，正是我们要消灭的东西。我们不声称完美，
+> 我们声称把失败模式变得**可见且有界**（`SELF_AUDIT.md`，9 条限制，全部是我们的）。
 
 ---
 

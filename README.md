@@ -2,6 +2,19 @@
 
 **An audit tool for the agent execution layer**
 
+> ⚠️ **Read this first:**
+>
+> - **PASS means the world matches the intent, not that the agent did anything.** A no-op on a
+>   target that was already correct is a `PASS` — correctly, because an outcome witness can
+>   only report the world. Do not read it as "this agent did the work".
+> - **This tool can tell you what it witnessed; it cannot tell you whether it was in a position
+>   to witness.** Read `reason`, check `witness_scope`, and treat a `PASS` whose evidence you
+>   have not seen as an unverified claim — including the ones it produced about itself.
+>
+> For full disclosures of our own limits (`LIM-1` to `LIM-9`), read
+> [`SELF_AUDIT.md`](SELF_AUDIT.md) — including the `chmod 000` defect that produced a false
+> `PASS` before we found it. We would rather publish that than ship it.
+
 Four verdicts, not two, because **failure is two-dimensional.** A subject can fail because it
 ran out of material, or because the material was there and it could not take it up. Those are
 opposite corners, not degrees of one thing: the first is a fact about the world, the second is
@@ -118,7 +131,7 @@ flares, earlier than any real false completion.
 > (hash-chain ledger + potential-difference authorisation), the rule interface (digest-verified
 > external rule packages, mounted through the membrane), a stdio server, and chronic drift
 > detection (`analyze_chronic_drift`, §"The two failures"). The core loop
-> (execute → witness → verdict → record) runs, backed by 556 tests (549 passing, 7 skipped);
+> (execute → witness → verdict → record) runs, backed by 559 tests (552 passing, 7 skipped);
 > but the full MCP handshake, concurrency and forwarding to an external server are missing,
 > and `reported_success` is still supplied by the client (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
@@ -738,7 +751,7 @@ Developing from source:
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 556 tests (must run from the repository root)
+python3 -m unittest discover -s tests -p 'test_*.py'   # 559 tests (must run from the repository root)
 python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
 harness-audit-server --cwd /path/to/project # no --rules needed
@@ -1364,7 +1377,7 @@ and the server's refusal to start.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 556 tests ... OK (skipped=7)
+# Ran 559 tests ... OK (skipped=7)
 ```
 
 > **Must be run from the repository root.** The start directory is the relative path `tests`;

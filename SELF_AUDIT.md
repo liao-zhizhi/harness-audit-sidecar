@@ -486,7 +486,7 @@ headline shrinks.
   of the first value). Earlier `≤1.25%` was false under one of them; the widening is on the
   record here rather than silently applied.
 - Test count: now `556` total, `549` passing, `7` skipped — measured, not summed by hand:
-  `Ran 556 tests ... OK (skipped=7)`. The 7 skips are all environment-conditional
+  `Ran 559 tests ... OK (skipped=7)`. The 7 skips are all environment-conditional
   (git/bash/`agent_metabolism`/live citation resolution) plus one `ERRATA.md`-absent skip.
 - Version string in the README status line is now asserted against
   `audit_sidecar.__version__` by a test, so a release cannot forget it again.
@@ -584,7 +584,7 @@ the design deliberately supports.
 | `../bio-metabolism-lab/parameter_registry.md` | 10 → 11 placeholders in the mandated citation; 3 → 4 dimensionless groups |
 | `../bio-metabolism-lab/whitepaper/04_Emergent_Relations.md` | the two R² values stated separately, and R6's scope narrowed to the column it holds on |
 
-Test suite: **556 tests, 549 passing, 7 skipped** (from 529 total: 522 passing, 7 skipped). Coverage: **82%** total,
+Test suite: **559 tests, 552 passing, 7 skipped** (from 529 total: 522 passing, 7 skipped). Coverage: **82%** total,
 measured for the first time; the two weakest modules are named above.
 
 Nothing was pushed. `git log` locally has the change.

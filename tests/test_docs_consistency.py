@@ -101,6 +101,68 @@ class DocumentedRefusalsTest(unittest.TestCase):
         )
 
 
+class PublishedLimitsTest(unittest.TestCase):
+    """The declarations at the top of the README must match SELF_AUDIT.md.
+
+    This is the same defect as the citation rule in the theory repo: a
+    sentence people are told to quote is a sentence that has been certified,
+    and it goes stale exactly like any other. The range here is derived from
+    the file rather than written by hand, so adding LIM-10 cannot leave the
+    README claiming nine.
+    """
+
+    def setUp(self) -> None:
+        self.audit = _read("SELF_AUDIT.md")
+
+    def test_declared_range_matches_the_actual_limits(self) -> None:
+        readme = _read("README.md")
+        declared = re.search(r"`LIM-(\d+)` to `LIM-(\d+)`", readme)
+        self.assertIsNotNone(declared, "the README states no limit range")
+        low, high = (int(declared.group(1)), int(declared.group(2)))
+        actual = {int(n) for n in re.findall(r"`LIM-(\d+)`", self.audit)}
+        self.assertTrue(actual, "SELF_AUDIT.md defines no limit ids")
+        # A range that does not cover the file is the citation-rule defect: a
+        # sentence people are told to quote, certified and then gone stale.
+        self.assertEqual(
+            (low, high),
+            (min(actual), max(actual)),
+            "the declared range {}..{} does not match SELF_AUDIT.md {}".format(
+                low, high, sorted(actual)),
+        )
+        self.assertEqual(actual, set(range(low, high + 1)),
+                         "SELF_AUDIT.md has a gap in its limit numbering")
+
+    def test_the_two_read_this_first_claims_are_present(self) -> None:
+        readme = _read("README.md")
+        self.assertIn("Read this first", readme)
+        self.assertIn("PASS means the world matches the intent", readme)
+        self.assertIn("cannot tell you whether it was in a position", readme)
+        # The declaration must come before the descriptive paragraph, i.e. it
+        # has to be the first thing a reader meets.
+        self.assertLess(
+            readme.index("Read this first"),
+            readme.index("Four verdicts, not two"),
+        )
+
+
+class SelfAuditDocTest(unittest.TestCase):
+    """The audit must not describe defects it no longer has."""
+
+    def test_every_fixed_item_has_a_regression_test(self) -> None:
+        audit = _read("SELF_AUDIT.md")
+        fixed = set(re.findall(r"\| \*\*(D\d\.\d+)\*\* .*?\| `?(FIXED)`?", audit))
+        self.assertTrue(fixed)
+        suite = "\n".join(
+            _read("tests", name)
+            for name in os.listdir(os.path.join(_REPO, "tests"))
+            if name.endswith(".py")
+        )
+        # Both halves of the critical finding are pinned by name in the suite.
+        self.assertIn("chmod", suite)
+        self.assertIn("__unreadable__", suite)
+        self.assertIn("recovered-drawdown", suite)
+
+
 class PackagingHygieneTest(unittest.TestCase):
     """Internal working notes must not reach an sdist."""
 
