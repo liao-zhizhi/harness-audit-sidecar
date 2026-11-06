@@ -15,6 +15,7 @@ Public surface::
     ImmuneState      inflammation state that scopes how much a call is worth
     select_tier      choose the innate or adaptive defence for one call
     ConfidenceAccount sliding-window trust balance
+    analyze_chronic_drift  detect a "perfect loop" that is a decaying transient
     run_self_audit   known-answer gate that must pass before the tool runs
 
 The audit logic is standard library; PyYAML is used only to read the rules.
@@ -23,6 +24,7 @@ The audit logic is standard library; PyYAML is used only to read the rules.
 from __future__ import annotations
 
 from .confidence import ConfidenceAccount
+from .drift import DriftReport, analyze_chronic_drift
 from .citation_witness import CitationWitness
 from .git_witness import GitWitness, GitWitnessError
 from .immune_state import ImmuneState, select_tier
@@ -34,12 +36,13 @@ from .self_audit import run_self_audit
 from .verdict import Verdict, VerdictEngine
 from .tools.citation_audit import CitationAuditProxy
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 
 __all__ = [
     "CitationAuditProxy",
     "CitationWitness",
     "ConfidenceAccount",
+    "DriftReport",
     "ExecutionResult",
     "GitWitness",
     "GitWitnessError",
@@ -53,6 +56,7 @@ __all__ = [
     "UnknownToolError",
     "Verdict",
     "VerdictEngine",
+    "analyze_chronic_drift",
     "default_rules_dir",
     "packaged_rules_dir",
     "run_self_audit",

@@ -2,6 +2,16 @@
 
 **An audit tool for the agent execution layer**
 
+Four verdicts, not two, because **failure is two-dimensional.** A subject can fail because it
+ran out of material, or because the material was there and it could not take it up. Those are
+opposite corners, not degrees of one thing: the first is a fact about the world, the second is
+a fact about the interface, and a boolean collapses them into one word that cannot be argued
+with afterwards. The vocabulary here comes from a formalisation of metabolic dynamics — energy
+charge `A` and substrate `S` — where the same two coordinates decide dormancy, deadlock and
+recovery, and where one corner turns out to be **dynamically unreachable**. That corner is the
+definition of a hallucination, which is why anti-hallucination here is a structural property
+rather than an extra check.
+
 ## Bio-Inspired Architecture
 
 The system is layered on two fronts: **eight laws govern the inside, five laws govern how
@@ -99,15 +109,16 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.9.3) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.10.0) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
 > response (with cross-process persistence), citation witnesses (DOI/arXiv resolution), the
 > external ecology interface (five laws as pure functions), the semi-permeable membrane
 > (hash-chain ledger + potential-difference authorisation), the rule interface (digest-verified
-> external rule packages, mounted through the membrane) and a stdio server. The core loop
-> (execute → witness → verdict → record) runs, backed by 514 tests;
+> external rule packages, mounted through the membrane), a stdio server, and chronic drift
+> detection (`analyze_chronic_drift`, §"The two failures"). The core loop
+> (execute → witness → verdict → record) runs, backed by 529 tests (522 passing, 7 skipped);
 > but the full MCP handshake, concurrency and forwarding to an external server are missing,
 > and `reported_success` is still supplied by the client (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
@@ -189,6 +200,118 @@ Rows two and three are the structural defect of boolean verdicts: there is no wo
 
 - **FAIL** — I looked, and I saw failure (false completion falls here).
 - **INVALID** — I did not look. **PASS is not permitted.**
+
+---
+
+## The two failures, and why the vocabulary has four values
+
+A verdict per record catches one lie: the agent says done, the witness says nothing landed.
+There is a second failure it cannot catch, because **that one has no bad record to point at**.
+Both are worth stating precisely, because the architecture below is built around them.
+
+### Observed = Capability × Availability (R5)
+
+A published score is always the left-hand side. The right-hand side has a term that is a
+property of the **harness**, not of the model:
+
+```
+observed = capability × availability
+```
+
+Multiplication, not addition, and that is the whole problem: **if availability is 0, the score
+is 0 and the capability term is unobservable.** Swapping in a better model cannot move a
+number that is already zero, so the improvement is invisible and the diagnosis points at the
+wrong component.
+
+Two ways availability reaches 0 while capability is untouched, both of which this repository
+already has vocabulary for:
+
+| Failure | What the receipt says | What actually happened |
+|:--|:--|:--|
+| Deadlock (charge ceiling below the wake threshold) | task failed | the model was **never called** |
+| Saturated auditor (`W = 1/(μ-λ)`, timeouts above ~93% utilisation) | `INVALID` | **the judge** gave up; the agent was never judged |
+
+The second row is why the auditor has to be able to **refuse to judge**. A saturated judge that
+must still produce a verdict produces `INVALID` for everything, and `INVALID` in the receipt
+looks exactly like a defective subject. That is a false failure manufactured by the observer —
+which is why the verdict has to travel with its witness and its own load, not just its value.
+
+### Chronic drift (R6): the loop that looks perfect because it is dying
+
+`analyze_chronic_drift()` in `audit_sidecar/drift.py`.
+
+Some agent loops produce a number per cycle — tokens per retry, files touched, recovery
+margin, remaining budget. The series looks periodic. It may not be.
+
+Reference run (a nine-cycle fed-batch simulation; **the constants are placeholders, so this
+establishes the mechanism, not a biological measurement**), substrate level at each wake:
+
+```
+19.265  18.982 ...  18.688  18.400  18.118  17.841  17.570  17.303  17.041   mM
+```
+
+Plotted: nine near-identical peaks. Fitted: a line with
+
+| quantity | value |
+|:--|--:|
+| total change | **−11.5%** over 9 cycles |
+| per-cycle loss | **≈1.3%** |
+| linear fit | slope **−0.2788** mM/cycle |
+| **R²** | **0.9997** |
+| extrapolated zero crossing | ≈ cycle **70** |
+
+No per-round alarm fires at 1.3%. The nine "clean cycles" were the first 13% of the decay.
+Cumulative blood loss: each loss is below the noise floor of a single round, and the sum kills
+the system.
+
+This is the failure a variance alarm structurally cannot see, so the detector is not a
+variance alarm. Two gates, both required:
+
+```python
+from audit_sidecar.drift import analyze_chronic_drift
+
+report = analyze_chronic_drift(levels, r2_threshold=0.98, min_total_change=0.01)
+report.verdict            # FAIL
+report.pattern            # 'chronic'  (quiet and material)
+report.r2                 # 0.9997
+report.relative_total_change   # -0.1154
+report.steps_to_zero      # 69.05  -> cycle 70 for a series starting at cycle 1
+```
+
+**R² alone is the wrong test**, and this is the part worth arguing about:
+
+- `R²` measures **regularity**, not **magnitude**. A metric wandering by 1e-7 per cycle gives
+  `R² ≈ 1.0` and means nothing. Gating on `R²` alone just builds a noise alarm.
+- A metric falling 40% *with jitter* lands around `R² ≈ 0.86` — under the gate, and genuinely
+  dying — but every variance-based monitor would already have caught it.
+
+So the dangerous case is the **conjunction**: high `R²` *and* material magnitude. That is
+`pattern == "chronic"` — quiet enough to evade per-round thresholds, regular enough to look
+healthy. Drift that clears the magnitude gate but not the regularity gate is reported as
+`"visible"` instead of being merged in; the two have different responses.
+
+The detector reuses the same verdict vocabulary and the same refusals as the rest of the system:
+
+| input | verdict | why |
+|:--|:--|:--|
+| empty series | `NOT RUN` | nothing was measured |
+| fewer than `min_points` (default 6) | `INVALID` | a trend from three points is an opinion |
+| a `NaN` or `inf` sample | `INVALID` | fitting across a gap invents the missing measurement |
+| stationary | `PASS` | no material change |
+| material + regular | `FAIL` / `chronic` | the R6 case |
+| material + noisy | `FAIL` / `visible` | real, but catchable |
+
+A constant series reports `r2 = 1.0` by convention and is still `PASS`: the magnitude gate is
+what decides, not the fit quality. All of the above is asserted in `tests/test_drift.py`,
+including the published numbers above.
+
+**Where these came from.** Both are results of a private derivation from metabolic dynamics
+(energy charge, substrate inhibition, hysteresis) rather than intuitions about software. The
+same dimensionless groups that bound a cell's dormancy also bound an agent's recovery; the
+form `observed = capability × availability` falls out of that, and so does the drift criterion
+— a biological loop whose amplitude decays 11% over nine cycles looks exactly as "stable" as a
+software one. The repository does not ship that derivation; what it ships is the part that
+survives contact with a witness.
 
 ---
 
@@ -537,6 +660,7 @@ agent-harness-audit/
 ├── audit_sidecar/
 │   ├── __init__.py       public interface
 │   ├── verdict.py        four-valued verdict engine
+│   ├── drift.py          chronic drift detection (R6: a "perfect loop" that is decaying)
 │   ├── confidence.py     trust-energy account (sliding window)
 │   ├── judgment_base.py  external judgment base (loads rules/*.yaml)
 │   ├── rule_engine.py    rule verdicts (tighten on top of the four-valued grid)
@@ -571,6 +695,7 @@ agent-harness-audit/
     ├── test_immune.py        tiered immunity (tier routing / inflammation / recovery / still inflamed after restart)
     ├── test_runner.py
     ├── test_git_witness.py
+    ├── test_drift.py         chronic drift: the reference run, both gates, refusals
     ├── test_mcp_proxy.py
     └── test_e2e_stdio.py    end to end (real subprocess + real pipe)
 ```
@@ -605,7 +730,7 @@ Developing from source:
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 514 tests (must run from the repository root)
+python3 -m unittest discover -s tests -p 'test_*.py'   # 529 tests (must run from the repository root)
 python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
 harness-audit-server --cwd /path/to/project # no --rules needed
@@ -1223,7 +1348,7 @@ landed), self-audit also returns False.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 514 tests ... OK (skipped=7)
+# Ran 529 tests ... OK (skipped=7)
 ```
 
 > **Must be run from the repository root.** The start directory is the relative path `tests`;

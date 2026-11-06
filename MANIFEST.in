@@ -13,3 +13,7 @@ recursive-include examples *
 # also belongs in the sdist, where a source install must find it.
 recursive-include audit_sidecar/rules *.yaml *.yml
 recursive-include tests *.py
+# Launch copy and other internal working notes: never shipped. The wheel only
+# carries audit_sidecar/, and the sdist is meant to be a buildable source tree,
+# not a place where unpublished drafts appear.
+prune marketing
