@@ -86,6 +86,23 @@ interesting.
 > which requires **both** high R² and material magnitude, because R² measures regularity, not
 > size: gate on R² alone and a 1e-7 wobble becomes an alarm.
 >
+> The ugly part is what this says about our whole monitoring culture. We have spent forty years
+> using variance and standard deviation as the definition of stability — control charts, p99
+> SLOs, confidence intervals, loss-curve smoothness, seed variance. That toolkit quietly assumes
+> **an anomaly announces itself with jitter.** If the collapse is perfectly smooth, variance has
+> nothing to report: the residual standard deviation here is 0.0133 mM, 0.073% of the mean, and
+> a three-cycle rolling std never exceeds 1.3%. Every alarm stays silent, because the anomaly's
+> *shape* falls into the null space of the statistic. The ramp moved its variance into the mean,
+> and nobody puts a threshold on the mean.
+>
+> That is why AI systems can look extraordinarily stable for months and then fail in a single
+> day. A system losing 1.3% per cycle is the *most reproducible* system you have — tiny
+> seed-to-seed variance — and also the first to hit zero. Low variance measures reproducibility,
+> not survivability. So the sidecar doesn't do variance analysis. It does **causal labelling**:
+> every verdict is tied to a witness that a model cannot manufacture without changing the world
+> first, and the chronic check is a cumulative quantity — how much margin has already been spent,
+> and how many cycles are left — not how much this round wobbled.
+>
 > Honest limits, since someone will ask: the kinetic constants are placeholders, so the drift
 > example establishes the mechanism, not a biological measurement. We have not measured a
 > benchmark improvement from any of this. The deadlock and drift claims are falsifiable and we
@@ -113,6 +130,28 @@ interesting.
 > turned out to be the quadrant diagram of a cell's energy charge.
 > v0.10.0 adds chronic drift detection: a loop with R² = 0.9997 was losing 11.5% over nine
 > cycles.
+
+### 中文版首评（公众号 / 知乎 / 即刻）
+
+> 我们习惯用方差和标准差来评估系统的稳定性。控制图看 z 分数，SLO 看 p99，评估看多 seed
+> 的方差，训练看 loss 的滑动标准差——这套工具背后有一条从未写下来的公理：
+> **异常必然伴随着剧烈的抖动。**
+>
+> 但如果系统的衰落是完美平滑的呢？R² = 0.9997，去趋势残差标准差只有均值的 0.073%，
+> 3 周期滑窗的相对标准差不超过 1.3%。方差彻底失效。这不是"没有异常"，是异常的形状
+> 刚好落进了这个统计量的零空间——**斜坡把方差搬进了均值，而均值没有人设阈值。**
+>
+> 这就是为什么很多 AI 系统看起来运行得极其稳定，却会在某一天突然彻底崩溃。
+> 一个每轮掉 1.3% 的系统，是你能拥有的**最可复现**的系统——seed 间方差极小——
+> 也是第一个归零的系统。方差小度量的是"复现得出来"，不是"撑得下去"。
+>
+> 我们的 Sidecar 不做方差分析，我们只做**因果标号**：每一条判词都绑定一个模型无法
+> 凭空制造、必须先改变世界才能取得的见证；慢性漂移检测测的是**存量**——已经花掉了多少
+> 余量、还剩多少个周期——而不是这一轮抖了多少。
+>
+> 四值判词（PASS / FAIL / INVALID / NOT RUN）与这套架构，来自对代谢动力学的严格推演：
+> 失败在 (底物, 能荷) 平面上是二维的，`FAIL` 与 `INVALID` 是对角两格，第四格在动力学上
+> 不可达——那一格就是幻觉的定义。
 
 ---
 
@@ -142,6 +181,19 @@ need a head anchor the attacker can't write. We don't claim to cross that bounda
 `tests/test_drift.py` against the exact series, not a synthetic one. Nine points are enough to
 reject a limit cycle; they are not enough to predict the exact death date, which is why the
 detector reports `steps_to_zero` as an extrapolation, not a forecast.
+
+**"Variance isn't blind — CUSUM and EWMA catch ramps."** True, and worth conceding before
+anyone else says it: cumulative statistics do catch a slope. But that is the argument, not a
+rebuttal — the thing that works is the *cumulative* one, which is exactly why we ship Φ and τ
+instead of a variance threshold. And CUSUM still assumes an anchored reference mean. If the
+baseline is re-estimated from a recent window (adaptive thresholds, rolling quantiles, a
+drifting baseline), the ramp is absorbed as the new normal and the sum resets. That is how the
+R6 case hides.
+
+**"Causal labelling — isn't that just a signature?"** No. A signature proves *who* produced a
+record. A witness proves *whether the world changed*, and it is collected outside the subject's
+output space: an exit code, a digest recomputed by the gate, a git object. The subject cannot
+manufacture one without doing the thing first.
 
 **"Where's the biology?"** In a private repo, and it stays private. What ships is the part that
 survives contact with a witness.
