@@ -34,7 +34,7 @@ from .self_audit import run_self_audit
 from .verdict import Verdict, VerdictEngine
 from .tools.citation_audit import CitationAuditProxy
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 __all__ = [
     "CitationAuditProxy",

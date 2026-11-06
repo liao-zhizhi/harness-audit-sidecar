@@ -99,7 +99,7 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.9.0) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.9.1) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
@@ -1396,4 +1396,20 @@ Coverage:
 
 ## License
 
-Code MIT; paper text CC BY 4.0.
+Code MIT — see [`LICENSE`](LICENSE). Copyright (c) 2026 Zhizhi Liao. Paper text CC BY 4.0.
+
+The MIT License is the instrument that grants permission: use, copy, modify, merge,
+publish, distribute, sublicense, and sell, subject only to keeping the copyright and
+permission notice. It also carries the warranty and liability disclaimer that makes the
+grant workable — the Software is provided "AS IS", and the author is not liable for
+damages arising from it.
+
+The split between the two licences follows the two kinds of artefact here. The code is
+meant to be integrated and re-run, so it is MIT: a sidecar that cannot be embedded in
+someone else's harness is not a sidecar. The prose is meant to be cited rather than
+modified, so it is CC BY 4.0, which requires attribution and permits reuse.
+
+Neither licence grants a certification, and neither is an audit. Running this sidecar
+produces a record of what it witnessed; it does not produce an accreditation, and a
+report it emits should not be presented as one. The audit service and the open-source
+tool are separate things that happen to share a judgment base.
