@@ -219,6 +219,64 @@ without an anchor → `PASS`. The third case is deliberate.
 
 ---
 
+## 8. Packaging — a tag and a branch that name different authors
+
+**The Mistake.** The copyright holder was standardised from the account handle
+`liaozhizhi` to `Zhizhi Liao`. That edit landed on the branch and shipped with no
+version of its own. Tags `v0.9.1` (this repository) and `v1.0.9` (the sibling
+`agent-metabolism-os`) had been cut before it, so from that moment two refs carried the
+same version number and produced artefacts that disagreed:
+
+```
+v0.9.1   ->  Author-email: liaozhizhi <liaozhizhi@foxmail.com>
+master   ->  Author-email: Zhizhi Liao <liaozhizhi@foxmail.com>
+```
+
+Entry 1 records one artefact disagreeing with itself. This is the same defect spread
+across two refs, and the rule written to prevent entry 1 did not cover it. That rule —
+bump `pyproject.toml`, `__version__` and any prose that names the number — makes every
+artefact agree *with each other, at one commit*. None of those three places is the tag.
+The tag is the fourth place, and it is the only one whose whole value is that it cannot
+be corrected in place.
+
+The comparison is not theoretical in the sibling repository: `product_mvp/Dockerfile`
+fetches the core by tag (`CEL_CORE_REF`), so a container built at `v1.0.9` and one built
+at `main` would carry different metadata for byte-identical code.
+
+**How it was caught.** By building a wheel from each ref and reading `Author-email` out
+of `METADATA`, after noticing that a metadata-only commit had gone in without a version
+bump. Not by the suite: **514 tests passed on both refs**, because no test asserts what
+the metadata says. The tests were not wrong to pass — asserting a copyright string is
+not their job — which is why the gap survived a green build.
+
+**The Fix.** A metadata-only patch release in each repository: `v0.9.2` here and
+`v1.0.10` in the sibling. Each bumps the version in every place that carries one
+(`pyproject.toml`, `__version__`, README prose; plus the `CEL_CORE_REF` Docker pin in
+the sibling) and is verified by cloning the tag **from the remote** and building there,
+rather than trusting the working tree that produced it:
+
+```
+agent_harness_audit-0.9.2  -> Version: 0.9.2  Author-email: Zhizhi Liao <liaozhizhi@foxmail.com>
+agent_metabolism_os-1.0.10 -> Version: 1.0.10 Author: Zhizhi Liao
+```
+
+The old tags were left exactly where they are. `v0.9.1` still builds an artefact that
+says `liaozhizhi`, and that is correct: a tag is a statement about what that version
+contained, and editing it would be falsifying the record rather than correcting it.
+
+**Evidence.** Re-checkable, because the tags are: `git clone --branch v0.9.1` and
+`--branch v0.9.2`, then `pip wheel --no-deps --no-build-isolation .` on each, and read
+`METADATA`. Both tags still exist on the remote and produce the two different strings
+above. The wheels themselves were built in a temporary directory and no longer exist —
+unlike the tags, they were not the thing being preserved.
+
+**The rule this adds.** A version number is not bumped to describe what changed; it is
+bumped because *anything* changed. `v0.9.2` and `v1.0.10` contain no behavioural change
+whatsoever — one string in the metadata — and they exist because the alternative was a
+tag that lies about the artefact it names.
+
+---
+
 ## Addendum — an error made while writing this file
 
 One entry above was initially misdiagnosed, and the mistake is worth keeping because it is
@@ -252,5 +310,7 @@ compared a claim with something that could not be talked out of its answer:
 | 4 | title comparison in `CitationWitness` |
 | 5 | compiler abort |
 | 6 | counterfactual: what would the witness show if the build never ran |
+| 7 | three-case test: edit, truncation with anchor, truncation without |
+| 8 | ref-to-ref readback: wheel from tag vs wheel from branch |
 
 The pattern is the one the paper argues for. Care is not a mechanism. A witness is.
