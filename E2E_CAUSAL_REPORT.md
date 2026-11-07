@@ -30,6 +30,7 @@
 | 沙箱 | `/tmp/audit_test` |
 | 故障注入 | `chmod 555` → 内核 `EACCES`，`errno=13` |
 | 云端 | CEL v0.3.0，`auth_enabled=true` |
+| 服务端源码 | `Gradia/agent-metabolism-os/product_mvp/`（`api_server.py` / `cel_engine.py`），已逐行核对 |
 | 既有测试套件 | `python -m unittest discover -s tests` → **588 passed, 7 skipped**（本次改动未破坏任何既有行为） |
 
 故障是**真**故障，不是 mock：`bash: 行 1: hello.txt: 权限不够`，`errno=13`。
@@ -160,6 +161,35 @@ retention_time_min,peak_area
 ```
 
 `witness` 是**客户端自己填的布尔值**。没有签名、没有 nonce、没有见证回执。
+
+这一点原先是从 OpenAPI 推断的，现已**逐行核对服务端源码**确认：
+
+```python
+# product_mvp/api_server.py:323-330 — 直接透传
+result = GATEWAY.verify(
+    agent_id=agent_id, intent=body.intent, check=body.check,
+    witness=body.witness,          # ← 来自请求体，原样往下传
+    artefact=body.artefact, cost=body.cost,
+)
+```
+
+```python
+# product_mvp/cel_engine.py:264-267 — 唯一的检查是"它是不是 bool"
+if witness is not None and type(witness) is not bool:
+    raise VerifyError("witness must be true, false, or null ...")
+```
+
+**唯一一处来源校验是失效的。** 引擎确实会对 `artefact` 算哈希
+（`cel_engine.py:269-278`），但用的是 `os.path.isfile(recorded_artefact)` ——
+在**服务器自己的文件系统**上解析这个路径。远程客户端传 `"hello.txt"`，
+服务器上并不存在这个文件，于是哈希分支根本不进入，`artefact` 落库时
+只是一个裸字符串。
+
+> 也就是说：那个看起来像"来源证明"的钩子，解算的是**错误的文件系统**，
+> 对远程客户端**恒为空转**。
+
+结论不变，但更硬：
+
 这意味着：
 
 > 一个有 key 的客户端可以 `POST {"check": true, "witness": true}` 而从未运行任何东西，
@@ -193,7 +223,7 @@ seq3  2026-11-07 13:42:42  robot_arm_01  'delete stale rows'   witness=False  FA
 |:--|:--|:--|:--|:--|
 | 1 | `CEL_API_KEY` 缺失 | 应用层 | **安全设计**，非缺陷 | ⛔ 未解决，需要人类提供 |
 | 2 | 默认 UA 被 CDN 拦 | 边缘层 | 真实缺陷 | ✅ **已修** |
-| 3 | `witness` 由客户端自报 | 协议层 | **架构缺陷** | ⛔ 未解决，本报告定性 |
+| 3 | `witness` 由客户端自报 | 协议层 | **架构缺陷**（源码已证） | ⛔ 未解决，本报告定性 |
 | 4 | 见证止于文件内容 | 能力边界 | 不可修 | — 需 ALCOA+ 层 |
 
 第 3 条是本次最重要的发现，且它**不是**靠改代码能补的：
@@ -218,10 +248,13 @@ seq3  2026-11-07 13:42:42  robot_arm_01  'delete stale rows'   witness=False  FA
 1. **拿到 `CEL_API_KEY`，重跑本脚本。** 只有当 `ledger count` 从 3 变成 4，
    且新记录的 `agent_id` 是 `qwen25-1.5b-e2e`，才可以说"云端因果同步已验证"。
    在此之前，任何关于"大屏"的表述都必须加"模拟"。
+   该密钥在服务端 `CEL_API_KEY` 中配置（不在此仓库，本机环境变量亦未设置）。
+   运行时用 `--api-key` 或环境变量传入即可，脚本会自动对比提交前后的账本计数。
 2. **清空或标注账本里的 3 条模拟记录。** 一条来自演示按钮的记录和一个来自真实
    Agent 的记录，在 UI 上看起来完全一样。这正是人类架构师担心的那件事。
-3. **给 `witness` 加可验证性。** 最小可行版本：客户端提交见证回执的哈希，
-   并公开对应的原始见证片段，使第三方可复核。否则账本只是"客户端的自述合集"。
+3. **修 `artefact` 的来源校验。** 当前哈希在服务器文件系统上解析客户端路径，
+   对远程客户端恒为空转（`cel_engine.py:269-278`）。最小可行修复：客户端提交
+   见证回执哈希，服务端仅做链式登记与公开复核，而不是试图读本地文件。
 4. **接 ALCOA+ 审计轨迹**，把臂 E 从 PASS 变成 INVALID（见白皮书节点 B）。
 
 ---
