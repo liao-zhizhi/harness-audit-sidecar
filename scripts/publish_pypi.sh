@@ -92,16 +92,45 @@ if [[ $DO_UPLOAD -eq 1 && $ALLOW_DIRTY -eq 0 ]]; then
   fi
 fi
 
-# 2c. Credentials, checked before the build rather than after it. Both mistakes
-#     here otherwise surface as a generic 403 that reads like "wrong account":
-#     an account password (no 2FA-era upload uses one), or a token pasted with a
-#     trailing newline. Naming the actual problem is the job of this block, and
-#     saying it 35 seconds into a build is worse than saying it now.
+# 2c. Credentials, checked before the build rather than after it. Every mistake
+#     here otherwise surfaces as a generic 403 that reads like "wrong account":
+#     an account password, a token with a trailing newline, or -- the one that
+#     actually happened -- a documentation placeholder pasted back verbatim
+#     (`pypi-你的token`), which passes a bare `pypi-*` glob and is only rejected
+#     90 seconds later by the upload endpoint.
+#
+#     PyPI tokens are macaroons serialised as base64. The first bytes are a
+#     fixed header, so every genuine token starts `pypi-AgEIcHlwaS5vcmc`
+#     (`b"\x02\x01\x08" + "pypi.org"` for index.pypi.org, and the same fixed
+#     prefix for test.pypi.org). Checking that shape is not a guess about
+#     validity -- it cannot tell a revoked token from a live one -- it only
+#     rejects strings that were never tokens to begin with, which is exactly the
+#     class of mistake that is invisible until the very end of a release.
 if [[ $DO_UPLOAD -eq 1 ]]; then
   [[ "${TWINE_USERNAME:-}" == "__token__" ]] \
     || { echo "FATAL: TWINE_USERNAME must be __token__ (PyPI identifies API tokens by that literal user)" >&2; exit 1; }
-  [[ "${TWINE_PASSWORD:-}" == pypi-* ]] \
-    || { echo "FATAL: TWINE_PASSWORD must be an API token (starts with 'pypi-'). An account password cannot upload, and a 2FA account cannot upload without a token at all." >&2; exit 1; }
+
+  pw="${TWINE_PASSWORD:-}"
+  if [[ "$pw" != pypi-* ]]; then
+    echo "FATAL: TWINE_PASSWORD must be an API token (starts with 'pypi-'). An account password cannot upload, and a 2FA account cannot upload without a token at all." >&2
+    exit 1
+  fi
+  if [[ "$pw" != pypi-AgEI* || ${#pw} -lt 60 ]]; then
+    echo "FATAL: TWINE_PASSWORD does not look like a PyPI token." >&2
+    echo "       Real tokens start 'pypi-AgEIcHlwaS5vcmc' and are 150+ chars." >&2
+    echo "       What you pasted is ${#pw} chars and starts '${pw:0:16}...'." >&2
+    echo "       If that is a placeholder from documentation ('pypi-你的token')," >&2
+    echo "       no upload happened and no upload will happen: create a real token" >&2
+    echo "       at https://pypi.org/manage/account/token/ and export it." >&2
+    exit 1
+  fi
+  # The newline case gets its own sentence: the token is valid, the export is
+  # not, and "invalid token" would send someone to regenerate a working one.
+  if [[ "$pw" == *[[:space:]]* ]]; then
+    echo "FATAL: TWINE_PASSWORD contains whitespace (a trailing newline from a copy-paste)." >&2
+    echo "       Re-export it without the line break: the token itself is fine." >&2
+    exit 1
+  fi
 fi
 
 # 3. Build into a directory that is emptied first. Never `dist/`: it is
@@ -162,6 +191,34 @@ NOTE
   TARGET=()
   [[ $TEST_INDEX -eq 1 ]] && TARGET=(--repository testpypi)
   "$OUT/env/bin/twine" upload "${TARGET[@]}" "$OUT/dist"/*
+
+  # The witness. Until this line existed, "the script exited 0" was the evidence
+  # that a release happened -- and that is the exact failure this project is
+  # about: a success claim with nothing independent behind it. It is not
+  # hypothetical. A release was reported as done off the back of this script's
+  # exit status while PyPI still answered 404 for the name, because the upload
+  # had been rejected and the build output above the error looked like success.
+  #
+  # So the script now ends on the same check the landing page's deploy uses:
+  # ask the index. A version that is not there is a failed release, whatever
+  # twine's exit code said. Propagation is seconds; the poll is generous because
+  # a false negative here would be a false alarm on a *finished* release.
+  echo "   confirming with $INDEX_NAME (the script's own exit code is not evidence)..."
+  CONFIRMED=0
+  for attempt in $(seq 1 20); do
+    if curl -sf --max-time 10 "$INDEX_ROOT/pypi/$NAME/$VERSION/json" >/dev/null 2>&1; then
+      CONFIRMED=1; break
+    fi
+    sleep 3
+  done
+  if [[ $CONFIRMED -ne 1 ]]; then
+    echo "FATAL: twine reported success but $INDEX_NAME still has no $NAME $VERSION." >&2
+    echo "       Treat the release as NOT done. Check for a rejected upload" >&2
+    echo "       (email unverified, token revoked mid-run, project name held by" >&2
+    echo "       someone else) and look at the twine output above." >&2
+    exit 1
+  fi
+  echo "   confirmed on $INDEX_NAME: $NAME $VERSION"
   echo "   uploaded to $INDEX_NAME: $NAME $VERSION"
 else
   echo
