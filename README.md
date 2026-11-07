@@ -743,9 +743,26 @@ harness-audit-server --cwd /path/to/project
 >
 > Until this release is on PyPI, the same commit installs from git:
 > `pip install "git+https://github.com/liao-zhizhi/harness-audit-sidecar.git"`.
-> `scripts/publish_pypi.sh` builds, checks, and uploads; it verifies the wheel in
-> an empty venv first, because `python -m build` succeeding says nothing about
-> whether the artifact runs.
+>
+> Publishing goes through `scripts/publish_pypi.sh`, which builds into
+> `.pypi-build/`, asserts exactly two artifacts at the declared version, runs
+> `twine check`, and installs the wheel into an empty venv before anything is
+> uploaded — `python -m build` succeeding says nothing about whether the artifact
+> runs. There are two ways to reach an index:
+>
+> - **Trusted Publishing (recommended, no stored secret).** Publish a GitHub
+>   release, or run the `release` workflow from the Actions tab. PyPI mints a
+>   short-lived upload token for that run via OIDC, and the wheels carry PEP 740
+>   provenance attestations. A first upload works because PyPI supports *pending*
+>   publishers — register one at
+>   <https://pypi.org/manage/account/publishing/> (project `harness-audit-sidecar`,
+>   workflow `release.yml`, environment `pypi`) before the project exists.
+> - **A project-scoped API token**, for a first release before CI is wired up:
+>   `TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-... scripts/publish_pypi.sh --upload`.
+>   Scope the token to *this project*, not "Entire account" — an account-wide
+>   token can publish to, yank from, or add collaborators to every project you
+>   own. PyPI has no API to report a token's scope back, so the script cannot
+>   check this for you and says so instead of pretending.
 
 **The package ships with a default rule `no_file_drift` out of the box.**
 It is active on install: `write_file` must have both a file witness and a git change set, or

@@ -30,16 +30,30 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO/.pypi-build"
 DO_UPLOAD=0
 TEST_INDEX=0
+ALLOW_DIRTY=0
 
 for arg in "$@"; do
   case "$arg" in
     --upload) DO_UPLOAD=1 ;;
     --test)   TEST_INDEX=1 ;;
+    --allow-dirty) ALLOW_DIRTY=1 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 cd "$REPO"
+
+#: Which index this run is talking about. The existence check and every message
+#: have to name the same one: telling a TestPyPI rehearsal "already on PyPI" is
+#: the kind of wrong sentence that sends someone off to bump a version that was
+#: never published.
+if [[ $TEST_INDEX -eq 1 ]]; then
+  INDEX_NAME="TestPyPI"
+  INDEX_ROOT="https://test.pypi.org"
+else
+  INDEX_NAME="PyPI"
+  INDEX_ROOT="https://pypi.org"
+fi
 
 # 1. Version, read from the one place that decides it. The pyproject value and
 #    `audit_sidecar.__version__` disagreeing is how a wheel gets published as
@@ -60,9 +74,34 @@ echo "== $NAME $VERSION =="
 # 2. Refuse to publish a version that already exists. PyPI rejects a duplicate
 #    upload anyway, but with a wall of HTTP that reads like an auth failure --
 #    and the real problem is that the caller forgot to bump.
-if curl -sf --max-time 10 "https://pypi.org/pypi/$NAME/$VERSION/json" >/dev/null; then
-  echo "FATAL: $NAME $VERSION is already on PyPI; bump the version first" >&2
+if curl -sf --max-time 10 "$INDEX_ROOT/pypi/$NAME/$VERSION/json" >/dev/null; then
+  echo "FATAL: $NAME $VERSION is already on $INDEX_NAME; bump the version first" >&2
   exit 1
+fi
+
+# 2b. An artifact built from a dirty tree corresponds to no commit, so the sdist
+#     cannot be reproduced from the tag it claims to be. That is the same defect
+#     as a verdict with no witness -- a claim about source that nobody can check
+#     -- so an upload from a dirty tree is refused rather than warned about.
+#     Build/verify on a dirty tree is fine: it happens while iterating.
+if [[ $DO_UPLOAD -eq 1 && $ALLOW_DIRTY -eq 0 ]]; then
+  if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+    echo "FATAL: working tree is dirty; the sdist will not match any commit." >&2
+    echo "       commit first, or pass --allow-dirty if you mean it." >&2
+    exit 1
+  fi
+fi
+
+# 2c. Credentials, checked before the build rather than after it. Both mistakes
+#     here otherwise surface as a generic 403 that reads like "wrong account":
+#     an account password (no 2FA-era upload uses one), or a token pasted with a
+#     trailing newline. Naming the actual problem is the job of this block, and
+#     saying it 35 seconds into a build is worse than saying it now.
+if [[ $DO_UPLOAD -eq 1 ]]; then
+  [[ "${TWINE_USERNAME:-}" == "__token__" ]] \
+    || { echo "FATAL: TWINE_USERNAME must be __token__ (PyPI identifies API tokens by that literal user)" >&2; exit 1; }
+  [[ "${TWINE_PASSWORD:-}" == pypi-* ]] \
+    || { echo "FATAL: TWINE_PASSWORD must be an API token (starts with 'pypi-'). An account password cannot upload, and a 2FA account cannot upload without a token at all." >&2; exit 1; }
 fi
 
 # 3. Build into a directory that is emptied first. Never `dist/`: it is
@@ -105,17 +144,33 @@ print("   clean install: {} {} / rules {} / script ok".format(name, version, yam
 PY
 
 # 7. Upload, or print the command. The printed form is what a human runs when
-#    they want to watch the upload themselves.
+#    they want to watch the upload themselves. Credentials were validated in 2c,
+#    before the build, so this branch only has to name what it is about to do.
 if [[ $DO_UPLOAD -eq 1 ]]; then
-  [[ -n "${TWINE_PASSWORD:-}" ]] \
-    || { echo "FATAL: set TWINE_USERNAME=__token__ and TWINE_PASSWORD=<token>" >&2; exit 1; }
+  # PyPI exposes no API to read a token's scope back, so this cannot be verified
+  # from here -- only decided when the token is created. Say that out loud rather
+  # than implying the check happened: a script that prints "scoped" without
+  # looking is the exact class of claim this project is about.
+  cat <<'NOTE'
+   token: PyPI cannot report a token's scope back to a client, so this run
+          cannot confirm it. Create it at pypi.org/manage/account/token/ with
+          "Scope: Project" limited to harness-audit-sidecar, not "Entire
+          account". An account-wide token can publish, delete, or add a
+          collaborator to every project you own.
+NOTE
+
   TARGET=()
   [[ $TEST_INDEX -eq 1 ]] && TARGET=(--repository testpypi)
   "$OUT/env/bin/twine" upload "${TARGET[@]}" "$OUT/dist"/*
+  echo "   uploaded to $INDEX_NAME: $NAME $VERSION"
 else
   echo
-  echo "verified but NOT uploaded. To publish:"
+  echo "verified but NOT uploaded. To publish to $INDEX_NAME:"
   [[ $TEST_INDEX -eq 1 ]] && echo "  scripts/publish_pypi.sh --upload --test" \
                           || echo "  scripts/publish_pypi.sh --upload"
-  echo "(needs TWINE_USERNAME=__token__ and TWINE_PASSWORD=pypi-...)"
+  echo
+  echo "Local token (works today):  TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-... (+ --test to rehearse)"
+  echo "Trusted Publishing (recommended, no stored secret): push a v* tag, or run"
+  echo "  the 'release' workflow from the Actions tab. Needs a trusted publisher on"
+  echo "  $INDEX_NAME first -- for a first upload that is a *pending* publisher."
 fi

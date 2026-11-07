@@ -1,0 +1,144 @@
+# Publish the sidecar to PyPI through Trusted Publishing (OIDC), so no long-lived
+# upload token exists to leak.
+#
+# The alternative -- `scripts/publish_pypi.sh --upload` from a laptop -- still
+# works and is still documented, because a first release sometimes has to happen
+# before the trusted publisher is configured. But a `pypi-...` token in an
+# environment variable is a credential with no expiry that can publish, yank a
+# release, or add a collaborator; the OIDC path trades that for a token minted
+# per run and valid for minutes, scoped to this repository and this workflow.
+#
+# One thing this cannot verify, said plainly: the artifact is only as trustworthy
+# as the workflow that built it. The build job here calls the same
+# `publish_pypi.sh` a human would run, which builds into `.pypi-build/`, asserts
+# exactly two artifacts at the declared version, runs `twine check`, and installs
+# the wheel into an empty venv to prove the console script and bundled rules
+# actually arrive. If that script drifts from the local path, both paths drift
+# together rather than one silently becoming the lenient one.
+#
+# Setup, once per index (a *pending* publisher is what makes a first upload work):
+#   PyPI       https://pypi.org/manage/account/publishing/
+#   TestPyPI   https://test.pypi.org/manage/account/publishing/
+# Fields for both:
+#   project name    harness-audit-sidecar
+#   owner / repo    liao-zhizhi / harness-audit-sidecar
+#   workflow        release.yml
+#   environment     pypi  (or testpypi)
+
+name: release
+
+on:
+  # Publishing a GitHub release is the only way to reach real PyPI without a
+  # manual run. A release is deliberate; a push to master is not, and dry-run
+  # commits should never be one merge away from an upload.
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Where to publish"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+# Default to no permissions and grant them per job. A workflow-level
+# `id-token: write` would hand an OIDC token to the build job too, where nothing
+# needs to authenticate to anything.
+permissions:
+  contents: read
+
+concurrency:
+  # Two publishes of the same version race into a PyPI rejection anyway; this
+  # just makes it a queued no-op instead of a confusing red X.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: build and verify the artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The tests are the baseline, not the proof: a green suite says the code
+      # behaves, not that the wheel contains it.
+      - name: test suite
+        run: python -m unittest discover -s tests -p 'test_*.py' -q
+
+      # A release tag and a pyproject version that disagree is how v0.10.0 ends
+      # up shipping 0.10.1's code. This runs on every tag-shaped ref, and it
+      # insists on the `v` prefix rather than skipping itself when the prefix is
+      # missing -- a guard that quietly opts out of the case it was written for
+      # is not a guard.
+      - name: tag matches the declared version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          declared=$(python - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          print(re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1))
+          PY
+          )
+          case "$GITHUB_REF_NAME" in
+            v*) tag="${GITHUB_REF_NAME#v}" ;;
+            *)  echo "release tags must be vX.Y.Z; got ${GITHUB_REF_NAME}" >&2; exit 1 ;;
+          esac
+          if [ "$declared" != "$tag" ]; then
+            echo "tag ${GITHUB_REF_NAME} != pyproject version ${declared}" >&2
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches ${declared}"
+
+      - name: build, check, and install into an empty venv
+        run: scripts/publish_pypi.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: .pypi-build/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-testpypi:
+    name: publish to TestPyPI
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write      # the OIDC token PyPI exchanges for a scoped upload token
+      attestations: write  # same provenance story as the real index
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: verify
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write    # Trusted Publishing: no stored `pypi-...` token at all
+      attestations: write  # PEP 740 provenance, so a downloader can verify origin
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Off by default upstream; on here because "which machine built this
+          # wheel" is the question an audit tool should be able to answer about
+          # itself, not just about other people's artifacts.
+          attestations: true
