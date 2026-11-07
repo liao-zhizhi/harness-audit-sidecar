@@ -1,8 +1,12 @@
 # Build and packaging output
 build/
 dist/
+.pypi-build/
 *.egg-info/
 *.whl
+# (scripts/publish_pypi.sh builds into .pypi-build/ on purpose: `dist/`
+#  survives across renames and whole minor series, and uploading it is
+#  how a stale wheel ships under a version nobody is looking at.)
 
 # Python bytecode
 __pycache__/

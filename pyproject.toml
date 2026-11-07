@@ -3,7 +3,15 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-harness-audit"
+# The distribution name is the URL a developer types, so it is the product name:
+# `pip install harness-audit-sidecar`. The import package stays `audit_sidecar`
+# (a dist name and an import name are allowed to differ -- `beautifulsoup4` ->
+# `bs4` -- and renaming the package would break every existing `import`).
+#
+# One name, chosen before the first upload. Two live names for one project is a
+# permanent support cost, and "which one is on PyPI?" is a question nobody should
+# have to ask about an audit tool.
+name = "harness-audit-sidecar"
 version = "0.10.1"
 description = "Execution-layer audit sidecar for AI agent harnesses: four-valued verdicts judged against independently collected witnesses."
 readme = "README.md"

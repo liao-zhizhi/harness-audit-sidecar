@@ -729,11 +729,23 @@ agent-harness-audit/
 
 ```bash
 # 1. Install (PyYAML comes along; default rules are included in the package)
-pip install dist/agent_harness_audit-*.whl    # or python3 -m pip wheel . --no-deps -w dist/
+pip install harness-audit-sidecar
 
 # 2. Run it, no path arguments required
 harness-audit-server --cwd /path/to/project
 ```
+
+> The distribution name is `harness-audit-sidecar`; the import package is
+> `audit_sidecar`. They differ on purpose: the dist name is what a developer
+> types into `pip`, the import name is what existing code already says, and
+> renaming the latter would break every `import audit_sidecar` for no gain
+> (cf. `beautifulsoup4` -> `bs4`).
+>
+> Until this release is on PyPI, the same commit installs from git:
+> `pip install "git+https://github.com/liao-zhizhi/harness-audit-sidecar.git"`.
+> `scripts/publish_pypi.sh` builds, checks, and uploads; it verifies the wheel in
+> an empty venv first, because `python -m build` succeeding says nothing about
+> whether the artifact runs.
 
 **The package ships with a default rule `no_file_drift` out of the box.**
 It is active on install: `write_file` must have both a file witness and a git change set, or
