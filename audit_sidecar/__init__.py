@@ -24,7 +24,18 @@ The audit logic is standard library; PyYAML is used only to read the rules.
 from __future__ import annotations
 
 from .confidence import ConfidenceAccount
-from .cloud_report import CloudReport, new_trace_id, report_execution, witness_digest
+from .cloud_report import (
+    MUTATION_TYPES,
+    PROPAGATION_REPORTING,
+    CloudReport,
+    MutationReport,
+    mutation_kind,
+    propagation_capability,
+    new_trace_id,
+    report_execution,
+    report_mutation,
+    witness_digest,
+)
 from .drift import DriftReport, analyze_chronic_drift
 from .citation_witness import CitationWitness
 from .git_witness import GitWitness, GitWitnessError
@@ -51,6 +62,9 @@ __all__ = [
     "ImmuneState",
     "JudgmentBase",
     "MCPProxy",
+    "MUTATION_TYPES",
+    "MutationReport",
+    "PROPAGATION_REPORTING",
     "RuleDecision",
     "RuleEngine",
     "RuleError",
@@ -59,10 +73,13 @@ __all__ = [
     "Verdict",
     "VerdictEngine",
     "analyze_chronic_drift",
+    "mutation_kind",
     "default_rules_dir",
     "new_trace_id",
     "packaged_rules_dir",
+    "propagation_capability",
     "report_execution",
+    "report_mutation",
     "run_self_audit",
     "select_tier",
     "witness_digest",
