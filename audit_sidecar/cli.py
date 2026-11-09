@@ -1,22 +1,37 @@
 """Command line entry point.
 
-The CLI is deliberately boring: it refuses to start unless the engine
-still passes its own known-answer fixtures, then walks through a small
-demo so the four verdicts, the trust balance, and the witness collector
-can be inspected by eye.
+Two things live here:
+
+``harness-audit init``
+    The install step a developer actually gets wrong. It detects the repository,
+    prints the MCP client stanza, and writes the ``ref_roots.json`` map the case
+    library resolves ``@alias`` refs through. It never edits a global client
+    config: printing is the whole contract, because a CLI that silently rewrites
+    someone's MCP settings has to be trusted more than this one is.
+
+``harness-audit`` with no arguments
+    The demo. It refuses to run unless the engine still passes its own
+    known-answer fixtures, then walks through the four verdicts, the trust
+    balance, and the witness collector so they can be inspected by eye.
 
 Run with::
 
-    python -m audit_sidecar.cli
+    python -m audit_sidecar.cli            # demo
+    python -m audit_sidecar.cli init       # print MCP stanza + write ref_roots
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from .confidence import ConfidenceAccount
 from .judgment_base import JudgmentBase, RuleError, default_rules_dir
@@ -26,9 +41,20 @@ from .runner import SafeRunner
 from .self_audit import run_self_audit
 from .verdict import Verdict, VerdictEngine
 
-__all__ = ["main"]
+__all__ = ["main", "run_init", "resolve_git_root"]
 
 SELF_AUDIT_FAILED_MESSAGE = "Self-audit failed, tool is a decoration."
+
+#: Where the case library looks for the alias map. ``case_store`` in the product
+#: repo reads exactly this path, so writing anywhere else would produce a file
+#: that looks right and is never read.
+REF_ROOTS_PATH = Path.home() / ".gradia" / "case_library" / "ref_roots.json"
+
+#: MCP stanza the developer pastes into Cursor/Claude. ``command`` is the
+#: installed console script, not a ``python -m`` invocation: a client that
+#: launches the server cannot be assumed to have this checkout on its path.
+MCP_SERVER_NAME = "harness-audit"
+MCP_COMMAND = "harness-audit-server"
 
 # Each demo case is (label, keyword arguments for the engine).
 _ENGINE_CASES = (
@@ -555,8 +581,187 @@ def _print_judgment_base_demo() -> None:
     print()
 
 
-def main() -> int:
-    """Run the self-audit, then the demo. Returns a process exit code."""
+def resolve_git_root(cwd: str) -> Optional[str]:
+    """The repository root containing ``cwd``, or ``None``.
+
+    ``None`` is not an error: an audit can be pointed at a directory that is not
+    under version control yet. It only means the alias has to fall back to the
+    directory name, and the ref map will not be stable across machines.
+    """
+    if shutil.which("git") is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    root = completed.stdout.strip()
+    return root or None
+
+
+def mcp_stanza(project_root: str) -> Dict[str, Any]:
+    """The exact JSON a client needs. One shape, so the print cannot drift."""
+    return {
+        "mcpServers": {
+            MCP_SERVER_NAME: {
+                "command": MCP_COMMAND,
+                "args": ["--cwd", project_root, "--quiet"],
+            }
+        }
+    }
+
+
+def default_alias(project_root: str) -> str:
+    """``/home/x/Gradia`` -> ``Gradia``. Lower-cased, path-safe."""
+    name = os.path.basename(os.path.abspath(project_root.rstrip(os.sep))) or "repo"
+    cleaned = "".join(c if (c.isalnum() or c in "-_.") else "-" for c in name).strip("-")
+    return (cleaned or "repo").lower()
+
+
+def prepare_ref_roots(
+    path: Path, alias: str, project_root: str
+) -> Tuple[bool, Dict[str, str]]:
+    """``(written, existing)``. Never overwrites.
+
+    Overwriting is the one destructive act available here, and it would silently
+    repoint every ``@alias`` case in the library at a different checkout. If the
+    file is there, the operator gets the path and decides.
+    """
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            existing = {}
+        return False, existing if isinstance(existing, dict) else {}
+    payload = {alias: os.path.abspath(project_root)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return True, payload
+
+
+def _parse_init_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="harness-audit init",
+        description=(
+            "Print the MCP client stanza and write ref_roots.json. Prints, never "
+            "edits a global config."
+        ),
+    )
+    parser.add_argument("--cwd", default=os.getcwd(), help="project directory (default: current)")
+    parser.add_argument(
+        "--alias",
+        default=None,
+        help="ref_roots alias (default: the repository directory name)",
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="write ./ref_roots.json instead of ~/.gradia/case_library/ref_roots.json",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    return parser.parse_args(argv)
+
+
+def run_init(argv: List[str]) -> int:
+    """Detect, print, write. Returns a process exit code."""
+    options = _parse_init_args(argv)
+    cwd = os.path.abspath(options.cwd)
+    if not os.path.isdir(cwd):
+        print("init: directory does not exist: {}".format(cwd), file=sys.stderr)
+        return 2
+
+    git_root = resolve_git_root(cwd)
+    if git_root is None:
+        # A warning, not a failure. The audit works on any directory; what it
+        # cannot do is give the case library a stable alias for one that has no
+        # repository identity.
+        print(
+            "warning: {} is not inside a git repository; using the directory "
+            "name as the alias, so the same project elsewhere will get a "
+            "different one".format(cwd),
+            file=sys.stderr,
+        )
+        project_root = cwd
+        in_repo = False
+    else:
+        project_root = git_root
+        in_repo = True
+
+    alias = options.alias or default_alias(project_root)
+    target = Path(cwd, "ref_roots.json") if options.local else REF_ROOTS_PATH
+    written, mapping = prepare_ref_roots(target, alias, project_root)
+    stanza = mcp_stanza(project_root)
+
+    if options.json:
+        print(
+            json.dumps(
+                {
+                    "project_root": project_root,
+                    "in_git_repository": in_repo,
+                    "alias": alias,
+                    "ref_roots_path": str(target),
+                    "ref_roots_written": written,
+                    "ref_roots": mapping,
+                    "mcp": stanza,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    print("project root : {}".format(project_root))
+    print("alias        : {}".format(alias))
+    if written:
+        print("ref_roots    : written {} -> {}".format(target, mapping))
+    else:
+        # The path is printed in both branches: on a skip it is the only thing
+        # the operator needs, and on a write it is the receipt.
+        print("ref_roots    : already exists, skipped -> {}".format(target))
+        if alias not in mapping:
+            print(
+                "               note: this file has no alias {!r}; the case "
+                "library will resolve @{} refs to nothing until one is "
+                "added".format(alias, alias),
+                file=sys.stderr,
+            )
+    print("")
+    print("MCP configuration (paste into your Cursor/Claude client):")
+    print("")
+    print(json.dumps(stanza, indent=2, ensure_ascii=False))
+    print("")
+    print("next: paste the block above into your MCP client config, then restart")
+    print("      the client. Verify with: harness-audit-server --cwd {}".format(project_root))
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Dispatch to ``init`` or the demo. Returns a process exit code."""
+    args = list(sys.argv[1:] if argv is None else argv)
+
+    if args and args[0] in ("init", "demo"):
+        command, rest = args[0], args[1:]
+        if command == "init":
+            return run_init(rest)
+        args = []
+    if args and args[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    if args:
+        print(
+            "unknown command {!r}; expected 'init' or no command for the demo".format(args[0]),
+            file=sys.stderr,
+        )
+        return 2
+
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     if not run_self_audit():

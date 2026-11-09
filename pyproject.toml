@@ -54,6 +54,9 @@ dev = []
 [project.scripts]
 # Console script used as the stdio sidecar for an agent client.
 harness-audit-server = "audit_sidecar.mcp_server:main"
+# Developer-facing CLI: `harness-audit init` prints the MCP stanza and writes
+# ref_roots.json; bare `harness-audit` runs the demo.
+harness-audit = "audit_sidecar.cli:main"
 
 [tool.setuptools]
 # Only the package itself: tests and scratch output are not part of the wheel.
