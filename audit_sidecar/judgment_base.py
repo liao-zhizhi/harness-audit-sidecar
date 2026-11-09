@@ -177,11 +177,14 @@ def default_rules_dir() -> Optional[str]:
 def default_rules_dirs() -> Tuple[str, ...]:
     """Every directory that makes up the default judgment base, in order.
 
-    * ``$HARNESS_AUDIT_RULES`` -- obeyed exactly, and alone. An explicit
-      override is the operator saying "this is my policy"; merging the shipped
-      rules in would be a second, unrequested opinion. A path that is not a
-      directory raises, because a policy believed to be active must not be
-      silently replaced.
+    * ``$HARNESS_AUDIT_RULES`` -- obeyed exactly, **and alone**. This is an
+      escape hatch for a fully custom policy: the shipped floor is not merged
+      and its rule ids are not required to be present. That bypass is never
+      silent -- ``JudgmentBase`` logs a WARNING naming every shipped rule that
+      is not in force -- and ``run_self_audit`` still exercises every rule the
+      named base does contain. If the hatch's target is not a directory this
+      raises, because a policy believed to be active must not be silently
+      replaced.
     * ``./rules`` -- the project-local layer, if present.
     * the ``rules/`` directory inside the installed package.
 
@@ -470,6 +473,42 @@ class JudgmentBase:
         for rule in self._rules:
             by_tool.setdefault(rule.target_tool, []).append(rule)
         self._by_tool = {tool: tuple(items) for tool, items in by_tool.items()}
+
+        self._warn_if_override_bypasses_floor()
+
+    def _warn_if_override_bypasses_floor(self) -> None:
+        """Say out loud when ``$HARNESS_AUDIT_RULES`` replaced the shipped floor.
+
+        The override is an escape hatch: an operator pointing at their own
+        policy gets *exactly* that policy, and the rule-id floor is not
+        enforced, because a custom base is a legitimate thing to run and
+        hard-failing every one of them would make the hatch useless. What must
+        not happen is the bypass being silent -- that is the same defect as the
+        local-layer shadowing, one level up. So: load it, and name what is
+        missing.
+        """
+        override = os.environ.get(RULES_DIR_ENV)
+        if not override:
+            return
+        if any(
+            os.path.realpath(entry) == os.path.realpath(PACKAGE_RULES_DIR)
+            for entry in self._rules_dirs
+        ):
+            return
+        if not os.path.isdir(PACKAGE_RULES_DIR):
+            return
+        try:
+            shipped = {rule.rule_id for rule in self._load_directory(PACKAGE_RULES_DIR)}
+        except RuleError:
+            return
+        missing = shipped - {rule.rule_id for rule in self._rules}
+        _LOG.warning(
+            "$%s set: the judgment base is %s alone, and the shipped floor is "
+            "NOT merged (escape hatch). Shipped rule(s) not in force: %s",
+            RULES_DIR_ENV,
+            list(self._rules_dirs),
+            ", ".join(sorted(missing)) if missing else "(none)",
+        )
 
     # -- loading ------------------------------------------------------
 

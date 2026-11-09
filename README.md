@@ -11,7 +11,7 @@
 >   to witness.** Read `reason`, check `witness_scope`, and treat a `PASS` whose evidence you
 >   have not seen as an unverified claim — including the ones it produced about itself.
 >
-> For full disclosures of our own limits (`LIM-1` to `LIM-9`), read
+> For full disclosures of our own limits (`LIM-1` to `LIM-12`), read
 > [`SELF_AUDIT.md`](SELF_AUDIT.md) — including the `chmod 000` defect that produced a false
 > `PASS` before we found it. We would rather publish that than ship it.
 
@@ -643,6 +643,17 @@ witness means**.
   adding a `rules/` directory would weaken exactly the tools nobody mentioned.
 - A Tier 1 `PASS` carries `[innate tier: existence and mtime only, no git change set]` in
   `reason`, and records `tier` / `witness_scope` / `witness_mtime` in the trace.
+- **A content assertion the tier cannot read escalates, it is not dropped.** Tier 1 never opens
+  the file, so a call carrying `expected_content` is promoted to Tier 2 and the assertion is
+  actually checked. The one exception is a *payload* assertion — the asserted text is the very
+  argument the command writes — which is dropped **and recorded** (`dropped_assertions` in the
+  record, "content assertion dropped; tier=innate" in `reason`).
+  **The payload whitelist is currently exactly one tool: `append_file`.** It is declared by the
+  builder (`ToolInvocation(content_is_write_payload=True)`), so a new tool of that shape must set
+  the flag itself; if it does not, the call simply escalates to Tier 2. That costs a git change
+  set and never yields a false `PASS`, which is why the whitelist is allowed to be implicit in
+  behaviour — but it is pinned by `test_only_append_file_declares_a_payload_assertion`, so
+  extending it is a deliberate edit rather than a drive-by.
 
 ### Known blind spot (written into the code, not into a footnote)
 
@@ -1619,6 +1630,17 @@ Coverage:
   witness never said. An unreadable path in the git change set used to be worse: the fingerprint
   string differed from the baseline digest, so it *looked like a change*, and
   `chmod 000 target.py` produced `PASS` with no work done.
+- **A non-regular file in the dirty set makes change-set verdicts `INVALID` — deliberately.**
+  Since the `ln -s /dev/zero` hang was closed, `snapshot()` takes `os.lstat` and hashes only
+  regular files; a symlink, device or FIFO is recorded as `__unreadable__` and never opened.
+  This is fail-closed, not a false positive: one dirty symlink anywhere in the repository is
+  enough to turn every `expected_files_modified` judgement into `INVALID`, exactly as a
+  `chmod 000` file does. When an audit answers `INVALID` for no visible reason, run
+  `git status` and look for a dirty symlink. Recorded as `LIM-10`.
+- **Auto-detected `./rules` is resolved against the process's cwd, not `--cwd`.** The local layer
+  is looked up with `os.getcwd()`, so `harness-audit-server --cwd /repo` launched from elsewhere
+  merges `/repo`'s policy only if the process was started there. Explicit `--rules` and
+  `$HARNESS_AUDIT_RULES` are unaffected. Known gap, recorded as `LIM-11`.
 - **A process killed by the OOM killer is judged `FAIL`, not `INVALID`.** The intent was not
   realised and the receipt says so, but the receipt carries no cause: the model and the machine
   produce the same word. Under R5 that is a false failure manufactured by the environment;
@@ -1647,6 +1669,13 @@ Coverage:
   shipped guard. `$HARNESS_AUDIT_RULES` pointing at a
   nonexistent directory **raises an error** rather than quietly falling back, since otherwise the
   operator would believe their rules were running.
+- **`$HARNESS_AUDIT_RULES` is an escape hatch, and it is exclusive.** Setting it means "this
+  directory alone is my policy": the shipped floor is *not* merged and its rule ids are *not*
+  required to be present, because a fully custom base is a legitimate thing to run. The bypass is
+  never silent — loading such a base logs a WARNING naming every shipped rule that is out of
+  force — and the self-audit still exercises every rule the named base contains. Recorded as
+  `LIM-12`: closing it would mean refusing any override that lacks a shipped id, which would make
+  custom policies unusable.
 - **Rules cover only `write_file` and `append_file`.** Two ship with the package: `no_file_drift`
   (`risk_level: high`) and `append_landed` (`risk_level: low`); `run_command` has no rule, goes
   straight to the grid, and defaults to Tier 2. Rule expressiveness is limited too: only three

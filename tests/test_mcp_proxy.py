@@ -13,7 +13,12 @@ import subprocess
 import tempfile
 import unittest
 
-from audit_sidecar.mcp_proxy import MCPProxy, ToolInvocation, UnknownToolError
+from audit_sidecar.mcp_proxy import (
+    MCPProxy,
+    ToolInvocation,
+    UnknownToolError,
+    _DEFAULT_REGISTRY,
+)
 from audit_sidecar.runner import SafeRunner
 from audit_sidecar.verdict import Verdict
 
@@ -255,6 +260,46 @@ class ArgumentSafetyTest(ProxyTestCase):
                 {"command": "true", "expected_files_modified": "target.py"},
                 True,
             )
+
+
+class PayloadAssertionWhitelistTest(unittest.TestCase):
+    """Which tools may drop a content assertion on the cheap tier.
+
+    ``content_is_write_payload`` is the only way a call can carry an
+    ``expected_content`` the innate tier does not read, so the set of builders
+    that set it is a policy decision, not an implementation detail. Pinning it
+    here means a future builder cannot start dropping assertions by accident:
+    it either escalates (cost, never a false PASS) or someone edits this test
+    on purpose and documents the new whitelist entry.
+    """
+
+    ARGS = {
+        "write_file": {"path": "t.py", "content": "x\n"},
+        "append_file": {"path": "t.py", "content": "x\n"},
+        "run_command": {"command": "true"},
+    }
+
+    def test_only_append_file_declares_a_payload_assertion(self) -> None:
+        declaring = set()
+        for name, builder in _DEFAULT_REGISTRY.items():
+            args = self.ARGS.get(name)
+            if args is None:
+                continue
+            invocation = builder(dict(args))
+            if invocation.content_is_write_payload:
+                declaring.add(name)
+        self.assertEqual(declaring, {"append_file"})
+
+    def test_the_flag_is_never_set_without_a_content_assertion(self) -> None:
+        # A payload flag with nothing asserted would be a promise about a check
+        # that does not exist.
+        for name, builder in _DEFAULT_REGISTRY.items():
+            args = self.ARGS.get(name)
+            if args is None:
+                continue
+            invocation = builder(dict(args))
+            if invocation.content_is_write_payload:
+                self.assertIsNotNone(invocation.expected_content, name)
 
 
 class ContractTest(ProxyTestCase):

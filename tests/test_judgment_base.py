@@ -173,6 +173,44 @@ class TestDefaultResolution(JudgmentBaseTestCase):
             default_rules_dir()
 
 
+class TestOverrideEscapeHatch(JudgmentBaseTestCase):
+    """``$HARNESS_AUDIT_RULES`` is exclusive, and it must say so.
+
+    A custom policy is legitimate, so the floor is not enforced there. What is
+    not legitimate is the bypass being silent: that is the local-shadowing
+    defect one level up, with the operator wearing a different hat.
+    """
+
+    def _use_override(self, directory):
+        previous = os.environ.get("HARNESS_AUDIT_RULES")
+        os.environ["HARNESS_AUDIT_RULES"] = directory
+        self.addCleanup(
+            lambda: os.environ.pop("HARNESS_AUDIT_RULES", None)
+            if previous is None
+            else os.environ.__setitem__("HARNESS_AUDIT_RULES", previous)
+        )
+
+    def test_the_override_is_loaded_alone_and_the_gap_is_named(self):
+        self.write_rule("only/custom.yaml", "rule_id: custom_only\ntarget_tool: t\n")
+        self._use_override(os.path.join(self.root, "only"))
+        with self.assertLogs("audit_sidecar.judgment_base", level="WARNING") as logs:
+            base = JudgmentBase()
+        self.assertEqual(base.rule_ids, ("custom_only",))
+        self.assertEqual(base.rules_dirs, (os.path.join(self.root, "only"),))
+        joined = "\n".join(logs.output)
+        self.assertIn("escape hatch", joined)
+        # Not just "something is missing": the missing ids are named.
+        self.assertIn("no_file_drift", joined)
+        self.assertIn("append_landed", joined)
+
+    def test_an_explicit_directory_is_not_an_escape_hatch_warning(self):
+        # Naming a directory in code (tests, embedders) is not the env hatch,
+        # so it must not spam the log with a warning about a hatch nobody used.
+        self.write_rule("one.yaml", "rule_id: only\ntarget_tool: t\n")
+        with self.assertNoLogs("audit_sidecar.judgment_base", level="WARNING"):
+            JudgmentBase(self.root)
+
+
 class TestLayerMerging(JudgmentBaseTestCase):
     """A local ``./rules`` may add rules or tighten shipped ones -- never remove one.
 

@@ -82,6 +82,13 @@ class ToolInvocation:
     #: assertion there is dropped -- which is honest only when the command's
     #: own text already carries it, and is recorded either way. Every other
     #: content assertion escalates the call to the full witness instead.
+    #:
+    #: **The whitelist is currently one tool: ``append_file``.** Any other tool
+    #: whose assertion is the command's own payload must set this flag in its
+    #: builder; if it does not, the call is escalated to the adaptive tier,
+    #: which costs a git change set but never produces a false PASS. See
+    #: ``test_only_append_file_declares_a_payload_assertion``, which pins the
+    #: set so adding a second one is a deliberate act rather than a drive-by.
     content_is_write_payload: bool = False
 
 

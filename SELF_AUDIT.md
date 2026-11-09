@@ -604,6 +604,9 @@ Nothing was pushed. `git log` locally has the change.
 | `LIM-7` | Innate tier: `touch` is `PASS`, `rm` is `FAIL` | content digest at Tier 1, or refuse delete intents at that tier |
 | `LIM-8` | Drift thresholds are calibrated on one positive example | a corpus of stationary series that must stay `PASS` |
 | `LIM-9` | `Φ` and `total_change` are endpoint functions | already partially addressed: `max_drawdown` is the path-sensitive companion; a full path integral is not implemented |
+| `LIM-10` | A dirty non-regular file (symlink/device/FIFO) makes every change-set verdict `INVALID` | read a bounded prefix and mark the witness "content not fully witnessed", or ignore non-regular paths under an explicit sub-reason. Current behaviour is fail-closed on purpose: `ln -s /dev/zero` must not block the snapshot |
+| `LIM-11` | Auto-detected `./rules` resolves against the process cwd, not `--cwd` | resolve the local layer against `--cwd` before merging; until then launch the server from the repository root, or pass `--rules` |
+| `LIM-12` | `$HARNESS_AUDIT_RULES` replaces the shipped floor instead of merging, so a custom base can omit a shipped rule | refuse overrides that lack a shipped `rule_id` (and document the break), or add `--rules-extra`. Today the bypass logs a WARNING naming the missing rules; it is an escape hatch, not a silent default |
 
 ---
 

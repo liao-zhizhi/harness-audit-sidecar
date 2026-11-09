@@ -34,6 +34,17 @@ move, the verdict came back ``PASS``. That is the failure this module exists
 to catch, committed by the module. ``changed_since`` now raises
 ``GitWitnessError`` when either side of a comparison is unreadable, and the
 runner converts that into "no witness" (``INVALID``), never into evidence.
+
+**Non-regular files are unreadable, and that is deliberate (fail-closed).**
+``snapshot`` takes ``os.lstat`` before opening anything, and only a regular
+file is hashed. A symlink, device node or FIFO is recorded as
+``__unreadable__`` rather than followed: ``ln -s /dev/zero link`` would
+otherwise block the snapshot forever, and a device's content is not a fact
+about this tree. The consequence is blunt and intended: **one dirty
+non-regular path makes every change-set verdict in that repository
+``INVALID``**, exactly as an unreadable regular file does. If an audit keeps
+answering ``INVALID``, look for a dirty symlink or device in
+``git status`` -- that is the check working, not a false positive.
 """
 
 from __future__ import annotations
