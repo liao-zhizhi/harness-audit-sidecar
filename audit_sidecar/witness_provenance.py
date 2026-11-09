@@ -22,6 +22,23 @@ contradiction would be a way to argue with the witness.
 Both inputs default to ``None``, which means "not declared" and applies no cap.
 That keeps every existing caller working unchanged; a deployment opts in by
 declaring provenance at the call site.
+
+**接线状态：未接电。** 当前生产路径无 direct_api 入口，cap 未接电。字段与约束
+已就位，等真实 direct_api 路径出现时再接入；不为接电而造入口。
+
+*Not wired: the production paths have no ``direct_api`` entry yet.* Every path
+that reaches ``judge()`` runs inside ``SafeRunner`` -- ``runner.py`` (the engine
+call), ``mcp_proxy.py:561`` and ``mcp_server.py:763`` all go through
+``run_shell`` -- so ``topology`` is always ``sidecar`` and this cap cannot fire.
+The two non-sidecar paths in the repo do not reach ``judge()`` at all:
+``MembraneAgent.execute_tool_with_warrant`` runs the tool in-process but has its
+own membrane that recomputes the digest from the artefact
+(``tools/membrane.py::_resolve_witness``) and deliberately does not import the
+auditor; ``metabolism_paper/dogfood_audit.py::audit_effect`` judges outside the
+runner but calls ``VerdictEngine.explain`` (the bare lattice), never
+``RuleEngine.judge``. Wiring either one would mean integrating another package's
+verdict path or inventing an entry, so the cap stays dormant until a real
+``direct_api`` caller exists.
 """
 
 from __future__ import annotations
