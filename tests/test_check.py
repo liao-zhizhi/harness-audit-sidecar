@@ -726,7 +726,7 @@ class ReleaseChecklistTests(unittest.TestCase):
     def test_the_unattributed_rows_are_declared_not_evidence(self):
         # `verdict` is a generic output name, so a row may not involve this
         # Action at all. The checklist has to say it is excluded, not downweighted.
-        self.assertIn("not weak evidence — it is no evidence", self.checklist)
+        self.assertIn("it is no evidence about this Action", self.checklist)
         self.assertIn("`NOT THIS ACTION`", self.checklist)
         self.assertIn("`action_versions`", self.checklist)
 

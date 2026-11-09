@@ -112,9 +112,10 @@ decided this":
   away). `files >> tmpl` means copies.
 
 Only files that actually reference this Action are counted at all. `verdict` is
-a generic output name: a workflow branching on `steps.x.outputs.verdict` may be
-using a different action entirely, and such a row is not weak evidence — it is
-no evidence. Those files are printed with `NOT THIS ACTION` and excluded.
+a generic output name: a workflow branching on `steps.x.outputs.verdict` while
+calling **a different action entirely** is not weak evidence — it is no
+evidence about this Action. Those files are printed with `NOT THIS ACTION` and
+excluded. (One exception makes that bucket mixed; the next paragraph names it.)
 
 **Attribution follows direct `uses:` lines only, so a wrapper is not counted.**
 If a workflow calls `org/some-wrapper@v1` and that wrapper calls this Action
