@@ -137,6 +137,37 @@ class CheckFileTests(_RepoCase):
         self.assertIn("no recording", outcome.reason)
         self.assertIn("harness-audit baseline", outcome.next_step)
 
+    def test_the_next_step_names_the_actual_path_and_not_a_placeholder(self):
+        # Item 7: a next step the operator must edit is a worse answer than the
+        # INVALID it came with. The literal `<path>` used to be printed.
+        outcome = check_file("a.txt", cwd=str(self.root))
+        self.assertIn("harness-audit baseline --file a.txt", outcome.next_step)
+        self.assertNotIn("<path>", outcome.next_step)
+
+    def test_the_next_step_says_git_head_is_a_different_claim(self):
+        # A dirty file in `git status` invites "git says it changed, why
+        # INVALID?". The answer is in the next step, not only in the source.
+        outcome = check_file("a.txt", cwd=str(self.root))
+        self.assertIn("git HEAD", outcome.next_step)
+        self.assertIn("not 'changed since", outcome.next_step)
+
+    def test_the_receipt_lists_where_the_recording_was_looked_for(self):
+        # Item 5: a recording in a subdirectory is invisible from the root, so
+        # the miss has to be diagnosable instead of mysterious.
+        outcome = check_file("a.txt", cwd=str(self.root))
+        searched = outcome.evidence["baseline_searched"]
+        self.assertTrue(searched)
+        self.assertTrue(all(isinstance(path, str) for path in searched))
+        self.assertTrue(
+            any(baseline_mod.BASELINE_FILENAME in path for path in searched)
+        )
+
+    def test_a_diff_miss_also_lists_where_it_looked(self):
+        (self.root / "a.txt").write_text("dirty\n", encoding="utf-8")
+        outcome = check_diff(cwd=str(self.root))
+        self.assertIs(outcome.verdict, Verdict.INVALID)
+        self.assertTrue(outcome.evidence["baseline_searched"])
+
     def test_without_a_recording_a_missing_file_contradicts_the_claim(self):
         # "Does not exist" is a fact that needs no before, so this one can be
         # decided; calling it INVALID would be withholding a real answer.
@@ -170,7 +201,28 @@ class CheckFileTests(_RepoCase):
         baseline_mod.record(str(self.root), files=["a.txt"])
         outcome = check_file("b.txt", cwd=str(self.root))
         self.assertIs(outcome.verdict, Verdict.INVALID)
-        self.assertIn("harness-audit baseline", outcome.next_step)
+        self.assertIn("does not name it", outcome.reason)
+        self.assertIn("harness-audit baseline --file b.txt", outcome.next_step)
+        # Distinct from "no recording at all": the operator keeps the one they
+        # have and adds a path, instead of re-taking a full recording.
+        self.assertNotIn("no recording", outcome.reason)
+        self.assertNotIn("baseline_searched", outcome.evidence)
+
+    def test_a_subdirectory_recording_is_not_seen_from_the_root(self):
+        # Documented limitation (item 5), pinned so a future "fix" that starts
+        # walking the tree has to change this test on purpose.
+        nested = self.root / "deep" / "inside"
+        nested.mkdir(parents=True)
+        baseline_mod.record(str(nested), files=["a.txt"], local=True)
+        self.assertTrue((nested / baseline_mod.BASELINE_FILENAME).is_file())
+        outcome = check_file("a.txt", cwd=str(self.root))
+        self.assertIs(outcome.verdict, Verdict.INVALID)
+        self.assertIn("no recording", outcome.reason)
+        # The receipt shows where it looked, and the subdirectory is not one of
+        # the places: the miss is diagnosable, not a silent "baseline missing".
+        self.assertFalse(
+            any("deep" in path for path in outcome.evidence["baseline_searched"])
+        )
 
     def test_a_relative_path_from_a_subdirectory_resolves_to_the_same_key(self):
         nested = self.root / "deep" / "inside"
@@ -242,6 +294,7 @@ class CheckOutputTests(_Scratch):
         "renegotiation_class",
         "producer",
         "topology",
+        "cap_topology",
         "witness_type",
         "witness_scope",
     )
@@ -295,6 +348,10 @@ class CheckOutputTests(_Scratch):
         self.assertEqual(code, cli.EXIT_PASS)
         for field in self.INTERNAL_FIELDS:
             self.assertIn(field, stdout)
+        # Item 1: the cap input is visible next to the receipt's topology, so
+        # the semantic mapping does not have to be inferred from the source.
+        self.assertIn("topology            : local", stdout)
+        self.assertIn("cap_topology        : sidecar", stdout)
 
     def test_json_is_the_full_record_and_parses(self):
         code, stdout, _stderr = self._run(["--command", "true", "--json"])
@@ -305,6 +362,7 @@ class CheckOutputTests(_Scratch):
             self.assertIn(field, payload)
         self.assertEqual(payload["producer"], "independent")
         self.assertEqual(payload["topology"], "local")
+        self.assertEqual(payload["cap_topology"], "sidecar")
 
     def test_the_self_audit_gate_still_refuses_to_judge(self):
         with mock.patch.object(cli, "run_self_audit", return_value=False):
@@ -314,6 +372,10 @@ class CheckOutputTests(_Scratch):
         # when the tool has refused to run at all.
         self.assertEqual(stdout.splitlines()[0], "INVALID")
         self.assertIn("self-audit failed", stdout)
+        # Item 4: "the tool is broken" and "the witness is missing" are
+        # different failures and must not share one INVALID sentence.
+        self.assertNotIn("no witness", stdout)
+        self.assertIn("no declaration was judged", stdout)
 
 
 class BaselineCommandTests(_Scratch):
@@ -347,6 +409,22 @@ class BaselineCommandTests(_Scratch):
         entry = document["repos"][str(self.root.resolve())]
         self.assertIn("a.txt", entry["files"])
         self.assertIsNotNone(entry["files"]["a.txt"]["sha256"])
+
+    def test_local_at_the_root_does_not_warn(self):
+        code, _stdout, stderr = self._run(["--cwd", str(self.root), "--local"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("will not see it", stderr)
+
+    def test_local_in_a_subdirectory_warns_that_the_root_will_not_see_it(self):
+        # Item 5: the recording is written where it was invoked, so a check at
+        # the root cannot find it. The operator is told at write time instead
+        # of discovering it as a mysterious INVALID later.
+        nested = self.root / "deep"
+        nested.mkdir()
+        code, _stdout, stderr = self._run(["--cwd", str(nested), "--local"])
+        self.assertEqual(code, 0)
+        self.assertIn("will not see it", stderr)
+        self.assertIn("repository root", stderr)
 
     def test_the_default_target_is_the_shared_file(self):
         code, _stdout, _stderr = self._run(["--cwd", str(self.root)])
@@ -397,6 +475,58 @@ class BaselineCommandTests(_Scratch):
             (plain / baseline_mod.BASELINE_FILENAME).read_text(encoding="utf-8")
         )
         self.assertIn("note.txt", document["repos"][str(plain.resolve())]["files"])
+
+
+class InterfaceDocumentationTests(unittest.TestCase):
+    """The seven boundaries must be written where a caller reads them.
+
+    Each of these was a real ambiguity in review: an interface that is minimal
+    only in its input is easy to read as "it does everything". These assertions
+    pin the sentences that stop that reading, so a later edit cannot quietly
+    drop them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        raw = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+            encoding="utf-8"
+        )
+        # Newlines are layout, not content: prose that wraps must still match.
+        cls.readme = " ".join(raw.split())
+
+    def test_invalid_is_documented_as_non_zero_and_blocking(self):
+        # Item 2: check exits 3 for INVALID and the Action propagates it.
+        self.assertIn("INVALID` is **not** zero", self.readme)
+        self.assertIn("both fail the job by default", self.readme)
+
+    def test_the_command_scope_is_documented(self):
+        # Item 3: --command judges the operator's claim, not a tool layer.
+        self.assertIn("does **not** observe an agent's tool layer", self.readme)
+        self.assertIn("reported_success", self.readme)
+
+    def test_the_local_baseline_limit_is_documented(self):
+        # Item 5: a recording in a subdirectory is invisible from the root.
+        self.assertIn("writes where it was invoked", self.readme)
+        self.assertIn("baseline_searched", self.readme)
+
+    def test_git_head_is_documented_as_a_different_claim(self):
+        self.assertIn("is **not** an implicit baseline", self.readme)
+        self.assertIn("a different claim", self.readme)
+
+    def test_the_recording_is_documented_as_per_path(self):
+        # Item 7: re-run `baseline --file <this path>`, not a full recording.
+        self.assertIn("A recording is per path", self.readme)
+        self.assertNotIn("<path>", self.readme)
+
+    def test_the_topology_mapping_is_documented_as_semantic(self):
+        # Item 1: the cap is told `sidecar`, the receipt says `local`.
+        import audit_sidecar.check as check_mod
+
+        self.assertEqual(check_mod.LOCAL_TOPOLOGY, "local")
+        self.assertEqual(check_mod.PROVENANCE_TOPOLOGY, "sidecar")
+        doc = " ".join((check_mod.__doc__ or "").split())
+        self.assertIn("semantic mapping for the cap call", doc)
+        self.assertIn("not a claim that this check ran through a sidecar", doc)
 
 
 if __name__ == "__main__":

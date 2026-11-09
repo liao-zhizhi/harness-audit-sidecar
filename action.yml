@@ -56,7 +56,10 @@ outputs:
     description: "One sentence explaining the verdict."
     value: ${{ steps.check.outputs.reason }}
   exit_code:
-    description: "0 PASS, 1 FAIL, 3 INVALID (2 is a usage error)."
+    description: >-
+      0 PASS, 1 FAIL, 2 usage error, 3 INVALID (4 NOT RUN). Every non-zero value
+      fails the job, so INVALID blocks CI by default; use continue-on-error or
+      branch on `verdict` to allow it.
     value: ${{ steps.check.outputs.exit_code }}
 
 runs:

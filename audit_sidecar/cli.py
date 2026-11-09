@@ -46,9 +46,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import baseline as baseline_mod
 from .check import (
+    PROVENANCE_TOPOLOGY,
     CheckOutcome,
-    NEXT_STEP_BASELINE_DIFF,
-    NEXT_STEP_BASELINE_FILE,
     check_command,
     check_diff,
     check_file,
@@ -859,6 +858,10 @@ def _format_check(outcome: CheckOutcome, *, verbose: bool) -> List[str]:
             show("witness_scope", outcome.witness_scope),
             show("producer", outcome.producer),
             show("topology", outcome.topology),
+            # Both words on purpose: `topology` is what the receipt claims,
+            # `cap_topology` is the value the cap was given. They differ by a
+            # documented semantic mapping, and the trace shows it.
+            show("cap_topology", PROVENANCE_TOPOLOGY),
             show("tier", outcome.tier),
             show("dropped_assertions", outcome.dropped_assertions),
             show("cap_fired", outcome.cap_fired),
@@ -1011,6 +1014,17 @@ def run_baseline(argv: List[str]) -> int:
         print(
             "warning: {} is not a git repository, so --diff has no change set "
             "to compare; record paths with --file for content checks".format(cwd),
+            file=sys.stderr,
+        )
+    elif options.local and os.path.abspath(cwd) != recorded.repo_root:
+        # ``--local`` writes where it was invoked, and a check looks in its own
+        # working directory and then the repository root. A recording one level
+        # down is therefore invisible from the root, which otherwise reads as
+        # "baseline did not work".
+        print(
+            "warning: this recording is at {}; a check run from {} will not "
+            "see it (run `harness-audit baseline --local` at the repository "
+            "root, or pass the same --cwd)".format(cwd, recorded.repo_root),
             file=sys.stderr,
         )
 

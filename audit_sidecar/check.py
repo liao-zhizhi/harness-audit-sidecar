@@ -30,10 +30,21 @@ Two rules are load-bearing:
 
 On the ``topology`` vocabulary: the provenance enum has no ``local`` (it has
 ``sidecar`` / ``direct_api`` / ``other``), and changing it would change the
-cap's core. The check runs locally with an observer in the path, which is what
-``sidecar`` names in that enum, so the cap is applied with that value while the
-receipt says ``local`` -- the word the caller actually needs. The mapping is
-explicit here rather than hidden in a string literal.
+cap's core. So ``PROVENANCE_TOPOLOGY = "sidecar"`` is a **semantic mapping for
+the cap call**, not a claim that this check ran through a sidecar process: the
+receipt says ``local``, the cap is told ``sidecar`` because both mean "an
+observer other than the agent was in the path", and the combination
+(``independent`` + ``sidecar``) is precisely the one the cap does not tighten.
+Anyone reading the ``cap_verdict`` input must not infer a real hop.
+
+What ``--command`` does and does not claim: it runs the command here and reads
+*this process's* exit status. The claim is therefore the operator's ("I ran it
+and it succeeded"), not the agent's ("my tool said it succeeded"). The case
+where an agent's tool layer swallows an exit code is a *different* observation
+-- ``SafeRunner(reported_success=...)`` records it as a ``protocol`` witness --
+and ``check`` deliberately does not expose it, because a one-line interface
+that silently judged a party other than the one the caller named would be the
+wrong audit.
 """
 
 from __future__ import annotations
@@ -55,6 +66,7 @@ __all__ = [
     "check_command",
     "check_diff",
     "check_file",
+    "NEXT_STEP_BASELINE_ADD",
     "NEXT_STEP_BASELINE_FILE",
     "NEXT_STEP_BASELINE_DIFF",
 ]
@@ -63,14 +75,29 @@ __all__ = [
 LOCAL_TOPOLOGY = "local"
 
 #: What ``cap_verdict`` understands: an observer other than the agent was in
-#: the path. The provenance enum has no ``local``; see the module docstring.
+#: the path. This is a **semantic mapping for the cap**, not an assertion that
+#: a sidecar process was involved -- see the module docstring. It exists as a
+#: named constant so the mapping is one visible decision rather than a literal
+#: buried in the call site.
 PROVENANCE_TOPOLOGY = "sidecar"
 
 #: The witness was produced by this process, not declared by the caller.
 PRODUCER = "independent"
 
+#: ``{path}`` is filled with the path the caller named, not left as ``<path>``:
+#: a next step the operator can paste should not need editing first. The git
+#: clause is there because a dirty file in ``git status`` invites exactly the
+#: wrong question -- "git says it changed, why INVALID?" -- and the answer is
+#: that "changed vs HEAD" is a different declaration from "changed since your
+#: recording".
 NEXT_STEP_BASELINE_FILE = (
-    "run `harness-audit baseline --file <path>` first, then re-run this check"
+    "run `harness-audit baseline --file {path}` first, then re-run this check "
+    "(git HEAD is a different claim: 'changed vs HEAD' is not 'changed since "
+    "your recording')"
+)
+NEXT_STEP_BASELINE_ADD = (
+    "the recording does not name `{path}`: run "
+    "`harness-audit baseline --file {path}` to add it, then re-run this check"
 )
 NEXT_STEP_BASELINE_DIFF = (
     "run `harness-audit baseline` first, then re-run this check"
@@ -139,6 +166,10 @@ class CheckOutcome:
             "witness_scope": self.witness_scope,
             "producer": self.producer,
             "topology": self.topology,
+            # The value the cap was actually given. Recorded next to the
+            # receipt's `local` so the semantic mapping is visible in the trace
+            # and does not have to be reconstructed from the source.
+            "cap_topology": PROVENANCE_TOPOLOGY,
             "tier": self.tier,
             "dropped_assertions": list(self.dropped_assertions),
             "cap_fired": self.cap_fired,
@@ -226,6 +257,14 @@ def check_file(
     3. there is no recording for this path -> ``INVALID``. "It exists" is not
        "it changed", and saying so would be the decoration this package is
        built to refuse.
+
+A dirty path in ``git status`` is deliberately **not** used as an implicit
+baseline. "Changed relative to HEAD" is a different declaration than "changed
+since your recording", and answering the second with the first would borrow a
+witness the caller never asked for. That is why the third case is ``INVALID``
+with a next step that says so, rather than a convenient ``PASS``. The receipt
+still records ``git_dirty`` in its evidence -- visible under ``--verbose``, and
+never allowed to decide the verdict.
     """
     if not isinstance(path, str) or not path.strip():
         raise ValueError("path must be a non-empty string")
@@ -297,15 +336,32 @@ def check_file(
                 witness_type="file",
                 evidence=evidence,
             )
-        # Exists, but nothing to compare it with. This is the exact case the
-        # baseline command exists for, so the next step is a single command.
+        # Exists, but nothing to compare it with. The next step names this
+        # path, not a generic `<path>`: a command the operator has to edit
+        # before running is a worse answer than the INVALID it came with.
+        named = key or path
+        if baseline is None:
+            reason = (
+                "{} exists, but no recording was found, so 'changed' cannot be "
+                "judged".format(path)
+            )
+            next_step = NEXT_STEP_BASELINE_FILE.format(path=named)
+            evidence["baseline_searched"] = baseline_mod.candidate_paths(
+                cwd_abs, repo_root=repo_root
+            )
+        else:
+            # A recording exists; it simply has no entry for this path. Saying
+            # "no recording" would send the operator to re-take a full
+            # recording they already have.
+            reason = (
+                "{} exists, but the recording at {} does not name it, so "
+                "'changed' cannot be judged".format(path, baseline.source)
+            )
+            next_step = NEXT_STEP_BASELINE_ADD.format(path=named)
         return _outcome(
             verdict=Verdict.INVALID,
-            reason=(
-                "{} exists, but no recording says what it looked like before, "
-                "so 'changed' cannot be judged".format(path)
-            ),
-            next_step=NEXT_STEP_BASELINE_FILE,
+            reason=reason,
+            next_step=next_step,
             declaration=declaration,
             witness_type="file",
             evidence=evidence,
@@ -373,6 +429,13 @@ def check_command(
     resting on the same signal. That distinction is the provenance cap's whole
     subject, and it is why ``program_fact`` is deliberately not set here: the
     intent really is "the program exits 0".
+
+    Scope, stated because it is easy to over-read: this observes *this
+    process's* exit status for a command the operator named. It does **not**
+    observe an agent's tool layer, so it cannot catch a tool that swallowed an
+    exit code and reported success -- ``SafeRunner(reported_success=...)`` is
+    the hook for that (a ``protocol`` witness), and exposing it here would
+    require a field the one-line interface does not have.
     """
     if not isinstance(command, str) or not command.strip():
         raise ValueError("command must be a non-empty string")
@@ -518,6 +581,9 @@ def check_diff(
                 witness_type="git_diff",
                 evidence=evidence,
             )
+        evidence["baseline_searched"] = baseline_mod.candidate_paths(
+            cwd_abs, repo_root=repo_root
+        )
         return _outcome(
             verdict=Verdict.INVALID,
             reason=(

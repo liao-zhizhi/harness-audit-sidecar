@@ -819,14 +819,40 @@ Default output is the whole public answer:
 ```text
 FAIL
 reason: the command exited 3, so the claim that it succeeded is contradicted
-next_step: read the command's stderr above, then re-run this check
+next_step: re-run the command by hand to see why it failed, then re-run this check
 ```
 
-`PASS` prints two lines (there is no next step). Exit codes: `0` PASS, `1` FAIL,
-`2` usage error, `3` INVALID (`4` NOT RUN). Internal fields are wrapped, not
+`PASS` prints two lines (there is no next step). Internal fields are wrapped, not
 removed — `--verbose` (human) or `--json` (machine) adds `witness_type`,
 `producer`, `topology`, `tier`, `dropped_assertions`, `cap_fired`,
-`renegotiation_class`, and the evidence itself.
+`renegotiation_class`, and the evidence itself. The trace shows both
+`topology: local` and `cap_topology: sidecar`: the provenance enum has no
+`local`, so the receipt's word is mapped onto the cap's word explicitly rather
+than being hidden in a call site — it is a **semantic mapping, not a claim that
+a sidecar process was involved**.
+
+**What `--command` does and does not cover.** It runs the command here and reads
+*this process's* exit status, so it judges the operator's claim ("I ran it and
+it succeeded"). It does **not** observe an agent's tool layer and cannot tell
+you an agent swallowed an exit code and reported success — that is a
+`protocol` witness, produced by `SafeRunner(reported_success=...)`, and the
+one-line form deliberately does not expose it. If the claim is "my tool says
+the tests passed", the party being judged is the tool, not the command.
+
+Exit codes (`0` PASS, `1` FAIL, `2` usage error, `3` INVALID, `4` NOT RUN):
+`INVALID` is **not** zero, so a CI step that simply runs the command is blocked
+by an ungrounded claim as well as by a contradicted one. That is deliberate —
+`INVALID` means "nobody looked", and a gate that passes on that is decoration.
+If you want to allow it, branch on the verdict instead of weakening the code:
+
+```yaml
+- id: audit
+  uses: liao-zhizhi/harness-audit-sidecar@v1
+  continue-on-error: true          # or: if: steps.audit.outputs.verdict != 'INVALID'
+  with:
+    check: file src/main.py
+- run: echo "verdict was ${{ steps.audit.outputs.verdict }}"
+```
 
 "Changed" is a comparison, so `--file` and `--diff` need a recording first:
 
@@ -837,10 +863,28 @@ harness-audit baseline --local              # ./.harness-baseline.json instead
 
 Without one, `--file` can only answer "exists / does not exist" and `--diff`
 only "the change set is empty / not empty". A file that exists but was never
-recorded is `INVALID` with `next_step: run \`harness-audit baseline --file
-<path>\` first` — never a quiet `PASS` on existence. A *missing* file is still
-`FAIL` (that fact needs no before), and a deletion since the recording counts as
-a change because the recording held a digest.
+recorded is `INVALID` with a `next_step` naming **this path**, e.g. `run
+\`harness-audit baseline --file src/main.py\` first, ...` — never a quiet `PASS`
+on existence, and never a placeholder the operator has to edit. A *missing*
+file is still `FAIL` (that fact needs no before), and a deletion since the
+recording counts as a change because the recording held a digest.
+
+Two limits of the recording, stated rather than discovered:
+
+* **A recording is per path.** Only the paths named with `--file` get a digest.
+  A path the recording does not name is `INVALID` with "the recording does not
+  name it" and a next step that adds *that one path* — not an instruction to
+  re-take a full recording.
+* **`--local` writes where it was invoked.** A recording taken in `repo/sub/`
+  is invisible to a check run in `repo/` (the search is the invocation
+  directory, then the repository root, then `~/.gradia`). The `INVALID` receipt
+  lists the exact files it looked for under `baseline_searched`, so the miss is
+  diagnosable; take the recording at the root, or pass the same `--cwd`.
+
+`git status` being dirty is **not** an implicit baseline: "changed vs HEAD" is a
+different claim from "changed since your recording", and answering the second
+with the first would borrow a witness the caller never asked for. `--file` still
+records `git_dirty` in its evidence (`--verbose`), it just never lets it decide.
 
 ### GitHub Action
 
@@ -854,6 +898,9 @@ The action takes one input. `check` is the same declaration as above:
 
 Legacy `file:` / `command:` / `diff:` inputs are still read when `check` is
 empty, so an existing workflow keeps working; `check` wins when both are set.
+The step propagates `check`'s exit code, so `FAIL` (1) and `INVALID` (3) both
+fail the job by default; the `verdict` / `reason` / `exit_code` outputs are the
+stable contract if you need to distinguish them.
 
 Developing from source:
 
@@ -861,7 +908,7 @@ Developing from source:
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 693 tests (must run from the repository root)
+python3 -m unittest discover -s tests -p 'test_*.py'   # 707 tests (must run from the repository root)
 python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
 harness-audit-server --cwd /path/to/project # no --rules needed
@@ -1554,7 +1601,7 @@ and the server's refusal to start.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 693 tests ... OK (skipped=7)
+# Ran 707 tests ... OK (skipped=7)
 ```
 
 > **Must be run from the repository root.** The start directory is the relative path `tests`;

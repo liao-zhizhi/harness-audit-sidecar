@@ -23,6 +23,15 @@ Storage is keyed by repository root so the shared ``~/.gradia`` file can serve
 several projects without one silently answering for another. ``--local``
 writes beside the code instead, which is what a CI job wants: the recording
 travels with the checkout rather than with the machine.
+
+**Known limit of ``--local``.** It writes into the directory it was invoked
+from, and a check looks in *its* working directory and then the repository
+root. So a recording taken in ``repo/sub/`` is invisible to a check run in
+``repo/`` -- the check reports ``INVALID`` rather than "a recording exists one
+level down". Searching the tree for a stray recording was rejected: a full walk
+is unbounded on a large checkout and would make the miss look like a hang.
+``candidate_paths()`` reports exactly where a check looked, so the miss is
+diagnosable instead of mysterious.
 """
 
 from __future__ import annotations
@@ -44,6 +53,7 @@ __all__ = [
     "BASELINE_VERSION",
     "RepoBaseline",
     "baseline_path",
+    "candidate_paths",
     "load",
     "record",
     "resolve_repo",
@@ -159,6 +169,32 @@ def _read_document(path: Path) -> Optional[Dict[str, Any]]:
     return repos if isinstance(repos, dict) else None
 
 
+def candidate_paths(
+    cwd: str, *, repo_root: Optional[str] = None, local: Optional[bool] = None
+) -> List[str]:
+    """Every file ``load`` would read, in order. Public so a miss can be shown.
+
+    ``local=None`` is the default search order: the invocation directory, then
+    the repository root, then the shared file. A recording written in a
+    *subdirectory* is deliberately absent -- see the module docstring.
+    """
+    root = repo_root if repo_root is not None else resolve_repo(cwd)
+    cwd_abs = os.path.abspath(cwd)
+    candidates: List[Path] = []
+    if local is not False:
+        candidates.append(Path(cwd_abs) / BASELINE_FILENAME)
+        if root and cwd_abs != root:
+            candidates.append(Path(root) / BASELINE_FILENAME)
+    if local is not True:
+        candidates.append(GLOBAL_BASELINE_PATH)
+    seen: List[str] = []
+    for path in candidates:
+        text = str(path)
+        if text not in seen:
+            seen.append(text)
+    return seen
+
+
 def load(
     cwd: str, *, repo_root: Optional[str] = None, local: Optional[bool] = None
 ) -> Optional[RepoBaseline]:
@@ -171,15 +207,9 @@ def load(
     """
     root = repo_root if repo_root is not None else resolve_repo(cwd)
     key = root or os.path.abspath(cwd)
-    candidates: List[Path] = []
-    if local is not False:
-        candidates.append(Path(os.path.abspath(cwd)) / BASELINE_FILENAME)
-        if root and os.path.abspath(cwd) != root:
-            candidates.append(Path(root) / BASELINE_FILENAME)
-    if local is not True:
-        candidates.append(GLOBAL_BASELINE_PATH)
 
-    for path in candidates:
+    for candidate in candidate_paths(cwd, repo_root=root, local=local):
+        path = Path(candidate)
         repos = _read_document(path)
         if not repos:
             continue

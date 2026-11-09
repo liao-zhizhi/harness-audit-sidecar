@@ -86,6 +86,11 @@ class ActionShapeTests(unittest.TestCase):
         self.assertIn("check: file src/main.py", readme)
         self.assertIn("harness-audit check --file src/main.py", readme)
 
+    def test_the_exit_code_output_says_invalid_blocks_ci(self):
+        description = self.action["outputs"]["exit_code"]["description"]
+        self.assertIn("INVALID blocks CI by default", description)
+        self.assertIn("continue-on-error", description)
+
 
 if __name__ == "__main__":
     unittest.main()
