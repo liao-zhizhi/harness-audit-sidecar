@@ -734,6 +734,13 @@ def run_init(argv: List[str]) -> int:
                 file=sys.stderr,
             )
     print("")
+    # Said unconditionally, in both branches: the file is shared by every
+    # project on this machine, so "written" does not mean "replaced", and the
+    # operator is the only one who knows which other aliases are needed.
+    print(
+        "note         : existing @aliases in ref_roots.json are preserved; add "
+        "other repo aliases manually if needed"
+    )
     print("MCP configuration (paste into your Cursor/Claude client):")
     print("")
     print(json.dumps(stanza, indent=2, ensure_ascii=False))

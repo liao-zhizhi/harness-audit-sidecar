@@ -74,6 +74,24 @@ class InitInEmptyDirectoryTests(unittest.TestCase):
         # The only file created is the ref map; a client config is never touched.
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["ref_roots.json"])
 
+    def test_it_explains_that_existing_aliases_are_preserved(self):
+        # The map is shared by every project on the machine, so a write is not a
+        # replacement. Saying so is the difference between "skipped" reading as
+        # a courtesy and reading as a bug.
+        code, stdout, _stderr = _capture(["--cwd", str(self.root), "--local"])
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "existing @aliases in ref_roots.json are preserved; add other repo "
+            "aliases manually if needed",
+            stdout,
+        )
+
+    def test_the_note_is_printed_when_the_file_is_skipped_too(self):
+        _capture(["--cwd", str(self.root), "--local"])
+        _code, stdout, _stderr = _capture(["--cwd", str(self.root), "--local"])
+        self.assertIn("already exists, skipped", stdout)
+        self.assertIn("add other repo aliases manually", stdout)
+
     def test_the_default_target_is_the_path_the_case_library_reads(self):
         # Not ~/.gradia/ref_roots.json: case_store reads the case_library path,
         # so writing anywhere else produces a file that is never loaded.
