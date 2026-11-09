@@ -131,6 +131,30 @@ action that wraps this one is adoption, and the number undercounts it. Revisit
 only when a real wrapper sample exists — adding the hop then is a change with a
 test, not a hunch.
 
+### Reading the `NOT THIS ACTION` rows by hand
+
+The tool cannot tell "a different action" from "a wrapper", so it does not
+guess; the bucket is mixed and the reader separates it. The protocol, because
+"read them by hand" without a criterion is just "look at them":
+
+1. Filter to `uses_this_action: false` in the JSON.
+2. **Do not read `action_refs: []` as "this workflow uses no action".** The
+   field holds only refs that *match* this Action, so it is empty for every
+   un-attributed row whether or not that row has a `uses:` line. Open the file
+   and read its `uses:` lines; the JSON deliberately does not carry the others.
+3. Look at the repository the `uses:` points at. If its name contains
+   `harness-audit`, or it is a known wrapper, the row is indirect adoption.
+4. If that cannot be decided from the name and the file, label it
+   `unknown-wrapper` and **count it on no axis**. An undecided row is not a
+   zero: putting it in the unattributed bucket and then reporting that bucket
+   as "no adoption" is how a tool's blind spot becomes a finding.
+
+If that bucket is large, the manual cost is the signal — the honest fix is the
+tool that fetches the referenced `action.yml`, not a name-matching heuristic
+pressed into service as evidence. A heuristic that guesses "this looks like a
+wrapper" would put invented rows on an axis, which is the one thing this survey
+must not do.
+
 Record the provenance for the first batch, because the axis that matters is
 ownership:
 
@@ -140,7 +164,8 @@ python3 scripts/observe_branches.py path/to/workflows/ --json > batch1.json
 
 The JSON carries, per file: `repo` / `source` (`git-remote`, `git-toplevel`, or
 `unknown` for a harvested folder that is not a repo), `action_refs` and
-`action_versions`, `class`, `conditioned`, `prefixes`, and `signature`. A repo
+`action_versions` (**only refs that match this Action** — see the reading
+protocol above), `class`, `conditioned`, `prefixes`, and `signature`. A repo
 is reported as `unknown` rather than guessed from a directory name — inventing
 an owner would manufacture the independence the count exists to measure.
 

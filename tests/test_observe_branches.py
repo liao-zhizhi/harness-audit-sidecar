@@ -227,6 +227,18 @@ class AttributionTests(unittest.TestCase):
         text = "- uses: ./agent-harness-audit\n"
         self.assertTrue(observer._attribution(text)["uses_this_action"])
 
+    def test_action_refs_holds_only_matching_refs_and_that_is_load_bearing(self):
+        # `action_refs: []` means "none of the refs matched this Action", not
+        # "this file has no `uses:` line" -- the row below does have one. The
+        # checklist's manual-read protocol warns against the natural misread,
+        # so changing this field's meaning (e.g. to list all refs) is a docs
+        # change too, not a tidy-up.
+        text = "- uses: unrelated/audit@v1\n"
+        result = observer._attribution(text)
+        self.assertFalse(result["uses_this_action"])
+        self.assertEqual(result["action_refs"], [])
+        self.assertIn("unrelated/audit@v1", text)
+
     def test_attribution_stops_at_a_wrapper_and_that_is_deliberate(self):
         # A wrapper action that calls this one internally is *indirect*
         # adoption, and this scan reports it as unattributed. That is a known

@@ -739,6 +739,32 @@ class ReleaseChecklistTests(unittest.TestCase):
         self.assertIn("*indirect* evidence, not zero evidence", self.checklist)
         self.assertIn("known blind spot", self.checklist)
 
+    def test_the_manual_read_has_a_protocol_not_just_an_instruction(self):
+        # "Read them by hand" is not a criterion. The protocol has to say what
+        # to look at, what an undecided row becomes, and that it counts on no
+        # axis -- otherwise the undecided rows get reported as non-adoption,
+        # which is a blind spot promoted into a finding.
+        self.assertIn("Reading the `NOT THIS ACTION` rows by hand", self.checklist)
+        self.assertIn("contains `harness-audit`, or it is a known wrapper", self.checklist)
+        self.assertIn("label it `unknown-wrapper`", self.checklist)
+        self.assertIn("**count it on no axis**", self.checklist)
+
+    def test_the_action_refs_field_trap_is_documented(self):
+        # `action_refs: []` means "none of the refs matched this Action", not
+        # "this workflow uses no action". The natural misread would have a
+        # reader skip exactly the rows that need reading.
+        self.assertIn(
+            "**Do not read `action_refs: []` as \"this workflow uses no action\".**",
+            self.checklist,
+        )
+        self.assertIn("only refs that *match* this Action", self.checklist)
+
+    def test_a_wrapper_heuristic_is_refused_in_writing(self):
+        # The tempting shortcut: guess "looks like a wrapper" from the name and
+        # count it. That would put invented rows on an axis.
+        self.assertIn("not a name-matching heuristic", self.checklist)
+        self.assertIn("would put invented rows on an axis", self.checklist)
+
     def test_the_scan_scope_is_github_workflows_and_the_fallback_is_stated(self):
         # A survey that reads rule files reports noise as non-adoption, and one
         # that drops a flattened corpus reports zero as if it were a finding.
