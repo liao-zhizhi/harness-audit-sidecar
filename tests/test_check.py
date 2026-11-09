@@ -704,6 +704,16 @@ class ReleaseChecklistTests(unittest.TestCase):
             self.assertIn(name, action)
         self.assertNotIn("failure_kind:", action)
 
+    def test_the_adoption_signal_is_surveyed_not_guessed(self):
+        # "Someone renamed a prefix" is not the signal; what external
+        # workflows condition on is. The checklist has to name the survey and
+        # the reading for `verdict_only`, or the revisit condition degrades
+        # back into an opinion.
+        self.assertIn("scripts/observe_branches.py", self.checklist)
+        self.assertIn("not** \"someone renamed a prefix\"", self.checklist)
+        self.assertIn("count before acting", self.checklist)
+        self.assertIn("this is an incident, not a survey row", self.checklist)
+
 
 if __name__ == "__main__":
     unittest.main()
