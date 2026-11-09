@@ -129,6 +129,13 @@ The JSON carries, per file: `repo` / `source` (`git-remote`, `git-toplevel`, or
 is reported as `unknown` rather than guessed from a directory name — inventing
 an owner would manufacture the independence the count exists to measure.
 
+Scope: a directory target is scanned for `.github/workflows` only, because that
+is the only place GitHub runs a workflow and everything else found in a tree
+(rule files, lockfiles, vendored docs) would report `NOT THIS ACTION` and bury
+the real rows. If no such directory exists the scan falls back to every YAML and
+says so on stderr — a flattened corpus must not report "nothing found", which
+reads as "no adoption". `--all-yaml` forces the broad scan.
+
 Two cautions, because a miscounted survey is worse than no survey:
 
 - The scan is **line-level text**, not YAML parsing. It follows one alias hop

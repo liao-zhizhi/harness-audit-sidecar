@@ -730,6 +730,13 @@ class ReleaseChecklistTests(unittest.TestCase):
         self.assertIn("`NOT THIS ACTION`", self.checklist)
         self.assertIn("`action_versions`", self.checklist)
 
+    def test_the_scan_scope_is_github_workflows_and_the_fallback_is_stated(self):
+        # A survey that reads rule files reports noise as non-adoption, and one
+        # that drops a flattened corpus reports zero as if it were a finding.
+        self.assertIn(".github/workflows` only", self.checklist)
+        self.assertIn("falls back to every YAML", self.checklist)
+        self.assertIn("`--all-yaml`", self.checklist)
+
 
 if __name__ == "__main__":
     unittest.main()

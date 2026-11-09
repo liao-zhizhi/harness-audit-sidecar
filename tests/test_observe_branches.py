@@ -347,6 +347,50 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("no workflow files found", completed.stderr)
 
+    def test_only_github_workflows_are_scanned_by_default(self):
+        # Scanning every YAML in a repo mostly finds rule files and vendored
+        # docs, all of which report NOT THIS ACTION and bury the real rows.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github" / "workflows").mkdir(parents=True)
+            (root / ".github" / "workflows" / "ci.yml").write_text(
+                VERDICT_ONLY, encoding="utf-8"
+            )
+            (root / "rules").mkdir()
+            (root / "rules" / "write_file.yaml").write_text(
+                "outputs.verdict: noise\n", encoding="utf-8"
+            )
+            completed = self._run(str(root))
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("1 file(s)", completed.stdout)
+            self.assertNotIn("write_file", completed.stdout)
+
+    def test_a_flattened_corpus_falls_back_with_a_note(self):
+        # Harvested corpora lose the directory. Dropping everything would
+        # report "nothing found" and read as "no adoption".
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "org-repo-ci.yml"
+            path.write_text(VERDICT_ONLY, encoding="utf-8")
+            completed = self._run(tmp)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("no files under .github/workflows", completed.stderr)
+            self.assertIn("1 file(s)", completed.stdout)
+
+    def test_all_yaml_keeps_the_extra_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github" / "workflows").mkdir(parents=True)
+            (root / ".github" / "workflows" / "ci.yml").write_text(
+                VERDICT_ONLY, encoding="utf-8"
+            )
+            (root / "rules").mkdir()
+            (root / "rules" / "noise.yaml").write_text(
+                "outputs.verdict: noise\n", encoding="utf-8"
+            )
+            completed = self._run(str(root), "--all-yaml")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("2 file(s)", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

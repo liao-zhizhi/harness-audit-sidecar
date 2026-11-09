@@ -289,17 +289,43 @@ def _action_for(kind: str) -> str:
     }[kind]
 
 
-def _iter_files(targets: Iterable[str]) -> List[str]:
-    paths: List[str] = []
+#: Actions live in `.github/workflows` and nowhere else on GitHub. Scanning
+#: every YAML in a tree mostly finds rule files, lockfiles and vendored docs,
+#: which then all report `NOT THIS ACTION` and bury the real rows. Default to
+#: the real location; `--all-yaml` exists for flattened corpora.
+_WORKFLOW_DIR = "/.github/workflows/"
+
+
+def _iter_files(
+    targets: Iterable[str], only_workflow_dir: bool = True
+) -> Tuple[List[str], List[str]]:
+    """Collect candidate files, returning ``(paths, notes)``."""
+    all_paths: List[str] = []
+    notes: List[str] = []
     for target in targets:
         if os.path.isdir(target):
+            found: List[str] = []
             for base, _dirs, names in os.walk(target):
                 for name in sorted(names):
                     if name.endswith(_YAML_SUFFIXES):
-                        paths.append(os.path.join(base, name))
+                        found.append(os.path.join(base, name))
+            if only_workflow_dir:
+                inside = [
+                    p for p in found if (_WORKFLOW_DIR in p.replace(os.sep, "/"))
+                ]
+                if inside:
+                    found = inside
+                elif found:
+                    notes.append(
+                        "{}: no files under .github/workflows; scanning all {} "
+                        "YAML instead (--all-yaml silences this)".format(
+                            target, len(found)
+                        )
+                    )
+            all_paths.extend(found)
         else:
-            paths.append(target)
-    return sorted(set(paths))
+            all_paths.append(target)
+    return sorted(set(all_paths)), notes
 
 
 def _summarise(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -346,9 +372,18 @@ def main(argv: List[str]) -> int:
     )
     parser.add_argument("targets", nargs="+", help="workflow files or directories")
     parser.add_argument("--json", action="store_true", help="machine-readable")
+    parser.add_argument(
+        "--all-yaml",
+        action="store_true",
+        help="scan every YAML under a directory, not just .github/workflows",
+    )
     options = parser.parse_args(argv)
 
-    files = _iter_files(options.targets)
+    files, notes = _iter_files(
+        options.targets, only_workflow_dir=not options.all_yaml
+    )
+    for note in notes:
+        print("note: {}".format(note), file=sys.stderr)
     if not files:
         print("no workflow files found", file=sys.stderr)
         return 2
