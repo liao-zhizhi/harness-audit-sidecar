@@ -56,6 +56,36 @@ def _git_available() -> bool:
         return False
 
 
+def _classification_rows(text: str):
+    """Parse the classification table into ``{class: action column}``.
+
+    Read from the rendered table rather than from the prose, so a row can be
+    reordered or a class moved to another action and the change is visible.
+    """
+    rows = {}
+    for line in text.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = line.split("|")
+        if len(cells) < 5:
+            continue
+        kind = cells[1].strip().strip("`")
+        if kind in ("", "survey result", "kind") or set(kind) <= set("-"):
+            continue
+        rows[kind] = "|".join(cells[3:-1])
+    return rows
+
+
+def _observe_module():
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "observe_branches.py"
+    spec = importlib.util.spec_from_file_location("observe_branches_doc", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class _Scratch(unittest.TestCase):
     """A temporary directory plus an isolated global baseline path.
 
@@ -669,6 +699,9 @@ class ReleaseChecklistTests(unittest.TestCase):
     def setUpClass(cls):
         cls.root = Path(__file__).resolve().parent.parent
         raw = (cls.root / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+        # Prose is matched on flattened whitespace (lines wrap); the table is
+        # matched on raw text, because its rows are the thing being checked.
+        cls.checklist_raw = raw
         cls.checklist = " ".join(raw.split())
 
     def test_every_contract_prefix_is_listed_verbatim(self):
@@ -791,6 +824,33 @@ class ReleaseChecklistTests(unittest.TestCase):
         # the paragraph says it owns.
         self.assertIn("the real argument for the output", self.checklist)
         self.assertIn("documented path is being read and written", self.checklist)
+
+    def test_the_classification_table_still_maps_each_class_to_its_action(self):
+        # The previous test only proves the strings exist somewhere, so a row
+        # reordered into "verdict_only -> none" would still pass. This one
+        # reads the table: the class and its action have to be on the same row,
+        # and the two artefacts that state the rule -- this document and
+        # `_action_for` in the survey -- have to agree that only one of them
+        # warrants doing something.
+        rows = _classification_rows(self.checklist_raw)
+        self.assertIn("reason_prefix", rows)
+        self.assertIn("verdict_only", rows)
+        self.assertEqual(rows["reason_prefix"].strip().rstrip("|").strip(), "none")
+        self.assertNotEqual(rows["verdict_only"].strip().rstrip("|").strip(), "none")
+
+        tool = _observe_module()._action_for
+        self.assertIn("no action", tool("reason_prefix"))
+        self.assertIn("count", tool("verdict_only"))
+        self.assertIn("adopt", tool("fourth_output"))
+        # And the "needs no action" classes must not drift into verbs.
+        for quiet in ("exit_code_only", "no_branch"):
+            self.assertNotIn("adopt now", tool(quiet))
+
+    def test_the_distribution_rule_is_named_as_not_automated(self):
+        # "ship this section with it" is a rule with no packaging mechanism
+        # behind it. Recording that the hand step exists is the difference
+        # between a rule and a belief that it is enforced.
+        self.assertIn("not automated", self.checklist)
 
     def test_a_wrapper_heuristic_is_refused_in_writing(self):
         # The tempting shortcut: guess "looks like a wrapper" from the name and

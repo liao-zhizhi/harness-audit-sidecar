@@ -185,6 +185,13 @@ dashboard, an attachment, a pasted sample — ship this section with it, or add 
 `classification_notes` block. Until then both artefacts travel together and
 nothing is missing.
 
+That distribution rule is **not automated**: no packaging step checks that the
+two travel together, so it is a hand step, performed from memory or not at all.
+The honest fix when JSON leaves this repo is to extract this section into a file
+packaging can copy, or to have the archive carry a `classification_notes_ref`
+pointing at it. Recorded, not built — today both artefacts live in the same
+repository, so the gap is latent.
+
 Scope: a directory target is scanned for `.github/workflows` only, because that
 is the only place GitHub runs a workflow and everything else found in a tree
 (rule files, lockfiles, vendored docs) would report `NOT THIS ACTION` and bury
