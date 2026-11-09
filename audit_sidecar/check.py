@@ -62,6 +62,8 @@ from .witness_provenance import cap_verdict
 __all__ = [
     "CheckOutcome",
     "LOCAL_TOPOLOGY",
+    "MALFORMED_REASON_PREFIX",
+    "NO_DECLARATION_REASON_PREFIX",
     "PROVENANCE_TOPOLOGY",
     "SELF_AUDIT_REASON_PREFIX",
     "check_command",
@@ -85,13 +87,19 @@ PROVENANCE_TOPOLOGY = "sidecar"
 #: The witness was produced by this process, not declared by the caller.
 PRODUCER = "independent"
 
-#: Stable first clause of the tool's refusal to judge at all. Matched by CI to
-#: separate "the tool is broken" from "the witness is missing" -- both are
-#: ``INVALID`` with exit code 3, so the exit code cannot carry the difference.
+#: The reason's first clause is the **wire contract** for the three classes of
+#: ``INVALID`` -- exit code 3 and ``verdict`` are the same for all of them, so
+#: CI and ``CheckOutcome.failure_kind`` branch on these strings. Renaming one
+#: is a breaking change, not a wording change: every sentence below is built
+#: from the constants (never retyped) so the sentence and its classifier cannot
+#: disagree, and ``tests/test_check.py`` classifies real CLI output end to end.
 SELF_AUDIT_REASON_PREFIX = "self-audit failed"
-
-#: Stable first clauses of the two "your invocation was wrong" refusals.
-_MALFORMED_REASON_PREFIXES = ("declaration malformed", "no declaration given")
+MALFORMED_REASON_PREFIX = "declaration malformed"
+NO_DECLARATION_REASON_PREFIX = "no declaration given"
+_MALFORMED_REASON_PREFIXES = (
+    MALFORMED_REASON_PREFIX,
+    NO_DECLARATION_REASON_PREFIX,
+)
 
 #: ``{path}`` is filled with the path the caller named, not left as ``<path>``:
 #: a next step the operator can paste should not need editing first. The git

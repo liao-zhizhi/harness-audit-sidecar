@@ -865,6 +865,17 @@ is the reason's first clause, which is a stable contract:
 | bad invocation | `declaration malformed` / `no declaration given` | the call; fix the arguments |
 | missing witness | anything else | nothing observed it; collect the witness |
 
+**Rewording a `reason` is a breaking change, not a copy edit.** The prefixes
+above are the wire contract: they are named constants in `audit_sidecar/check.py`
+(`SELF_AUDIT_REASON_PREFIX`, `MALFORMED_REASON_PREFIX`,
+`NO_DECLARATION_REASON_PREFIX`) and every sentence is *built* from them rather
+than retyped, so a sentence cannot drift away from the classifier that reads it.
+Changing one of those strings will silently move the failure into another row of
+this table — the tests catch that (`failure_kind` is asserted end to end against
+real CLI output), but a reworded prefix still breaks every workflow that matches
+on it. Treat the first clause as an API version: add a new kind, do not rename
+an existing one.
+
 The Action exposes `verdict` / `reason` / `exit_code`, so a workflow branches on
 the **reason prefix**. A direct CLI consumer gets the same distinction as a
 field instead of a string: `--json` carries `failure_kind`, one of

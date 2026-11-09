@@ -46,6 +46,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import baseline as baseline_mod
 from .check import (
+    MALFORMED_REASON_PREFIX,
+    NO_DECLARATION_REASON_PREFIX,
     PROVENANCE_TOPOLOGY,
     SELF_AUDIT_REASON_PREFIX,
     CheckOutcome,
@@ -73,6 +75,16 @@ SELF_AUDIT_FAILED_MESSAGE = "Self-audit failed, tool is a decoration."
 CHECK_SELF_AUDIT_REASON = (
     SELF_AUDIT_REASON_PREFIX + ", so no declaration was judged"
 )
+
+#: Neither of these is a witness problem, so neither may fall through to
+#: ``witness_missing``. Built from the same prefixes ``failure_kind`` matches:
+#: rewriting the sentence here without rewriting the constant would make an
+#: invocation error look like "nobody looked", and send the operator off to
+#: record a baseline when the real fix is to fix their arguments.
+CHECK_NO_DECLARATION_REASON = (
+    NO_DECLARATION_REASON_PREFIX + ", so there is nothing to judge"
+)
+CHECK_MALFORMED_REASON_TEMPLATE = MALFORMED_REASON_PREFIX + ": {}"
 
 #: Where the case library looks for the alias map. ``case_store`` in the product
 #: repo reads exactly this path, so writing anywhere else would produce a file
@@ -899,7 +911,7 @@ def run_check(argv: List[str]) -> int:
     if options.file is None and options.command is None and not options.diff:
         outcome = CheckOutcome(
             verdict=Verdict.INVALID,
-            reason="no declaration given, so there is nothing to judge",
+            reason=CHECK_NO_DECLARATION_REASON,
             next_step=(
                 'pass exactly one of --file <path>, --command "<cmd>" or --diff'
             ),
@@ -959,7 +971,7 @@ def _malformed_declaration(declaration: str, problem: Exception) -> CheckOutcome
     """
     return CheckOutcome(
         verdict=Verdict.INVALID,
-        reason="declaration malformed: {}".format(problem),
+        reason=CHECK_MALFORMED_REASON_TEMPLATE.format(problem),
         next_step=(
             'pass a non-empty declaration: --file <path>, --command "<cmd>" or --diff'
         ),

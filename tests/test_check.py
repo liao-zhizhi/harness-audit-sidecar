@@ -430,6 +430,53 @@ class FailureKindTests(_Scratch):
             cli.CHECK_SELF_AUDIT_REASON.startswith(cli.SELF_AUDIT_REASON_PREFIX)
         )
 
+    def test_every_sentence_is_built_from_the_prefix_that_classifies_it(self):
+        # The residual risk is a rewording that keeps the sentence readable but
+        # moves it into another bucket: "no declaration given" reworded to
+        # "nothing to judge" would silently become `witness_missing` and tell
+        # the operator to record a baseline instead of fixing their arguments.
+        # The sentence and the classifier therefore read the same constant.
+        import audit_sidecar.check as check_mod
+
+        pairs = (
+            (cli.CHECK_SELF_AUDIT_REASON, check_mod.SELF_AUDIT_REASON_PREFIX),
+            (
+                cli.CHECK_NO_DECLARATION_REASON,
+                check_mod.NO_DECLARATION_REASON_PREFIX,
+            ),
+            (
+                cli.CHECK_MALFORMED_REASON_TEMPLATE,
+                check_mod.MALFORMED_REASON_PREFIX,
+            ),
+        )
+        for sentence, prefix in pairs:
+            self.assertTrue(sentence.startswith(prefix), sentence)
+
+    def test_no_declaration_is_classified_end_to_end(self):
+        code, stdout = self._run(["--json"])
+        payload = json.loads(stdout)
+        self.assertEqual(code, cli.EXIT_INVALID)
+        self.assertEqual(payload["failure_kind"], "declaration_malformed")
+        self.assertTrue(
+            payload["reason"].startswith(cli.NO_DECLARATION_REASON_PREFIX)
+        )
+
+    def test_a_bad_declaration_is_classified_end_to_end(self):
+        code, stdout = self._run(["--file", "", "--json"])
+        payload = json.loads(stdout)
+        self.assertEqual(code, cli.EXIT_INVALID)
+        self.assertEqual(payload["failure_kind"], "declaration_malformed")
+
+    def test_an_unlisted_invalid_reason_falls_back_to_witness_missing(self):
+        # The fallback is the point of the design: "nobody looked" is the
+        # default, and only the three constants can opt out of it. A new
+        # INVALID sentence is therefore never silently mislabelled as a tool
+        # failure or a bad invocation.
+        from audit_sidecar.check import CheckOutcome
+
+        outcome = CheckOutcome(verdict=Verdict.INVALID, reason="nothing observed it")
+        self.assertEqual(outcome.failure_kind, "witness_missing")
+
     def test_the_self_audit_gate_still_refuses_to_judge(self):
         with mock.patch.object(cli, "run_self_audit", return_value=False):
             code, stdout = self._run(["--command", "true"])
@@ -592,6 +639,10 @@ class InterfaceDocumentationTests(unittest.TestCase):
         self.assertIn("the **reason prefix**", self.readme)
         self.assertIn("never branch on `verdict`", self.readme)
         self.assertIn("`self_audit` / `declaration_malformed` / `witness_missing`", self.readme)
+        # The prefixes are a contract, and the README has to say so: a
+        # reworded sentence is how this classification rots in the field.
+        self.assertIn("**Rewording a `reason` is a breaking change", self.readme)
+        self.assertIn("Treat the first clause as an API version", self.readme)
 
     def test_the_topology_mapping_is_documented_as_semantic(self):
         # Item 1: the cap is told `sidecar`, the receipt says `local`.
