@@ -30,15 +30,29 @@ declaring provenance at the call site.
 that reaches ``judge()`` runs inside ``SafeRunner`` -- ``runner.py`` (the engine
 call), ``mcp_proxy.py:561`` and ``mcp_server.py:763`` all go through
 ``run_shell`` -- so ``topology`` is always ``sidecar`` and this cap cannot fire.
-The two non-sidecar paths in the repo do not reach ``judge()`` at all:
-``MembraneAgent.execute_tool_with_warrant`` runs the tool in-process but has its
-own membrane that recomputes the digest from the artefact
-(``tools/membrane.py::_resolve_witness``) and deliberately does not import the
-auditor; ``metabolism_paper/dogfood_audit.py::audit_effect`` judges outside the
-runner but calls ``VerdictEngine.explain`` (the bare lattice), never
-``RuleEngine.judge``. Wiring either one would mean integrating another package's
-verdict path or inventing an entry, so the cap stays dormant until a real
-``direct_api`` caller exists.
+
+The non-sidecar paths in the repo do not reach ``judge()`` at all:
+
+* ``agent-metabolism-os/product_mvp/api_server.py::verify`` (``/api/v1/verify``)
+  is a genuine ``direct_api`` path -- ``witness_hash`` comes straight from the
+  request body -- but it judges with ``cel_engine.CelGateway``, a separate
+  engine with its own lattice. The provenance cap is not part of that engine.
+* ``agent-metabolism-os/product_mvp/code_verify.py`` (``/api/v1/code/verify``)
+  carries a *local copy* of this rule for exactly that reason, and never returns
+  PASS. It is a guide endpoint, not a caller of ``judge()``; the two
+  implementations are compared in ``tests/test_code_verify.py`` when the
+  sidecar is importable.
+* ``MembraneAgent.execute_tool_with_warrant`` runs the tool in-process but has
+  its own membrane that recomputes the digest from the artefact
+  (``tools/membrane.py::_resolve_witness``) and deliberately does not import the
+  auditor.
+* ``metabolism_paper/dogfood_audit.py::audit_effect`` judges outside the runner
+  but calls ``VerdictEngine.explain`` (the bare lattice), never
+  ``RuleEngine.judge``.
+
+Wiring any of them would mean integrating another package's verdict path or
+inventing an entry, so the cap here stays dormant until a real ``direct_api``
+caller of ``RuleEngine.judge`` exists.
 """
 
 from __future__ import annotations
