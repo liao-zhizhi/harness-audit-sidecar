@@ -175,6 +175,16 @@ first batch is archived before anyone reads it and a warning on stderr does not
 survive to the person who opens `batch1.json` next month. Read it before
 filtering on `uses_this_action` or `action_refs`.
 
+**`field_notes` covers field semantics, not classification rules.** It says how
+to read a value; it does not say which class warrants action (`verdict_only` is
+the argument for the fourth output, `reason_prefix` needs nothing). That mapping
+is this document's job, and it stays here on purpose: rules that decide what to
+*do* do not belong in a data file that a script may consume. The consequence is
+stated rather than discovered: if the JSON is ever distributed on its own — a
+dashboard, an attachment, a pasted sample — ship this section with it, or add a
+`classification_notes` block. Until then both artefacts travel together and
+nothing is missing.
+
 Scope: a directory target is scanned for `.github/workflows` only, because that
 is the only place GitHub runs a workflow and everything else found in a tree
 (rule files, lockfiles, vendored docs) would report `NOT THIS ACTION` and bury

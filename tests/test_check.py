@@ -776,6 +776,22 @@ class ReleaseChecklistTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertIn("action_refs", module.FIELD_NOTES)
 
+    def test_the_notes_scope_is_field_semantics_not_classification(self):
+        # `field_notes` tells a reader how to read a value, not what to do
+        # about a class. Keeping the "what to do" out of the data file is
+        # deliberate; the cost is that a JSON distributed alone loses it, so
+        # the boundary and the remedy have to be written down.
+        self.assertIn(
+            "**`field_notes` covers field semantics, not classification rules.**",
+            self.checklist,
+        )
+        self.assertIn("ship this section with it", self.checklist)
+        self.assertIn("`classification_notes`", self.checklist)
+        # The rules stay here: the document must still carry the two readings
+        # the paragraph says it owns.
+        self.assertIn("the real argument for the output", self.checklist)
+        self.assertIn("documented path is being read and written", self.checklist)
+
     def test_a_wrapper_heuristic_is_refused_in_writing(self):
         # The tempting shortcut: guess "looks like a wrapper" from the name and
         # count it. That would put invented rows on an axis.
