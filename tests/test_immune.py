@@ -421,6 +421,46 @@ class ProxyTierTest(unittest.TestCase):
         self.assertIs(result.verdict, Verdict.FAIL)
         self.assertIn("false completion", result.reason)
 
+    def test_innate_payload_assertion_is_recorded_not_silent(self) -> None:
+        # ``append_file`` asserts the content it appends, but the cheap tier
+        # never reads the file. The drop must be on the result and in the
+        # reason: a PASS about "the append landed" is not a PASS about the
+        # bytes, and only the record can tell the two apart.
+        self.append(self.proxy)
+        result = self.proxy.audit_log[-1]
+        self.assertIs(result.verdict, Verdict.PASS)
+        self.assertEqual(result.tier, TIER_INNATE)
+        self.assertEqual(result.dropped_assertions, ("expected_content",))
+        self.assertIn("content assertion dropped", result.reason)
+        self.assertIn("tier=innate", result.reason)
+
+    def test_content_assertion_the_innate_tier_cannot_read_escalates(self) -> None:
+        # The exploit: a custom builder asserts EXPECTED-MARKER while its
+        # command writes WRONG, under a policy that routes the tool to the
+        # cheap tier. Dropping the assertion would produce a PASS about a file
+        # that does not contain the marker. Escalating collects the evidence
+        # instead, and the full tier sees the mismatch.
+        proxy = MCPProxy(
+            cwd=self.root,
+            runner=SafeRunner(timeout=20),
+            rules_dir=self.rules_for("append_note", "low"),
+        )
+
+        def builder(_args):
+            return ToolInvocation(
+                command="printf 'WRONG' >> note.txt",
+                intent="append EXPECTED-MARKER to note.txt",
+                expected_file="note.txt",
+                expected_content="EXPECTED-MARKER",
+            )
+
+        proxy.register_tool("append_note", builder)
+        proxy.intercept_tool_call("append_note", {}, True)
+        result = proxy.audit_log[-1]
+        self.assertEqual(result.tier, TIER_ADAPTIVE)
+        self.assertIs(result.verdict, Verdict.FAIL)
+        self.assertEqual(result.dropped_assertions, ())
+
     def test_high_risk_write_uses_the_adaptive_tier(self) -> None:
         self.proxy.intercept_tool_call(
             "write_file", {"path": "target.py", "content": "value = 1\n"}, True

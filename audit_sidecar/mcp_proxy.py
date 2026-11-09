@@ -33,11 +33,11 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .git_witness import GitWitnessError
-from .immune_state import ImmuneState, TIER_INNATE, select_tier
+from .immune_state import ImmuneState, TIER_ADAPTIVE, TIER_INNATE, select_tier
 from .judgment_base import JudgmentBase
 from .rule_engine import RuleEngine
 from .runner import (
@@ -77,6 +77,12 @@ class ToolInvocation:
     expected_files: Tuple[str, ...] = ()
     expected_file: Optional[str] = None
     expected_content: Optional[str] = None
+    #: True only when ``expected_content`` is the literal payload this command
+    #: writes. The cheap (innate) tier cannot read files, so a content
+    #: assertion there is dropped -- which is honest only when the command's
+    #: own text already carries it, and is recorded either way. Every other
+    #: content assertion escalates the call to the full witness instead.
+    content_is_write_payload: bool = False
 
 
 def _require(args: Dict[str, Any], key: str) -> str:
@@ -125,6 +131,11 @@ def _build_append_file(args: Dict[str, Any]) -> ToolInvocation:
         expected_files=(path,),
         expected_file=path,
         expected_content=content if content else None,
+        # The asserted content is the very argument this command appends, so a
+        # witness that proves the append landed proves something about that
+        # payload. It is still weaker than a content read, which is why the
+        # drop is recorded in ``dropped_assertions`` rather than hidden.
+        content_is_write_payload=True,
     )
 
 
@@ -253,7 +264,7 @@ class MCPProxy:
         runner: Optional[SafeRunner] = None,
         repo_path: Optional[str] = None,
         registry: Optional[Dict[str, Callable[[Dict[str, Any]], ToolInvocation]]] = None,
-        rules_dir: Optional[str] = None,
+        rules_dir: Optional[Union[str, Tuple[str, ...]]] = None,
         judgment_base: Optional[JudgmentBase] = None,
         rule_engine: Optional[RuleEngine] = None,
         immune_state: Optional[ImmuneState] = None,
@@ -321,7 +332,7 @@ class MCPProxy:
 
     @staticmethod
     def _resolve_engine(
-        rules_dir: Optional[str],
+        rules_dir: Optional[Union[str, Tuple[str, ...]]],
         judgment_base: Optional[JudgmentBase],
         rule_engine: Optional[RuleEngine],
     ) -> Optional[RuleEngine]:
@@ -387,13 +398,30 @@ class MCPProxy:
             if self._rule_engine is None
             else self._rule_engine.rules_for_tool(tool_name)
         )
-        return select_tier(
+        tier = select_tier(
             rules=rules,
             inflamed=self._immune.is_inflamed(),
             has_observable_path=bool(
                 invocation.expected_file or invocation.expected_files
             ),
         )
+        if (
+            tier == TIER_INNATE
+            and invocation.expected_content is not None
+            and not invocation.content_is_write_payload
+        ):
+            # The innate tier does not read files, so it cannot evaluate a
+            # content assertion. Dropping it would silently audit a weaker
+            # claim than the caller made, and ``run_shell`` refuses to do that
+            # with ``witness_scope='stat'``. Escalating is the monotone
+            # direction: more evidence than the policy asked for, never less.
+            _LOG.info(
+                "escalating %s to the adaptive tier: it carries a content "
+                "assertion the innate tier cannot read",
+                tool_name,
+            )
+            return TIER_ADAPTIVE
+        return tier
 
     def register_tool(
         self,
@@ -556,6 +584,16 @@ class MCPProxy:
         invocation = builder(args)
         tier = self._resolve_tier(tool_name, invocation)
         innate = tier == TIER_INNATE
+        # The innate tier never reads the file, so a content assertion cannot be
+        # evaluated there. The only case that reaches this branch is a payload
+        # assertion the builder declared is the command's own argument; every
+        # other content assertion escalated the tier above. The drop is
+        # recorded, on the result and in the reason, rather than silent.
+        dropped: Tuple[str, ...] = ()
+        expected_content = invocation.expected_content
+        if innate and expected_content is not None:
+            dropped = ("expected_content",)
+            expected_content = None
 
         try:
             result = self._runner.run_shell(
@@ -563,11 +601,7 @@ class MCPProxy:
                 cwd=self._cwd,
                 intent_desc=invocation.intent,
                 expected_file=invocation.expected_file,
-                # The innate tier never reads the file, so a content assertion
-                # cannot be honoured there; it is dropped only because the
-                # policy routed this call to a tier that does not look, which
-                # the verdict reason and the trace both record.
-                expected_content=None if innate else invocation.expected_content,
+                expected_content=expected_content,
                 # The claimed paths are passed in both tiers: the tier decides
                 # *how* they are observed (stat versus git change set), not
                 # which paths the call said it would touch.
@@ -587,6 +621,18 @@ class MCPProxy:
             # would take the whole sidecar down on an ordinary first run in a
             # scratch directory, and leave no trace to explain why.
             result = self._unwitnessed(invocation, agent_reported_success, problem)
+        if dropped:
+            # ``replace`` rather than mutation: ExecutionResult is frozen, and
+            # the reason must not read as a full-witness PASS when one of the
+            # caller's assertions went unread.
+            result = replace(
+                result,
+                dropped_assertions=dropped,
+                reason="{} [content assertion dropped; tier=innate cannot read "
+                "files, and the asserted content is the command's own payload]".format(
+                    result.reason
+                ),
+            )
         return self._record(tool_name, agent_reported_success, result)
 
     def _record(

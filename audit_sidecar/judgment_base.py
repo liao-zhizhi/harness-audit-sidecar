@@ -31,6 +31,13 @@ type, a unknown expectation, or a duplicate ``rule_id`` raises
 ``RuleError`` at load time. Silently dropping a rule that the operator
 believes is active would recreate exactly the decoration problem this
 feature exists to remove.
+
+**Layers.** A local ``./rules`` directory is merged with the packaged base
+rather than substituted for it: the local layer may add rules, or redefine a
+shipped rule *more strictly*, but it may never delete one. Substitution was
+the hole -- a working tree could ship a one-line policy that removed
+``no_file_drift`` while the audit still reported itself configured. The merge
+is checked, and a weaker or merely equal redefinition is an error.
 """
 
 from __future__ import annotations
@@ -38,7 +45,17 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 import yaml
 
@@ -47,6 +64,7 @@ __all__ = [
     "JudgmentBase",
     "RuleError",
     "default_rules_dir",
+    "default_rules_dirs",
     "packaged_rules_dir",
 ]
 
@@ -145,20 +163,31 @@ def packaged_rules_dir() -> str:
 
 
 def default_rules_dir() -> Optional[str]:
-    """Locate the judgment base, or ``None`` when there is none.
+    """The **primary** judgment base directory, or ``None``.
 
-    Search order, first hit wins:
+    This is the first entry of :func:`default_rules_dirs`. It exists for
+    display and for callers that need one path; loading must use
+    ``JudgmentBase()`` (or :func:`default_rules_dirs`) so the local layer and
+    the packaged layer are *merged* rather than one replacing the other.
+    """
+    dirs = default_rules_dirs()
+    return dirs[0] if dirs else None
 
-    1. ``$HARNESS_AUDIT_RULES`` -- an explicit override is obeyed exactly,
-       including its absence: if it points somewhere that is not a directory
-       this raises rather than falling back, because a policy the operator
-       believes is active must not be silently replaced by another one.
-    2. ``./rules`` -- a project-local policy, so a working directory can
-       override the shipped default without touching the package.
-    3. the ``rules/`` directory inside the installed package.
 
-    (3) always exists in a normal install, so this returns ``None`` only for
-    an uninstalled source tree with no rules of its own.
+def default_rules_dirs() -> Tuple[str, ...]:
+    """Every directory that makes up the default judgment base, in order.
+
+    * ``$HARNESS_AUDIT_RULES`` -- obeyed exactly, and alone. An explicit
+      override is the operator saying "this is my policy"; merging the shipped
+      rules in would be a second, unrequested opinion. A path that is not a
+      directory raises, because a policy believed to be active must not be
+      silently replaced.
+    * ``./rules`` -- the project-local layer, if present.
+    * the ``rules/`` directory inside the installed package.
+
+    The returned tuple is the *precedence* order: earlier entries are the local
+    layer, the last entry is the shipped floor (when both are present). The
+    floor is loaded first and the local layer may only add to it or tighten it.
     """
     override = os.environ.get(RULES_DIR_ENV)
     if override:
@@ -169,13 +198,153 @@ def default_rules_dir() -> Optional[str]:
                     RULES_DIR_ENV, override
                 )
             )
-        return override
+        return (override,)
+    found: List[str] = []
     local = os.path.join(os.getcwd(), DEFAULT_RULES_DIRNAME)
     if os.path.isdir(local):
-        return local
+        found.append(local)
     if os.path.isdir(PACKAGE_RULES_DIR):
-        return PACKAGE_RULES_DIR
-    return None
+        # ``./rules`` can *be* the packaged directory when someone runs from
+        # inside the package; loading it twice would report every rule as a
+        # duplicate of itself.
+        if not any(
+            os.path.realpath(entry) == os.path.realpath(PACKAGE_RULES_DIR)
+            for entry in found
+        ):
+            found.append(PACKAGE_RULES_DIR)
+    return tuple(found)
+
+
+#: How much evidence each witness type demands. ``git_diff`` is the hardest to
+#: satisfy (it needs a baseline *and* a change set), then a content read, then
+#: the agent's own report. Used only to decide whether a local redefinition of a
+#: shipped rule is a tightening or a weakening.
+_WITNESS_STRENGTH = {"agent_report": 0, "file": 1, "git_diff": 2}
+
+
+def _strictness(rule: Rule) -> Tuple[int, int, int, int]:
+    """A partial order: bigger is stricter on every axis independently."""
+    return (
+        int(bool(rule.require_witness)),
+        _WITNESS_STRENGTH.get(rule.witness_type or "", 0),
+        int(rule.expectation is not None),
+        int(rule.risk_level == "high"),
+    )
+
+
+def _is_tightening(floor: Rule, candidate: Rule) -> bool:
+    """True when ``candidate`` demands at least as much as ``floor``, and more."""
+    floor_rank = _strictness(floor)
+    candidate_rank = _strictness(candidate)
+    return all(c >= f for f, c in zip(floor_rank, candidate_rank)) and (
+        candidate_rank != floor_rank
+    )
+
+
+def _as_path(value: Any, name: str) -> str:
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if isinstance(value, bytes):
+        value = value.decode()
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "{} must be a non-empty path, got {!r}".format(name, value)
+        )
+    return value
+
+
+def _normalise_rules_dirs(
+    rules_dir: Optional[Union[str, Sequence[str]]]
+) -> Tuple[str, ...]:
+    """Resolve the constructor argument into an ordered, de-duplicated tuple.
+
+    ``None`` means "the default layers". An explicit value means exactly those
+    directories: merging the shipped policy into an operator-named directory
+    would audit against a policy nobody asked for.
+    """
+    if rules_dir is None:
+        return default_rules_dirs()
+    if isinstance(rules_dir, (str, bytes, os.PathLike)):
+        candidates: Sequence[Any] = (rules_dir,)
+    else:
+        try:
+            candidates = tuple(rules_dir)
+        except TypeError:
+            raise TypeError(
+                "rules_dir must be a path or a sequence of paths, got {!r}".format(
+                    type(rules_dir).__name__
+                )
+            ) from None
+    resolved: List[str] = []
+    for candidate in candidates:
+        path = _as_path(candidate, "rules_dir entry")
+        if not os.path.isdir(path):
+            raise FileNotFoundError(
+                "judgment base directory not found: {}".format(path)
+            )
+        if not any(os.path.realpath(path) == os.path.realpath(seen) for seen in resolved):
+            resolved.append(path)
+    return tuple(resolved)
+
+
+def _merge_layers(
+    layers: Sequence[Tuple[str, Tuple[Rule, ...]]]
+) -> Tuple[Tuple[Rule, ...], Tuple[str, ...]]:
+    """Load the shipped floor, then let local layers add or tighten.
+
+    ``layers`` is in precedence order (local first, shipped last), so the last
+    entry is the floor. A local rule with a new ``rule_id`` is an addition. A
+    local rule that reuses a floor ``rule_id`` must be strictly stricter on
+    every axis, otherwise it would be a way to delete a guard while its name
+    stayed in the trace.
+    """
+    if not layers:
+        return (), ()
+    floor_dir, floor_rules = layers[-1]
+    merged: Dict[str, Rule] = {}
+    order: List[str] = []
+    for rule in floor_rules:
+        merged[rule.rule_id] = rule
+        order.append(rule.rule_id)
+
+    tightened: List[str] = []
+    for directory, rules in layers[:-1]:
+        for rule in rules:
+            existing = merged.get(rule.rule_id)
+            if existing is None:
+                merged[rule.rule_id] = rule
+                order.append(rule.rule_id)
+                continue
+            if not _is_tightening(existing, rule):
+                raise RuleError(
+                    "local rule {!r} in {} redefines shipped rule {!r} without "
+                    "being stricter; a local layer may add rules or tighten "
+                    "them, never weaken or duplicate them".format(
+                        rule.rule_id, directory, rule.rule_id
+                    )
+                )
+            merged[rule.rule_id] = rule
+            tightened.append(rule.rule_id)
+            _LOG.warning(
+                "local rule %r in %s tightens the shipped rule of the same "
+                "name; the stricter definition is live",
+                rule.rule_id,
+                directory,
+            )
+
+    shadowed = {
+        rule.rule_id for rule in floor_rules
+    } - set(merged)
+    if shadowed:
+        # Unreachable given the check above, kept as an explicit invariant: the
+        # whole point of the layer merge is that this set is empty.
+        raise RuleError(
+            "shipped rule(s) {} were shadowed by the local policy in {}; "
+            "refusing to run with a guard missing".format(
+                ", ".join(sorted(shadowed)), floor_dir
+            )
+        )
+    return tuple(merged[name] for name in order), tuple(tightened)
 
 
 def _require_str(rule: Mapping[str, Any], field: str, source: str) -> str:
@@ -272,25 +441,30 @@ def _normalise(raw: Any, source: str) -> Rule:
 
 
 class JudgmentBase:
-    """An immutable, in-memory set of rules loaded from a directory."""
+    """An immutable, in-memory set of rules loaded from one or more directories."""
 
-    def __init__(self, rules_dir: Optional[str] = None) -> None:
-        resolved = rules_dir if rules_dir is not None else default_rules_dir()
-        if rules_dir is not None and not os.path.isdir(resolved):
-            raise FileNotFoundError(
-                "judgment base directory not found: {}".format(resolved)
-            )
+    def __init__(
+        self, rules_dir: Optional[Union[str, Sequence[str]]] = None
+    ) -> None:
+        resolved = _normalise_rules_dirs(rules_dir)
+        self._rules_dirs: Tuple[str, ...] = resolved
+        self._rules_dir = resolved[0] if resolved else None
+        self._tightened_rule_ids: Tuple[str, ...] = ()
 
-        self._rules_dir = resolved
-        self._rules: Tuple[Rule, ...] = ()
-        if resolved is not None and os.path.isdir(resolved):
-            self._rules = self._load_directory(resolved)
-        else:
+        layers: List[Tuple[str, Tuple[Rule, ...]]] = [
+            (directory, self._load_directory(directory)) for directory in resolved
+        ]
+        if not layers:
             _LOG.warning(
                 "no judgment base found; the audit is running on the built-in "
                 "verdict lattice only (set $%s to load rules)",
                 RULES_DIR_ENV,
             )
+            self._rules: Tuple[Rule, ...] = ()
+        elif len(layers) == 1:
+            self._rules = layers[0][1]
+        else:
+            self._rules, self._tightened_rule_ids = _merge_layers(layers)
 
         by_tool: Dict[str, List[Rule]] = {}
         for rule in self._rules:
@@ -367,6 +541,16 @@ class JudgmentBase:
     @property
     def rules_dir(self) -> Optional[str]:
         return self._rules_dir
+
+    @property
+    def rules_dirs(self) -> Tuple[str, ...]:
+        """Every directory that was loaded, in precedence order."""
+        return self._rules_dirs
+
+    @property
+    def tightened_rule_ids(self) -> Tuple[str, ...]:
+        """Shipped rules a local layer redefined more strictly."""
+        return self._tightened_rule_ids
 
     @property
     def rules(self) -> Tuple[Rule, ...]:

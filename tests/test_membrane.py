@@ -196,6 +196,16 @@ class TestTamperedLogIsCaught(_MembraneCase):
         ledger = AppendOnlyLedger(os.path.join(self._dir.name, "absent.jsonl"))
         self.assertEqual(ledger.verify_chain()["status"], "INVALID")
 
+    def test_deep_nested_path_is_created(self):
+        # The directory must be made before the file is opened. The old order
+        # raised ENOENT on any path whose parents did not already exist, which
+        # is exactly the "first run on a fresh box" case.
+        path = os.path.join(self._dir.name, "x", "nested", "deep", "ledger.jsonl")
+        ledger = AppendOnlyLedger(path)
+        self.assertTrue(os.path.isfile(path))
+        ledger.append({"tool": "t", "verdict": "PASS"})
+        self.assertEqual(len(list(ledger.entries())), 1)
+
     def test_empty_legacy_ledger_is_invalid(self):
         ledger = AppendOnlyLedger(self.ledger_path)
         self.assertEqual(ledger.verify_chain()["status"], "INVALID")

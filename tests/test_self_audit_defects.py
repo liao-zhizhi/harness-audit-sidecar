@@ -15,9 +15,10 @@ import tempfile
 import unittest
 
 from audit_sidecar.git_witness import GitWitness, GitWitnessError
+from audit_sidecar.judgment_base import JudgmentBase, packaged_rules_dir
 from audit_sidecar.mcp_server import main as server_main
 from audit_sidecar.runner import SafeRunner
-from audit_sidecar.self_audit import run_self_audit
+from audit_sidecar.self_audit import _rule_fixtures, run_self_audit
 from audit_sidecar.verdict import Verdict
 
 HAS_GIT = shutil.which("git") is not None
@@ -191,6 +192,36 @@ class SelfAuditGateTest(unittest.TestCase):
 
     def test_missing_explicit_base_fails_the_gate(self) -> None:
         self.assertFalse(run_self_audit(os.path.join(self.root, "nope")))
+
+    def test_shadowing_local_policy_fails_the_gate(self) -> None:
+        # A working tree that ships ./rules must not be able to delete a
+        # shipped guard while the self-audit still reports health.
+        rules = os.path.join(self.root, "rules")
+        os.makedirs(rules)
+        with open(os.path.join(rules, "shadow.yaml"), "w", encoding="utf-8") as handle:
+            handle.write('rule_id: "no_file_drift"\ntarget_tool: "write_file"\n')
+        previous = os.getcwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
+        previous_env = os.environ.pop("HARNESS_AUDIT_RULES", None)
+        if previous_env is not None:
+            self.addCleanup(
+                os.environ.__setitem__, "HARNESS_AUDIT_RULES", previous_env
+            )
+        self.assertFalse(run_self_audit())
+
+    def test_rule_battery_covers_every_shipped_rule_id(self) -> None:
+        # The gate used to exercise only ``no_file_drift``; a rule added to the
+        # shipped base could therefore be loaded and never checked.
+        base = JudgmentBase(packaged_rules_dir())
+        covered = {
+            exercised
+            for _name, _tool, _case, _verdict, _expected, exercised in _rule_fixtures(
+                base.rules
+            )
+            if exercised is not None
+        }
+        self.assertEqual(covered, set(base.rule_ids))
 
 
 class ServerRefusesToStartTest(unittest.TestCase):

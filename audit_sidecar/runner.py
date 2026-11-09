@@ -127,6 +127,11 @@ class ExecutionResult:
     # Modification time of the primary witnessed path, in seconds since the
     # epoch. Set only by the innate tier, where mtime *is* the evidence.
     witness_mtime: Optional[float] = None
+    # Assertions the caller supplied that the collected witness could not
+    # evaluate. Empty in the normal case. A non-empty tuple means the verdict
+    # is about *less* than the caller asked for, and the trace says so instead
+    # of letting a weaker claim read as a full one.
+    dropped_assertions: Tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -300,9 +305,40 @@ class SafeRunner:
         git_witness: Optional[GitWitness] = None
         baseline: Optional[Dict[str, str]] = None
         if expected_paths is not None and not stat_scope:
-            git_witness = GitWitness(
-                repo_path if repo_path else cwd, timeout=effective_timeout
-            )
+            try:
+                git_witness = GitWitness(
+                    repo_path if repo_path else cwd, timeout=effective_timeout
+                )
+            except GitWitnessError as problem:
+                # An ordinary first run in a non-git directory used to raise out
+                # of ``run_shell``, taking the sidecar down with no record. "We
+                # did not look" is INVALID, not an exception, and the command
+                # must not run: without a baseline its effect cannot be
+                # separated from whatever dirt was already there.
+                _LOG.warning(
+                    "no independent witness: %s; recording INVALID rather "
+                    "than running an unauditable command",
+                    problem,
+                )
+                return ExecutionResult(
+                    intent=intent_desc,
+                    effect_observed=None,
+                    check_observed=(
+                        True if reported_success is None else reported_success
+                    ),
+                    verdict=Verdict.INVALID,
+                    command=command,
+                    cwd=os.path.abspath(cwd),
+                    reason=(
+                        "no independent witness: {}; refusing to claim PASS. "
+                        "Point repo_path at a git repository, or accept the "
+                        "plain lattice".format(problem)
+                    ),
+                    check_source=(
+                        "exit-status" if reported_success is None else "protocol"
+                    ),
+                    witness_scope=witness_scope,
+                )
             # Map the caller's paths (relative to cwd) into repo-root space
             # before comparing them with what git reports. Skipping this makes
             # a correct edit inside a subdirectory look like drift.

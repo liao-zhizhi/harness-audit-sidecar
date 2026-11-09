@@ -136,11 +136,14 @@ class AppendOnlyLedger:
         self._anchor_path = self._normalise(anchor_path, "anchor_path", required=False)
         self._fsync = bool(fsync)
         directory = os.path.dirname(self._path) or "."
+        # Create the directory *before* opening: otherwise a nested path fails
+        # with ENOENT even though the caller asked for it and the constructor
+        # is the only place that can create it.
+        os.makedirs(directory, exist_ok=True)
         # Create eagerly and empty if absent, so "no file" and "no entries" can
         # never be confused for one another later.
         with open(self._path, "a", encoding="utf-8"):
             pass
-        os.makedirs(directory, exist_ok=True)
 
     @staticmethod
     def _normalise(value: Any, name: str, *, required: bool) -> Optional[str]:

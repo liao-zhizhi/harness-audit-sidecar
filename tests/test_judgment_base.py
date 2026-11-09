@@ -16,6 +16,7 @@ from audit_sidecar.judgment_base import (
     JudgmentBase,
     RuleError,
     default_rules_dir,
+    default_rules_dirs,
     packaged_rules_dir,
 )
 
@@ -170,6 +171,103 @@ class TestDefaultResolution(JudgmentBaseTestCase):
         )
         with self.assertRaises(FileNotFoundError):
             default_rules_dir()
+
+
+class TestLayerMerging(JudgmentBaseTestCase):
+    """A local ``./rules`` may add rules or tighten shipped ones -- never remove one.
+
+    The defect this pins: ``default_rules_dir`` used to return the local
+    directory *instead of* the packaged one, so a working tree could ship a
+    "policy" that quietly deleted ``no_file_drift``/``append_landed`` while the
+    audit still looked configured.
+    """
+
+    def _in(self, directory):
+        previous = os.getcwd()
+        os.chdir(directory)
+        self.addCleanup(os.chdir, previous)
+        previous_env = os.environ.pop("HARNESS_AUDIT_RULES", None)
+        if previous_env is not None:
+            self.addCleanup(
+                os.environ.__setitem__, "HARNESS_AUDIT_RULES", previous_env
+            )
+
+    def test_default_rules_dirs_merges_local_and_packaged(self):
+        self.write_rule("rules/local.yaml", "rule_id: local_rule\ntarget_tool: t\n")
+        self._in(self.root)
+        dirs = default_rules_dirs()
+        self.assertEqual(len(dirs), 2)
+        self.assertEqual(dirs[0], os.path.join(self.root, "rules"))
+        self.assertEqual(
+            os.path.realpath(dirs[1]), os.path.realpath(packaged_rules_dir())
+        )
+
+    def test_local_addition_does_not_remove_packaged_rules(self):
+        self.write_rule(
+            "rules/unrelated.yaml",
+            "rule_id: unrelated\ntarget_tool: unrelated_tool\n",
+        )
+        self._in(self.root)
+        base = JudgmentBase()
+        self.assertIn("no_file_drift", base.rule_ids)
+        self.assertIn("append_landed", base.rule_ids)
+        self.assertEqual(
+            [r["rule_id"] for r in base.get_rules_for_tool("write_file")],
+            ["no_file_drift"],
+        )
+        self.assertEqual(
+            [r["rule_id"] for r in base.get_rules_for_tool("append_file")],
+            ["append_landed"],
+        )
+
+    def test_weaker_local_redefinition_is_rejected(self):
+        # The shadow: same rule_id, no requirements at all. Accepting it would
+        # erase the shipped guard while the id still looked present.
+        self.write_rule(
+            "rules/shadow.yaml",
+            'rule_id: "no_file_drift"\ntarget_tool: "write_file"\n',
+        )
+        self._in(self.root)
+        with self.assertRaises(RuleError) as caught:
+            JudgmentBase()
+        self.assertIn("no_file_drift", str(caught.exception))
+
+    def test_equal_local_redefinition_is_rejected(self):
+        # An identical copy adds nothing and makes the provenance of the live
+        # rule ambiguous, so it is refused rather than silently preferred.
+        self.write_rule(
+            "rules/copy.yaml",
+            'rule_id: "no_file_drift"\ntarget_tool: "write_file"\n'
+            'require_witness: true\nwitness_type: "git_diff"\n'
+            'expectation: "file_modified"\nrisk_level: "high"\n',
+        )
+        self._in(self.root)
+        with self.assertRaises(RuleError):
+            JudgmentBase()
+
+    def test_stricter_local_redefinition_is_allowed_and_recorded(self):
+        self.write_rule(
+            "rules/tight.yaml",
+            'rule_id: "append_landed"\ntarget_tool: "append_file"\n'
+            'require_witness: true\nwitness_type: "git_diff"\n'
+            'expectation: "file_modified"\nrisk_level: "high"\n',
+        )
+        self._in(self.root)
+        base = JudgmentBase()
+        self.assertIn("append_landed", base.tightened_rule_ids)
+        rule = base.get_rules_for_tool("append_file")[0]
+        self.assertTrue(rule["require_witness"])
+        self.assertEqual(rule["witness_type"], "git_diff")
+        self.assertEqual(rule["risk_level"], "high")
+
+    def test_single_explicit_directory_is_not_merged(self):
+        # An operator naming a directory means exactly that directory; merging
+        # the shipped policy in would be a second, unrequested opinion.
+        self.write_rule("one.yaml", "rule_id: only\ntarget_tool: t\n")
+        base = JudgmentBase(self.root)
+        self.assertEqual(base.rule_ids, ("only",))
+        self.assertEqual(base.rules_dirs, (self.root,))
+        self.assertEqual(base.tightened_rule_ids, ())
 
 
 class TestRejection(JudgmentBaseTestCase):

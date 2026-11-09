@@ -461,7 +461,10 @@ expectation: "file_modified"
         plain = tempfile.mkdtemp(prefix="harness-nogit-")
         self.addCleanup(shutil.rmtree, plain, True)
         proxy = MCPProxy(cwd=plain, runner=SafeRunner(timeout=20))
-        with self.assertLogs("audit_sidecar.mcp_proxy", level="WARNING"):
+        # The runner is where the missing change set is discovered (it owns the
+        # GitWitness), so the operator warning moved there when ``run_shell``
+        # stopped raising.
+        with self.assertLogs("audit_sidecar.runner", level="WARNING"):
             response = proxy.intercept_tool_call(
                 "write_file", {"path": "t.py", "content": "v"}, True
             )

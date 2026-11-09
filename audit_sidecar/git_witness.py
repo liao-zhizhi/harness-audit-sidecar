@@ -42,6 +42,7 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import subprocess
 from typing import Dict, List, Optional, Sequence
 
@@ -188,6 +189,19 @@ class GitWitness:
                     )
             if previous != state:
                 moved.append(path)
+        # A path that was dirty at the baseline and is no longer dirty vanished
+        # from ``current``. That is a change too: the world moved, back to the
+        # committed (or untracked-and-removed) state. Iterating only the current
+        # set would report "nothing changed" for a command that reverted drift.
+        vanished = baseline.keys() - current.keys()
+        for path in vanished:
+            previous = baseline.get(path)
+            if previous is not None and _is_unreadable(previous):
+                raise GitWitnessError(
+                    "cannot fingerprint {!r} in the baseline snapshot; an "
+                    "unreadable file is not evidence of a change".format(path)
+                )
+        moved.extend(vanished)
         return sorted(moved)
 
     def resolve_expected(
@@ -227,8 +241,23 @@ class GitWitness:
         absolute = os.path.join(self._root, path.replace("/", os.sep))
         if not os.path.lexists(absolute):
             return "{}:{}".format(status, _ABSENT)
-        if os.path.isdir(absolute):
+        # lstat, not open: a symlink or device is not a regular file, and
+        # opening one can block forever (``ln -s /dev/zero link``) or read an
+        # unbounded amount of data. Neither is evidence about this tree.
+        try:
+            info = os.lstat(absolute)
+        except OSError as problem:
+            _LOG.error(
+                "could not lstat %s: %s; treating the witness as unreadable "
+                "rather than changed", absolute, problem)
+            return "{}:{}".format(status, _UNREADABLE)
+        if stat.S_ISDIR(info.st_mode):
             return "{}:dir".format(status)
+        if not stat.S_ISREG(info.st_mode):
+            _LOG.warning(
+                "%s is not a regular file (mode %o); treating the witness as "
+                "unreadable rather than opening it", absolute, info.st_mode)
+            return "{}:{}".format(status, _UNREADABLE)
         digest = hashlib.sha256()
         try:
             with open(absolute, "rb") as handle:

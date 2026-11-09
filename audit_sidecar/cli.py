@@ -516,13 +516,15 @@ def _print_judgment_base_demo() -> None:
         return
 
     try:
-        base = JudgmentBase(rules_dir)
+        # ``JudgmentBase()`` merges the local ``./rules`` layer with the
+        # shipped base; naming one directory would re-open the shadowing hole.
+        base = JudgmentBase()
     except (RuleError, FileNotFoundError) as problem:
         print("    skipped: judgment base could not be loaded ({})".format(problem))
         print()
         return
 
-    print("    rules dir : {}".format(rules_dir))
+    print("    rules dir : {}".format(", ".join(base.rules_dirs) or rules_dir))
     print("    loaded    : {}".format(", ".join(base.rule_ids) or "(none)"))
     print()
     print("    {:<30} {:<9} {:<12} {}".format("case", "lattice", "with rules", "rule"))

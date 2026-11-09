@@ -412,8 +412,13 @@ the loader refuses to ignore a guard it does not understand
 # Active on install: bundled default rules load automatically, no --rules needed
 harness-audit-server --cwd /path/to/repo
 
-# Project-specific policy: place it under ./rules; it takes priority over bundled defaults
-harness-audit-server --cwd /path/to/repo --rules ./rules
+# Project-specific policy: put .yaml files under ./rules and omit --rules;
+# the local layer is merged over the bundled defaults -- it may add rules or
+# tighten a shipped one, never delete one
+harness-audit-server --cwd /path/to/repo
+
+# An explicit policy directory: loaded alone, exactly as named
+harness-audit-server --cwd /path/to/repo --rules ./my-policy
 
 # Explicitly require "four-valued grid only", rather than accidentally finding no rules
 harness-audit-server --cwd /path/to/repo --rules none
@@ -768,8 +773,10 @@ harness-audit-server --cwd /path/to/project
 It is active on install: `write_file` must have both a file witness and a git change set, or
 the verdict is `INVALID`. A second bundled rule, `append_landed` (`risk_level: low`),
 demonstrates innate immunity: appends are checked for existence + mtime only. To use your own
-policy, put `.yaml` files under `rules/` in the working directory, or point
-`$HARNESS_AUDIT_RULES` at any directory; either overrides the bundled defaults.
+policy, put `.yaml` files under `rules/` in the working directory -- they are **merged over** the
+bundled defaults, so a local rule can add a check or tighten a shipped one but cannot delete one
+(a weaker or merely identical redefinition is rejected) -- or point `$HARNESS_AUDIT_RULES` at a
+directory, which is used **alone**.
 
 > When run inside a **non-git directory**, the git witness cannot be collected and the verdict
 > is `INVALID` (with the reason stated), not a crash — "did not look" is not "looked and
@@ -1630,12 +1637,14 @@ Coverage:
   enter the trace. Before sharing an audit log, check yourself:
   `grep -cE '/tmp/|/home/' audit_trace.jsonl`.
 - **The rule layer is opt-in.** `MCPProxy` without `rules_dir` is the pure four-valued grid; only
-  the server auto-detects `./rules`. Providing no rules does not silently change the verdicts of
-  existing calls.
+  the server auto-detects and merges `./rules`. Providing no rules does not silently change the
+  verdicts of existing calls.
 - **`rules/` ships with the package (since v0.6.1).** Default rules live in `audit_sidecar/rules/`
   and are packed into the wheel as package data, so **no configuration is needed** after
-  `pip install`. Resolution order is `$HARNESS_AUDIT_RULES` → `./rules` in the current directory →
-  bundled `rules/`, the first two overriding the defaults. `$HARNESS_AUDIT_RULES` pointing at a
+  `pip install`. Resolution order is `$HARNESS_AUDIT_RULES` (used alone) → `./rules` **merged over**
+  bundled `rules/`, which is the floor: a local rule may add a check or tighten a shipped rule,
+  but a weaker or identical redefinition is a load error, so a local directory cannot delete a
+  shipped guard. `$HARNESS_AUDIT_RULES` pointing at a
   nonexistent directory **raises an error** rather than quietly falling back, since otherwise the
   operator would believe their rules were running.
 - **Rules cover only `write_file` and `append_file`.** Two ship with the package: `no_file_drift`

@@ -40,7 +40,13 @@ from .drift import DriftReport, analyze_chronic_drift
 from .citation_witness import CitationWitness
 from .git_witness import GitWitness, GitWitnessError
 from .immune_state import ImmuneState, select_tier
-from .judgment_base import JudgmentBase, RuleError, default_rules_dir, packaged_rules_dir
+from .judgment_base import (
+    JudgmentBase,
+    RuleError,
+    default_rules_dir,
+    default_rules_dirs,
+    packaged_rules_dir,
+)
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .rule_engine import RuleDecision, RuleEngine
 from .runner import ExecutionResult, SafeRunner
@@ -75,6 +81,7 @@ __all__ = [
     "analyze_chronic_drift",
     "mutation_kind",
     "default_rules_dir",
+    "default_rules_dirs",
     "new_trace_id",
     "packaged_rules_dir",
     "propagation_capability",

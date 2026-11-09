@@ -190,6 +190,42 @@ class SnapshotTest(GitRepositoryTestCase):
         self.write("new.py", "")
         self.assertEqual(witness.changed_since(baseline), ["new.py"])
 
+    def test_changed_since_reports_a_path_that_stopped_being_dirty(self) -> None:
+        # A file dirty at the baseline and reverted before the second snapshot
+        # *is* a change: the world moved, back to the committed state. Walking
+        # only the current dirty set cannot see that, which let a command undo
+        # pre-existing drift and still be reported as "nothing changed".
+        self.write("target.py", "value = 1\n")
+        witness = GitWitness(self.root)
+        baseline = witness.snapshot()
+        self.assertEqual(baseline["target.py"].split(":", 1)[0], " M")
+        self.git("checkout", "--", "target.py")
+        self.assertEqual(witness.changed_since(baseline), ["target.py"])
+
+    def test_snapshot_does_not_hang_on_a_symlink_to_an_endless_device(self) -> None:
+        # fingerprinting opened the path; a symlink to /dev/zero made that read
+        # unbounded. lstat first: a non-regular file is not evidence.
+        import threading
+
+        os.symlink("/dev/zero", self.path("zero_link"))
+        witness = GitWitness(self.root)
+        box = {}
+
+        def run() -> None:
+            box["fingerprint"] = witness.snapshot()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(10)
+        self.assertFalse(
+            thread.is_alive(), "snapshot() blocked reading a symlink target"
+        )
+        self.assertIn("zero_link", box["fingerprint"])
+        self.assertTrue(
+            box["fingerprint"]["zero_link"].endswith("__unreadable__"),
+            box["fingerprint"]["zero_link"],
+        )
+
     def test_snapshot_rejects_non_dict(self) -> None:
         witness = GitWitness(self.root)
         with self.assertRaises(TypeError):
@@ -349,16 +385,21 @@ class RunnerGitWitnessTest(GitRepositoryTestCase):
         self.assertFalse(result.check_observed)
         self.assertIs(result.verdict, Verdict.FAIL)
 
-    def test_not_a_repo_raises(self) -> None:
+    def test_not_a_repo_is_invalid_not_an_exception(self) -> None:
+        # A first run in a scratch directory is ordinary. Raising took the
+        # sidecar down with no record; "we did not look" is INVALID, and the
+        # call still has to appear in the audit log.
         with tempfile.TemporaryDirectory() as plain:
-            with self.assertRaises(GitWitnessError):
-                self.runner.run_shell(
-                    "true",
-                    cwd=plain,
-                    intent_desc="edit something",
-                    expected_files_modified=["x.py"],
-                )
-            # The argument error must surface before any command runs.
+            result = self.runner.run_shell(
+                "true",
+                cwd=plain,
+                intent_desc="edit something",
+                expected_files_modified=["x.py"],
+            )
+            self.assertIs(result.verdict, Verdict.INVALID)
+            self.assertIsNone(result.effect_observed)
+            self.assertIn("no independent witness", result.reason)
+            # The baseline could not be captured, so the command must not run.
             self.assertEqual(os.listdir(plain), [])
 
     def test_bare_string_expected_is_rejected(self) -> None:

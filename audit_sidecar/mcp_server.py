@@ -45,11 +45,11 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, Iterable, List, Optional, TextIO
+from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
 from . import __version__
 from .immune_state import STATE_FILENAME
-from .judgment_base import RuleError, default_rules_dir
+from .judgment_base import RuleError, default_rules_dir, default_rules_dirs
 from .mcp_proxy import MCPProxy, UnknownToolError
 from .runner import SafeRunner
 from .self_audit import run_self_audit
@@ -199,6 +199,8 @@ def _trace_record(
         "tier": result.tier,
         "witness_scope": result.witness_scope,
         "witness_mtime": result.witness_mtime,
+        # A weaker verdict than the caller asked for must say so in the trace.
+        "dropped_assertions": list(result.dropped_assertions),
         "immune_state": immune_state,
     }
 
@@ -654,15 +656,19 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _resolve_rules_dir(option: Optional[str]) -> Optional[str]:
-    """Turn the ``--rules`` value into a directory to load, or ``None``.
+def _resolve_rules_dir(
+    option: Optional[str],
+) -> Optional[Union[str, Tuple[str, ...]]]:
+    """Turn the ``--rules`` value into the layer(s) to load, or ``None``.
 
-    ``"none"`` (case-insensitive) disables the judgment base explicitly, which
-    is different from auto-detection finding nothing: the operator asked for
-    the plain lattice rather than getting it by accident.
+    Without ``--rules`` the *default layers* are returned: a local ``./rules``
+    merged over the shipped base, never one instead of the other. ``"none"``
+    (case-insensitive) disables the judgment base explicitly, which is
+    different from auto-detection finding nothing: the operator asked for the
+    plain lattice rather than getting it by accident.
     """
     if option is None:
-        return default_rules_dir()
+        return default_rules_dirs() or None
     if option.strip().lower() in ("none", ""):
         return None
     return option
