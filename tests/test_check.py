@@ -655,5 +655,55 @@ class InterfaceDocumentationTests(unittest.TestCase):
         self.assertIn("not a claim that this check ran through a sidecar", doc)
 
 
+class ReleaseChecklistTests(unittest.TestCase):
+    """The prefix table in the checklist is coupled to the constants.
+
+    A rename in ``check.py`` goes green in every other test (the sentence and
+    the classifier read the same constant), so nothing else in this repo can
+    detect it. This class is the forcing function: it fails until the author
+    has updated ``RELEASE_CHECKLIST.md``, which is where the "renaming a prefix
+    is a breaking change" rule lives.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(__file__).resolve().parent.parent
+        raw = (cls.root / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+        cls.checklist = " ".join(raw.split())
+
+    def test_every_contract_prefix_is_listed_verbatim(self):
+        import audit_sidecar.check as check_mod
+
+        for prefix in (
+            check_mod.SELF_AUDIT_REASON_PREFIX,
+            check_mod.MALFORMED_REASON_PREFIX,
+            check_mod.NO_DECLARATION_REASON_PREFIX,
+        ):
+            self.assertIn(
+                "`{}`".format(prefix),
+                self.checklist,
+                "prefix {!r} is a wire contract but is not in "
+                "RELEASE_CHECKLIST.md".format(prefix),
+            )
+
+    def test_the_rename_rule_is_stated_as_breaking(self):
+        self.assertIn("is a breaking change, not a copy edit", self.checklist)
+        self.assertIn("never ship a prefix rename in a patch or minor", self.checklist)
+
+    def test_the_deferred_fourth_output_is_recorded_not_added(self):
+        # The Action deliberately publishes three outputs. Recording the
+        # decision keeps a future release from adding one as a "small win"
+        # without noticing it is a second contract.
+        self.assertIn(
+            "Action does not expose `failure_kind` as a fourth output",
+            self.checklist,
+        )
+        self.assertIn("derive it from `CheckOutcome.failure_kind`", self.checklist)
+        action = (self.root / "action.yml").read_text(encoding="utf-8")
+        for name in ("verdict:", "reason:", "exit_code:"):
+            self.assertIn(name, action)
+        self.assertNotIn("failure_kind:", action)
+
+
 if __name__ == "__main__":
     unittest.main()
