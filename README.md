@@ -1033,7 +1033,7 @@ will see it" are different facts, and only the second one makes `@alias` work.
 
 `--upload` is off by default. When set, the verdict is POSTed to the public
 dashboard's `/api/v1/check/report` (base URL from `--upload-url` or
-`HARNESS_AUDIT_UPLOAD_URL`; default `https://demo.silicon-probe.com`).
+`HARNESS_AUDIT_UPLOAD_URL`; default `https://audit.silicon-probe.com`).
 
 ```bash
 harness-audit check --file src/main.py --upload
@@ -1052,14 +1052,15 @@ be a gate that reports on the display, not on the claim.
 somebody else's host and a 404 would otherwise read as a successful upload:
 
 ```
-upload: posting to public dashboard https://demo.silicon-probe.com (redacted payload)
+upload: posting to public dashboard https://audit.silicon-probe.com (redacted payload)
 upload: recorded (FAIL)
 ```
 
-and when nothing is deployed there:
+and when nothing is deployed there (or the host is still the demo build, whose
+tunnel points at a container that predates this route):
 
 ```
-upload failed: https://demo.silicon-probe.com does not expose /api/v1/check/report.
+upload failed: https://audit.silicon-probe.com does not expose /api/v1/check/report.
 Either deploy the latest product_mvp to that host, or pass --upload-url <your-instance>.
 ```
 

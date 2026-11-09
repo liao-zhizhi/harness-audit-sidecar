@@ -168,12 +168,12 @@ class UploadTransportTests(unittest.TestCase):
         # A localhost default only works on the author's machine; the deployed
         # host is the one an install actually has a chance of reaching.
         self.assertEqual(
-            report.DEFAULT_BASE_URL, "https://demo.silicon-probe.com"
+            report.DEFAULT_BASE_URL, "https://audit.silicon-probe.com"
         )
         with mock.patch.dict(os.environ, {report.UPLOAD_URL_ENV: ""}):
             self.assertEqual(
                 report.resolve_url(),
-                "https://demo.silicon-probe.com/api/v1/check/report",
+                "https://audit.silicon-probe.com/api/v1/check/report",
             )
 
     def test_the_environment_overrides_the_public_default(self):
@@ -276,14 +276,27 @@ class ProbeTests(unittest.TestCase):
 
     def test_the_missing_route_message_is_the_two_line_remediation(self):
         message = report.failure_message(
-            "https://demo.silicon-probe.com", self._probe((404, ""))
+            "https://audit.silicon-probe.com", self._probe((404, ""))
         )
         self.assertEqual(
             message,
-            "upload failed: https://demo.silicon-probe.com does not expose "
+            "upload failed: https://audit.silicon-probe.com does not expose "
             "/api/v1/check/report.\n"
             "Either deploy the latest product_mvp to that host, or pass "
             "--upload-url <your-instance>.",
+        )
+
+    def test_the_two_upload_paths_agree_on_the_default_host(self):
+        # The verdict POST and the usage aggregate are two requests to one
+        # deployment. Two defaults that drift would send half the traffic to a
+        # host nobody deployed -- silently, because both calls swallow errors.
+        self.assertEqual(report.DEFAULT_BASE_URL, usage.DEFAULT_BASE_URL)
+        self.assertEqual(
+            report.PUBLIC_DASHBOARD, "https://audit.silicon-probe.com"
+        )
+        self.assertEqual(
+            usage.resolve_url(),
+            "https://audit.silicon-probe.com/api/v1/usage/report",
         )
 
     def test_the_probe_is_cached_per_host(self):
@@ -300,14 +313,14 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(calls, ["https://dash.example/api/v1/check/report"])
 
     def test_the_announcement_names_the_public_dashboard_once(self):
-        first = report.announcement("https://demo.silicon-probe.com")
+        first = report.announcement("https://audit.silicon-probe.com")
         self.assertEqual(
             first,
-            "upload: posting to public dashboard https://demo.silicon-probe.com "
+            "upload: posting to public dashboard https://audit.silicon-probe.com "
             "(redacted payload)",
         )
         # Once per process: the second POST is not a second surprise.
-        self.assertIsNone(report.announcement("https://demo.silicon-probe.com"))
+        self.assertIsNone(report.announcement("https://audit.silicon-probe.com"))
 
     def test_a_private_host_is_not_called_public(self):
         line = report.announcement("https://mine.example")
@@ -376,7 +389,7 @@ class CliUploadTests(unittest.TestCase):
             _code, _out, err = self._run(["--diff", "--cwd", self.cwd, "--upload"])
 
         self.assertIn(
-            "upload: posting to public dashboard https://demo.silicon-probe.com "
+            "upload: posting to public dashboard https://audit.silicon-probe.com "
             "(redacted payload)",
             err,
         )
@@ -387,7 +400,7 @@ class CliUploadTests(unittest.TestCase):
             usage, "upload_aggregate"
         ) as aggregate:
             code, out, err = self._run(
-                ["--diff", "--cwd", self.cwd, "--upload", "--upload-url", "https://demo.silicon-probe.com"]
+                ["--diff", "--cwd", self.cwd, "--upload", "--upload-url", "https://audit.silicon-probe.com"]
             )
 
         # The verdict is local, so it is unchanged; the *absence* of an upload
@@ -395,7 +408,7 @@ class CliUploadTests(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(out.splitlines()[0], "INVALID")
         self.assertIn(
-            "upload failed: https://demo.silicon-probe.com does not expose "
+            "upload failed: https://audit.silicon-probe.com does not expose "
             "/api/v1/check/report.",
             err,
         )

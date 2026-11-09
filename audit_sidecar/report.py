@@ -42,11 +42,17 @@ from typing import Any, Dict, Optional, Tuple
 
 from .check import CheckOutcome
 
-#: Where ``--upload`` posts by default: the deployed public dashboard. Local
+#: Where ``--upload`` posts by default: the deployed product dashboard. Local
 #: development is the *explicit* case (``--upload-url http://127.0.0.1:8000``)
 #: rather than the default, because a default that only works on the author's
 #: machine is a default that fails for everyone who installs the package.
-PUBLIC_DASHBOARD = "https://demo.silicon-probe.com"
+#:
+#: This is the product host, not the demo host, and the distinction is load
+#: bearing: the demo's tunnel points at a build that predates
+#: /api/v1/check/report, so a default aimed there would answer every first
+#: upload with "does not expose the route". See DEPLOY_PRODUCT.md in the
+#: product repository for the deployment that makes this name true.
+PUBLIC_DASHBOARD = "https://audit.silicon-probe.com"
 DEFAULT_BASE_URL = PUBLIC_DASHBOARD
 REPORT_PATH = "/api/v1/check/report"
 

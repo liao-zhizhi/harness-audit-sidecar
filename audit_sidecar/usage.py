@@ -94,7 +94,7 @@ _TAIL_LINES = 400
 #: the public dashboard for the same reason it is in ``report.py``: a local
 #: default would fail for every install that is not the author's.
 AGGREGATE_PATH = "/api/v1/usage/report"
-DEFAULT_BASE_URL = "https://demo.silicon-probe.com"
+DEFAULT_BASE_URL = "https://audit.silicon-probe.com"
 UPLOAD_URL_ENV = "HARNESS_AUDIT_UPLOAD_URL"
 API_KEY_ENV = "HARNESS_AUDIT_API_KEY"
 API_KEY_HEADER = "X-API-Key"
