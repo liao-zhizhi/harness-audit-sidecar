@@ -335,6 +335,51 @@ class RemoteNormalisationTests(unittest.TestCase):
             self.assertEqual(observer._normalise_remote(url), "org/repo", url)
 
 
+class FieldNoteTests(unittest.TestCase):
+    """The misleading field names must explain themselves inside the archive.
+
+    The first batch is written with `--json` and read later, so a warning that
+    only lives on stderr or in the checklist is invisible at the moment of
+    misreading. These notes travel in the file.
+    """
+
+    def test_the_notes_are_in_the_json_and_name_the_trap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ci.yml"
+            path.write_text(VERDICT_ONLY, encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(_SCRIPT), str(path), "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            payload = json.loads(completed.stdout)
+            notes = payload["field_notes"]
+            self.assertIn("action_refs", notes)
+            self.assertIn("does not mean the file has no `uses:` line", notes["action_refs"])
+            self.assertIn("[]", notes["action_refs"])
+
+    def test_every_note_keys_a_real_field(self):
+        # A renamed field must not leave a note pointing at nothing, which
+        # would read as documentation for a field that no longer exists.
+        report = observer._classify(VERDICT_ONLY)
+        report.update(observer._attribution(VERDICT_ONLY))
+        report["signature"] = observer._signature(VERDICT_ONLY)
+        report["path"] = "x.yml"
+        report.update(
+            {"repo": "o/r", "source": "test", "class": report["class"]}
+        )
+        for field in observer.FIELD_NOTES:
+            self.assertIn(field, report, field)
+
+    def test_the_unattributed_bucket_is_explained_where_it_is_read(self):
+        # `uses_this_action: false` is the filter the manual-read protocol
+        # starts from, so its note has to mention that the bucket is mixed.
+        note = observer.FIELD_NOTES["uses_this_action"]
+        self.assertIn("wrapper", note)
+        self.assertIn("read those rows by hand", note)
+
+
 class CommandLineTests(unittest.TestCase):
     def _run(self, *args):
         return subprocess.run(

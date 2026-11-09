@@ -169,6 +169,12 @@ protocol above), `class`, `conditioned`, `prefixes`, and `signature`. A repo
 is reported as `unknown` rather than guessed from a directory name — inventing
 an owner would manufacture the independence the count exists to measure.
 
+The archive also carries `field_notes`: a top-level map of the field names whose
+meaning is narrower than the name suggests, written *into the file* because the
+first batch is archived before anyone reads it and a warning on stderr does not
+survive to the person who opens `batch1.json` next month. Read it before
+filtering on `uses_this_action` or `action_refs`.
+
 Scope: a directory target is scanned for `.github/workflows` only, because that
 is the only place GitHub runs a workflow and everything else found in a tree
 (rule files, lockfiles, vendored docs) would report `NOT THIS ACTION` and bury

@@ -759,6 +759,23 @@ class ReleaseChecklistTests(unittest.TestCase):
         )
         self.assertIn("only refs that *match* this Action", self.checklist)
 
+    def test_the_notes_travel_inside_the_archive(self):
+        # The trap is documented in the checklist and carried in the JSON. The
+        # second half matters because the first batch is archived before
+        # anyone reads it: a note that only lives in a document does not reach
+        # the person who opens batch1.json.
+        self.assertIn("`field_notes`", self.checklist)
+        self.assertIn("a warning on stderr does not", self.checklist)
+        self.assertIn("Read it before", self.checklist)
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "observe_branches_doc", self.root / "scripts" / "observe_branches.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertIn("action_refs", module.FIELD_NOTES)
+
     def test_a_wrapper_heuristic_is_refused_in_writing(self):
         # The tempting shortcut: guess "looks like a wrapper" from the name and
         # count it. That would put invented rows on an axis.

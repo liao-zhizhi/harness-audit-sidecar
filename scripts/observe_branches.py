@@ -94,6 +94,32 @@ _USE = re.compile(r"uses:\s*['\"]?([^\s'\"#]+)")
 #: separate axis from classification, never folded into it.
 ACTION_MARKER = "harness-audit"
 
+#: Names in the JSON whose meaning is narrower than the name suggests. These
+#: travel **inside** the archive: the first batch is written with `--json`
+#: before anyone reads it, and a warning on stderr does not survive into the
+#: file a later reviewer opens. Keyed by real field name so a rename cannot
+#: leave a note pointing at nothing (the tests check every key exists in a row).
+FIELD_NOTES: Dict[str, str] = {
+    "action_refs": (
+        "refs that MATCH this Action only. [] does not mean the file has no "
+        "`uses:` line -- it means none of its refs name this Action. Open the "
+        "file to see the others."
+    ),
+    "action_versions": (
+        "versions of this Action only, same scope as action_refs; it is not a "
+        "list of every pinned version in the workflow."
+    ),
+    "repo": (
+        "'unknown' means ownership could not be read from git (a harvested "
+        "folder is not a repo), not that the file is unused."
+    ),
+    "uses_this_action": (
+        "false covers both 'a different action' and 'a wrapper calling this "
+        "one'; the survey does not resolve wrappers, so read those rows by "
+        "hand (see RELEASE_CHECKLIST.md)."
+    ),
+}
+
 
 def _attribution(text: str) -> Dict[str, Any]:
     """Which action refs this file uses, and whether ours is among them."""
@@ -407,7 +433,18 @@ def main(argv: List[str]) -> int:
     summary = _summarise(reports)
 
     if options.json:
-        print(json.dumps({"summary": summary, "files": reports}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "summary": summary,
+                    # Travels with the archive: a note on stderr does not.
+                    "field_notes": FIELD_NOTES,
+                    "files": reports,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
 
     width = max((len(r["class"]) for r in reports), default=10)
