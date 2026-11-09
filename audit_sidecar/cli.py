@@ -14,10 +14,21 @@ Two things live here:
     known-answer fixtures, then walks through the four verdicts, the trust
     balance, and the witness collector so they can be inspected by eye.
 
+``harness-audit check``
+    The one-line interface: one declaration (``--file``, ``--command`` or
+    ``--diff``), the witness collected here, three lines out. Internal fields
+    are wrapped, not deleted: ``--verbose`` / ``--json`` expand them.
+
+``harness-audit baseline``
+    Record the current working tree so a later ``--file`` / ``--diff`` check
+    can answer "changed", not merely "exists" / "non-empty".
+
 Run with::
 
     python -m audit_sidecar.cli            # demo
     python -m audit_sidecar.cli init       # print MCP stanza + write ref_roots
+    python -m audit_sidecar.cli baseline   # record the working tree
+    python -m audit_sidecar.cli check --file src/main.py
 """
 
 from __future__ import annotations
@@ -33,6 +44,15 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import baseline as baseline_mod
+from .check import (
+    CheckOutcome,
+    NEXT_STEP_BASELINE_DIFF,
+    NEXT_STEP_BASELINE_FILE,
+    check_command,
+    check_diff,
+    check_file,
+)
 from .confidence import ConfidenceAccount
 from .judgment_base import JudgmentBase, RuleError, default_rules_dir
 from .mcp_proxy import MCPProxy
@@ -44,6 +64,11 @@ from .verdict import Verdict, VerdictEngine
 __all__ = ["main", "run_init", "resolve_git_root"]
 
 SELF_AUDIT_FAILED_MESSAGE = "Self-audit failed, tool is a decoration."
+
+#: ``check`` still refuses when the gate is closed, but it says so as a
+#: verdict: the first line of its output is always one of the four values, so a
+#: caller (and the Action's output parser) never has to special-case prose.
+CHECK_SELF_AUDIT_REASON = "self-audit failed, so no declaration was judged"
 
 #: Where the case library looks for the alias map. ``case_store`` in the product
 #: repo reads exactly this path, so writing anywhere else would produce a file
@@ -752,24 +777,296 @@ def run_init(argv: List[str]) -> int:
     return 0
 
 
+#: Process exit codes. A verdict is data, so the code has to distinguish
+#: "judged and failed" from "could not judge"; otherwise CI treats a missing
+#: witness as a bug in the code under test. ``2`` is argparse's usage error.
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_USAGE = 2
+EXIT_INVALID = 3
+EXIT_NOT_RUN = 4
+
+_VERDICT_EXIT = {
+    Verdict.PASS: EXIT_PASS,
+    Verdict.FAIL: EXIT_FAIL,
+    Verdict.INVALID: EXIT_INVALID,
+    Verdict.NOT_RUN: EXIT_NOT_RUN,
+}
+
+
+def _parse_check_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="harness-audit check",
+        description=(
+            "Judge one declaration. The witness is collected here, so the "
+            "caller supplies no witness_type, producer or topology."
+        ),
+    )
+    declaration = parser.add_mutually_exclusive_group()
+    declaration.add_argument(
+        "--file", metavar="PATH", help="claim: this file changed"
+    )
+    declaration.add_argument(
+        "--command", metavar="CMD", help="claim: this command succeeded"
+    )
+    declaration.add_argument(
+        "--diff", action="store_true", help="claim: the working tree changed"
+    )
+    parser.add_argument(
+        "--cwd", default=os.getcwd(), help="directory to judge (default: current)"
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=30.0, help="seconds (default: 30)"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="show tier, dropped_assertions, cap_fired, renegotiation_class",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable trace")
+    return parser.parse_args(argv)
+
+
+def _format_check(outcome: CheckOutcome, *, verbose: bool) -> List[str]:
+    """The three-line answer, plus the trace only when asked for.
+
+    Default output deliberately contains no field name from the internal
+    vocabulary. If a reader needs ``tier`` to understand the answer, the answer
+    is not the product.
+    """
+    lines = [outcome.verdict.value, "reason: {}".format(outcome.reason)]
+    if outcome.verdict is not Verdict.PASS and outcome.next_step:
+        lines.append("next_step: {}".format(outcome.next_step))
+    if not verbose:
+        return lines
+
+    def show(name: str, value: Any) -> str:
+        if isinstance(value, (list, tuple)):
+            rendered = ", ".join(str(item) for item in value) or "(none)"
+        elif isinstance(value, dict):
+            rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        elif value is None:
+            rendered = "(none)"
+        else:
+            rendered = str(value)
+        return "{:<20}: {}".format(name, rendered)
+
+    lines.extend(
+        [
+            "",
+            show("declaration", outcome.declaration),
+            show("witness_type", outcome.witness_type),
+            show("witness_scope", outcome.witness_scope),
+            show("producer", outcome.producer),
+            show("topology", outcome.topology),
+            show("tier", outcome.tier),
+            show("dropped_assertions", outcome.dropped_assertions),
+            show("cap_fired", outcome.cap_fired),
+            show("renegotiation_class", outcome.renegotiation_class),
+            show("evidence", dict(outcome.evidence)),
+        ]
+    )
+    return lines
+
+
+def _emit_check(outcome: CheckOutcome, *, verbose: bool, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(outcome.to_dict(), indent=2, ensure_ascii=False))
+        return
+    for line in _format_check(outcome, verbose=verbose):
+        print(line)
+
+
+def run_check(argv: List[str]) -> int:
+    """Judge one declaration. Returns a process exit code.
+
+    A declaration the tool cannot ground is ``INVALID`` with a ``next_step``,
+    never a guess. ``--file`` and ``--diff`` need a recording because "changed"
+    is a comparison; without one they can only answer "exists" or "non-empty",
+    which is not the question that was asked.
+    """
+    options = _parse_check_args(argv)
+
+    if options.file is None and options.command is None and not options.diff:
+        outcome = CheckOutcome(
+            verdict=Verdict.INVALID,
+            reason="no declaration given, so there is nothing to judge",
+            next_step=(
+                'pass exactly one of --file <path>, --command "<cmd>" or --diff'
+            ),
+            declaration="(none)",
+            witness_type="none",
+        )
+        _emit_check(outcome, verbose=options.verbose, as_json=options.json)
+        return _VERDICT_EXIT[outcome.verdict]
+
+    cwd = os.path.abspath(options.cwd)
+    if not os.path.isdir(cwd):
+        print("check: directory does not exist: {}".format(cwd), file=sys.stderr)
+        return EXIT_USAGE
+    if not run_self_audit():
+        # The gate is closed, so nothing is judged. Reported as INVALID rather
+        # than a bare message: the first line of `check` is always a verdict,
+        # which is what lets a CI step parse it without knowing the prose.
+        outcome = CheckOutcome(
+            verdict=Verdict.INVALID,
+            reason=CHECK_SELF_AUDIT_REASON,
+            next_step=(
+                "run `harness-audit` (the demo) to see which fixture failed, "
+                "then re-run this check"
+            ),
+            declaration="(gate closed)",
+            witness_type="none",
+        )
+        _emit_check(outcome, verbose=options.verbose, as_json=options.json)
+        return EXIT_INVALID
+
+    if options.file is not None:
+        try:
+            outcome = check_file(options.file, cwd=cwd, timeout=options.timeout)
+        except ValueError as problem:
+            outcome = _malformed_declaration(options.file, problem)
+    elif options.command is not None:
+        try:
+            outcome = check_command(options.command, cwd=cwd, timeout=options.timeout)
+        except ValueError as problem:
+            outcome = _malformed_declaration(options.command, problem)
+    else:
+        try:
+            outcome = check_diff(cwd=cwd, timeout=options.timeout)
+        except ValueError as problem:
+            outcome = _malformed_declaration("diff", problem)
+
+    _emit_check(outcome, verbose=options.verbose, as_json=options.json)
+    return _VERDICT_EXIT[outcome.verdict]
+
+
+def _malformed_declaration(declaration: str, problem: Exception) -> CheckOutcome:
+    """A declaration the tool cannot read is INVALID, not a traceback.
+
+    argparse accepts ``--file ""``; the check helper rejects it. Letting the
+    ValueError escape would turn a usage mistake into a stack trace, which
+    reads like a bug in the auditor rather than in the invocation.
+    """
+    return CheckOutcome(
+        verdict=Verdict.INVALID,
+        reason="declaration malformed: {}".format(problem),
+        next_step=(
+            'pass a non-empty declaration: --file <path>, --command "<cmd>" or --diff'
+        ),
+        declaration=declaration,
+        witness_type="none",
+    )
+
+
+def _parse_baseline_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="harness-audit baseline",
+        description=(
+            "Record the working tree so a later --file / --diff check can say "
+            "'changed' instead of 'exists'."
+        ),
+    )
+    parser.add_argument(
+        "--cwd", default=os.getcwd(), help="directory to record (default: current)"
+    )
+    parser.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="also record a content digest for PATH (repeatable)",
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="write ./.harness-baseline.json instead of ~/.gradia/baseline.json",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    return parser.parse_args(argv)
+
+
+def run_baseline(argv: List[str]) -> int:
+    """Write the recording. Returns a process exit code.
+
+    Outside a repository this still succeeds for ``--file`` (content hashes do
+    not need git) but warns that ``--diff`` will stay ``INVALID``: a change set
+    is a git fact, and inventing one would be the fabrication this package
+    refuses everywhere else.
+    """
+    options = _parse_baseline_args(argv)
+    cwd = os.path.abspath(options.cwd)
+    if not os.path.isdir(cwd):
+        print("baseline: directory does not exist: {}".format(cwd), file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        recorded, path = baseline_mod.record(cwd, files=options.file, local=options.local)
+    except OSError as problem:
+        print("baseline: could not write {}: {}".format(cwd, problem), file=sys.stderr)
+        return EXIT_USAGE
+
+    in_repo = baseline_mod.resolve_repo(cwd) is not None
+    if not in_repo:
+        print(
+            "warning: {} is not a git repository, so --diff has no change set "
+            "to compare; record paths with --file for content checks".format(cwd),
+            file=sys.stderr,
+        )
+
+    if options.json:
+        print(
+            json.dumps(
+                {
+                    "written": str(path),
+                    "repo_root": recorded.repo_root,
+                    "created_at": recorded.created_at,
+                    "git_head": recorded.git_head,
+                    "dirty": sorted(recorded.dirty),
+                    "files": sorted(recorded.files),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    print("baseline written : {}".format(path))
+    print("repo             : {}".format(recorded.repo_root))
+    print("recording time    : {}".format(recorded.created_at))
+    print("dirty paths      : {}".format(len(recorded.dirty)))
+    print("file digests     : {}".format(len(recorded.files)))
+    for key in sorted(recorded.files):
+        digest = recorded.file_digest(key)
+        print("  {}  {}".format(key, digest or "(unreadable)"))
+    print("")
+    print("next: run `harness-audit check --file <path>` or `--diff`")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    """Dispatch to ``init`` or the demo. Returns a process exit code."""
+    """Dispatch to ``init``, ``baseline``, ``check`` or the demo."""
     args = list(sys.argv[1:] if argv is None else argv)
 
-    if args and args[0] in ("init", "demo"):
+    if args and args[0] in ("init", "demo", "baseline", "check"):
         command, rest = args[0], args[1:]
         if command == "init":
             return run_init(rest)
+        if command == "baseline":
+            return run_baseline(rest)
+        if command == "check":
+            return run_check(rest)
         args = []
     if args and args[0] in ("-h", "--help", "help"):
         print(__doc__)
         return 0
     if args:
         print(
-            "unknown command {!r}; expected 'init' or no command for the demo".format(args[0]),
+            "unknown command {!r}; expected 'init', 'baseline', 'check' or no "
+            "command for the demo".format(args[0]),
             file=sys.stderr,
         )
-        return 2
+        return EXIT_USAGE
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 

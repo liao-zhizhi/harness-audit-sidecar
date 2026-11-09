@@ -1,0 +1,156 @@
+name: harness-audit check
+description: >-
+  Judge one AI coding declaration on the runner. The witness is collected
+  locally (file digest, exit status, or git change set), so the caller supplies
+  no witness_type, producer or topology.
+author: harness-audit
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  check:
+    description: >-
+      One declaration: "file <path>", "command <cmd>", or "diff". This is the
+      only input a new workflow needs.
+    required: false
+    default: ""
+  # Legacy inputs. They are read only when `check` is empty, so an existing
+  # workflow keeps working without being rewritten in the same commit.
+  file:
+    description: "Legacy: claim that this file changed. Prefer `check`."
+    required: false
+    default: ""
+  command:
+    description: "Legacy: claim that this command succeeded. Prefer `check`."
+    required: false
+    default: ""
+  diff:
+    description: "Legacy: claim that the working tree changed. Prefer `check`."
+    required: false
+    default: "false"
+  cwd:
+    description: "Directory to judge, relative to the workspace."
+    required: false
+    default: "."
+  timeout:
+    description: "Seconds before the command is abandoned (INVALID, not FAIL)."
+    required: false
+    default: "30"
+  verbose:
+    description: "Show tier, dropped_assertions, cap_fired, renegotiation_class."
+    required: false
+    default: "false"
+  rules:
+    description: >-
+      Optional policy directory. Sets HARNESS_AUDIT_RULES, which is used alone
+      rather than merged over the bundled defaults.
+    required: false
+    default: ""
+
+outputs:
+  verdict:
+    description: "PASS, FAIL or INVALID for the declaration."
+    value: ${{ steps.check.outputs.verdict }}
+  reason:
+    description: "One sentence explaining the verdict."
+    value: ${{ steps.check.outputs.reason }}
+  exit_code:
+    description: "0 PASS, 1 FAIL, 3 INVALID (2 is a usage error)."
+    value: ${{ steps.check.outputs.exit_code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install harness-audit
+      shell: bash
+      # Installing from the action's own directory, not from PyPI: a pinned
+      # `uses: owner/repo@ref` should run the code at that ref, and a wheel
+      # from an index could be a different commit with the same version.
+      run: python -m pip install --quiet "${GITHUB_ACTION_PATH}"
+
+    - name: Judge the declaration
+      id: check
+      shell: bash
+      env:
+        INPUT_CHECK: ${{ inputs.check }}
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_DIFF: ${{ inputs.diff }}
+        INPUT_CWD: ${{ inputs.cwd }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+        INPUT_RULES: ${{ inputs.rules }}
+      run: |
+        set -uo pipefail
+
+        declaration="${INPUT_CHECK}"
+
+        # Legacy fallback, in the order the old inputs were checked. A
+        # non-empty `check` always wins so a migrated workflow cannot be
+        # silently overridden by a leftover input.
+        if [[ -z "${declaration}" ]]; then
+          if [[ -n "${INPUT_FILE}" ]]; then
+            declaration="file ${INPUT_FILE}"
+          elif [[ -n "${INPUT_COMMAND}" ]]; then
+            declaration="command ${INPUT_COMMAND}"
+          elif [[ "${INPUT_DIFF}" == "true" ]]; then
+            declaration="diff"
+          fi
+        fi
+
+        if [[ -z "${declaration}" ]]; then
+          echo "::error::harness-audit: no declaration. Set check to \"file <path>\", \"command <cmd>\" or \"diff\"."
+          echo "verdict=INVALID" >> "${GITHUB_OUTPUT}"
+          echo "reason=no declaration given" >> "${GITHUB_OUTPUT}"
+          echo "exit_code=2" >> "${GITHUB_OUTPUT}"
+          exit 2
+        fi
+
+        # Split on the first space only: the command form carries an arbitrary
+        # shell command, and re-splitting it would mangle arguments.
+        kind="${declaration%% *}"
+        rest="${declaration#* }"
+        args=()
+        case "${kind}" in
+          file)
+            args=(--file "${rest}")
+            ;;
+          command)
+            args=(--command "${rest}")
+            ;;
+          diff)
+            args=(--diff)
+            ;;
+          *)
+            echo "::error::harness-audit: unknown declaration '${kind}'. Expected file, command or diff."
+            echo "verdict=INVALID" >> "${GITHUB_OUTPUT}"
+            echo "reason=unknown declaration" >> "${GITHUB_OUTPUT}"
+            echo "exit_code=2" >> "${GITHUB_OUTPUT}"
+            exit 2
+            ;;
+        esac
+
+        if [[ "${INPUT_VERBOSE}" == "true" ]]; then
+          args+=(--verbose)
+        fi
+        if [[ -n "${INPUT_RULES}" ]]; then
+          export HARNESS_AUDIT_RULES="${INPUT_RULES}"
+        fi
+
+        output="$(harness-audit check "${args[@]}" \
+          --cwd "${INPUT_CWD}" \
+          --timeout "${INPUT_TIMEOUT}" 2>&1)"
+        code=$?
+        printf '%s\n' "${output}"
+
+        verdict="$(printf '%s\n' "${output}" | head -n 1)"
+        reason="$(printf '%s\n' "${output}" | sed -n 's/^reason: //p' | head -n 1)"
+        echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+        echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
+        echo "exit_code=${code}" >> "${GITHUB_OUTPUT}"
+
+        # A non-zero code is the point of the action: FAIL contradicts the
+        # claim, INVALID says the claim could not be grounded. Propagating it
+        # keeps the check a gate rather than a log line.
+        exit "${code}"

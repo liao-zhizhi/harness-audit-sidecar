@@ -802,13 +802,66 @@ directory, which is used **alone**.
 > passed". In that case point `--repo` at a repository, or accept the pure grid explicitly with
 > `--rules none`.
 
+## One declaration in, three lines out
+
+`harness-audit check` is the interface for a caller who should not have to
+describe how they will be checked. Supply the declaration; the command picks
+the witness (`independent`, `local`) and calls the same four-valued judge.
+
+```bash
+harness-audit check --file src/main.py    # claim: this file changed
+harness-audit check --command "pytest -q" # claim: this command succeeded
+harness-audit check --diff                # claim: the working tree changed
+```
+
+Default output is the whole public answer:
+
+```text
+FAIL
+reason: the command exited 3, so the claim that it succeeded is contradicted
+next_step: read the command's stderr above, then re-run this check
+```
+
+`PASS` prints two lines (there is no next step). Exit codes: `0` PASS, `1` FAIL,
+`2` usage error, `3` INVALID (`4` NOT RUN). Internal fields are wrapped, not
+removed — `--verbose` (human) or `--json` (machine) adds `witness_type`,
+`producer`, `topology`, `tier`, `dropped_assertions`, `cap_fired`,
+`renegotiation_class`, and the evidence itself.
+
+"Changed" is a comparison, so `--file` and `--diff` need a recording first:
+
+```bash
+harness-audit baseline --file src/main.py   # ~/.gradia/baseline.json, keyed by repo
+harness-audit baseline --local              # ./.harness-baseline.json instead
+```
+
+Without one, `--file` can only answer "exists / does not exist" and `--diff`
+only "the change set is empty / not empty". A file that exists but was never
+recorded is `INVALID` with `next_step: run \`harness-audit baseline --file
+<path>\` first` — never a quiet `PASS` on existence. A *missing* file is still
+`FAIL` (that fact needs no before), and a deletion since the recording counts as
+a change because the recording held a digest.
+
+### GitHub Action
+
+The action takes one input. `check` is the same declaration as above:
+
+```yaml
+- uses: liao-zhizhi/harness-audit-sidecar@v1
+  with:
+    check: file src/main.py
+```
+
+Legacy `file:` / `command:` / `diff:` inputs are still read when `check` is
+empty, so an existing workflow keeps working; `check` wins when both are set.
+
 Developing from source:
 
 ```bash
 cd agent-harness-audit
 pip install -e .
 
-python3 -m unittest discover -s tests -p 'test_*.py'   # 559 tests (must run from the repository root)
+python3 -m unittest discover -s tests -p 'test_*.py'   # 693 tests (must run from the repository root)
 python3 -m audit_sidecar.cli                # demo: self-audit first, refuses to start if it fails
 
 harness-audit-server --cwd /path/to/project # no --rules needed
@@ -1501,7 +1554,7 @@ and the server's refusal to start.
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
-# Ran 559 tests ... OK (skipped=7)
+# Ran 693 tests ... OK (skipped=7)
 ```
 
 > **Must be run from the repository root.** The start directory is the relative path `tests`;
