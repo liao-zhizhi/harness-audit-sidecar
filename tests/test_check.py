@@ -295,6 +295,7 @@ class CheckOutputTests(_Scratch):
         "producer",
         "topology",
         "cap_topology",
+        "failure_kind",
         "witness_type",
         "witness_scope",
     )
@@ -363,10 +364,75 @@ class CheckOutputTests(_Scratch):
         self.assertEqual(payload["producer"], "independent")
         self.assertEqual(payload["topology"], "local")
         self.assertEqual(payload["cap_topology"], "sidecar")
+        # A decided verdict has no repair kind; this is not "unknown".
+        self.assertIsNone(payload["failure_kind"])
+
+
+class FailureKindTests(_Scratch):
+    """One ``INVALID``, three different fixes -- and exit code 3 cannot say which.
+
+    ``verdict`` is ``INVALID`` for all three, so a CI job that branches on it
+    cannot tell "the tool is broken" from "nobody looked". The reason's first
+    clause is the contract; ``failure_kind`` is the same distinction for a
+    machine, derived from that clause rather than stored beside it.
+    """
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.run_check(argv)
+        return code, out.getvalue()
+
+    def test_a_broken_tool_is_self_audit(self):
+        with mock.patch.object(cli, "run_self_audit", return_value=False):
+            code, stdout = self._run(["--command", "true", "--json"])
+        payload = json.loads(stdout)
+        self.assertEqual(code, cli.EXIT_INVALID)
+        self.assertEqual(payload["verdict"], "INVALID")
+        self.assertEqual(payload["failure_kind"], "self_audit")
+        self.assertTrue(payload["reason"].startswith(cli.SELF_AUDIT_REASON_PREFIX))
+
+    def test_a_missing_witness_is_witness_missing(self):
+        from audit_sidecar.check import check_file
+
+        (self.root / "a.txt").write_text("here\n", encoding="utf-8")
+        outcome = check_file("a.txt", cwd=str(self.root))
+        self.assertEqual(outcome.verdict.value, "INVALID")
+        self.assertEqual(outcome.failure_kind, "witness_missing")
+
+    def test_a_bad_invocation_is_declaration_malformed(self):
+        for argv in ([], ["--file", ""]):
+            _code, stdout = self._run(argv + ["--json"])
+            payload = json.loads(stdout)
+            self.assertEqual(payload["verdict"], "INVALID", argv)
+            self.assertEqual(payload["failure_kind"], "declaration_malformed", argv)
+
+    def test_a_contradiction_has_no_repair_kind(self):
+        _code, stdout = self._run(["--command", "exit 5", "--json"])
+        payload = json.loads(stdout)
+        self.assertEqual(payload["verdict"], "FAIL")
+        self.assertIsNone(payload["failure_kind"])
+
+    def test_the_kind_is_absent_from_the_default_output(self):
+        # The default answer stays three lines: a human reads `reason`.
+        _code, stdout = self._run(["--command", "exit 5"])
+        self.assertNotIn("failure_kind", stdout)
+
+    def test_the_kind_is_shown_under_verbose(self):
+        with mock.patch.object(cli, "run_self_audit", return_value=False):
+            _code, stdout = self._run(["--command", "true", "--verbose"])
+        self.assertIn("failure_kind        : self_audit", stdout)
+
+    def test_self_audit_sentence_is_spelled_by_the_shared_prefix(self):
+        # One refusal, one spelling: the constant is the contract and the
+        # sentence is built from it, so they cannot drift.
+        self.assertTrue(
+            cli.CHECK_SELF_AUDIT_REASON.startswith(cli.SELF_AUDIT_REASON_PREFIX)
+        )
 
     def test_the_self_audit_gate_still_refuses_to_judge(self):
         with mock.patch.object(cli, "run_self_audit", return_value=False):
-            code, stdout, _stderr = self._run(["--command", "true"])
+            code, stdout = self._run(["--command", "true"])
         self.assertEqual(code, cli.EXIT_INVALID)
         # A verdict, not prose: the first line is parseable by a CI step even
         # when the tool has refused to run at all.
@@ -517,6 +583,15 @@ class InterfaceDocumentationTests(unittest.TestCase):
         # Item 7: re-run `baseline --file <this path>`, not a full recording.
         self.assertIn("A recording is per path", self.readme)
         self.assertNotIn("<path>", self.readme)
+
+    def test_the_invalid_case_is_a_pass_fail_verdict_and_prefixed_reason_list(self):
+        # Item 1 of the follow-up: exit 3 and `verdict == INVALID` are shared by
+        # "tool broken", "bad call" and "nobody looked", so the README has to
+        # say the branching key is the reason's first clause.
+        self.assertIn("Three different repairs hide behind one `INVALID`", self.readme)
+        self.assertIn("the **reason prefix**", self.readme)
+        self.assertIn("never branch on `verdict`", self.readme)
+        self.assertIn("`self_audit` / `declaration_malformed` / `witness_missing`", self.readme)
 
     def test_the_topology_mapping_is_documented_as_semantic(self):
         # Item 1: the cap is told `sidecar`, the receipt says `local`.

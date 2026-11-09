@@ -47,6 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import baseline as baseline_mod
 from .check import (
     PROVENANCE_TOPOLOGY,
+    SELF_AUDIT_REASON_PREFIX,
     CheckOutcome,
     check_command,
     check_diff,
@@ -67,7 +68,11 @@ SELF_AUDIT_FAILED_MESSAGE = "Self-audit failed, tool is a decoration."
 #: ``check`` still refuses when the gate is closed, but it says so as a
 #: verdict: the first line of its output is always one of the four values, so a
 #: caller (and the Action's output parser) never has to special-case prose.
-CHECK_SELF_AUDIT_REASON = "self-audit failed, so no declaration was judged"
+#: The sentence starts with ``SELF_AUDIT_REASON_PREFIX``, which is also what
+#: ``CheckOutcome.failure_kind`` keys on -- one refusal, one spelling.
+CHECK_SELF_AUDIT_REASON = (
+    SELF_AUDIT_REASON_PREFIX + ", so no declaration was judged"
+)
 
 #: Where the case library looks for the alias map. ``case_store`` in the product
 #: repo reads exactly this path, so writing anywhere else would produce a file
@@ -862,6 +867,7 @@ def _format_check(outcome: CheckOutcome, *, verbose: bool) -> List[str]:
             # `cap_topology` is the value the cap was given. They differ by a
             # documented semantic mapping, and the trace shows it.
             show("cap_topology", PROVENANCE_TOPOLOGY),
+            show("failure_kind", outcome.failure_kind),
             show("tier", outcome.tier),
             show("dropped_assertions", outcome.dropped_assertions),
             show("cap_fired", outcome.cap_fired),

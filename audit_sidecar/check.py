@@ -63,6 +63,7 @@ __all__ = [
     "CheckOutcome",
     "LOCAL_TOPOLOGY",
     "PROVENANCE_TOPOLOGY",
+    "SELF_AUDIT_REASON_PREFIX",
     "check_command",
     "check_diff",
     "check_file",
@@ -83,6 +84,14 @@ PROVENANCE_TOPOLOGY = "sidecar"
 
 #: The witness was produced by this process, not declared by the caller.
 PRODUCER = "independent"
+
+#: Stable first clause of the tool's refusal to judge at all. Matched by CI to
+#: separate "the tool is broken" from "the witness is missing" -- both are
+#: ``INVALID`` with exit code 3, so the exit code cannot carry the difference.
+SELF_AUDIT_REASON_PREFIX = "self-audit failed"
+
+#: Stable first clauses of the two "your invocation was wrong" refusals.
+_MALFORMED_REASON_PREFIXES = ("declaration malformed", "no declaration given")
 
 #: ``{path}`` is filled with the path the caller named, not left as ``<path>``:
 #: a next step the operator can paste should not need editing first. The git
@@ -155,12 +164,40 @@ class CheckOutcome:
     def ok(self) -> bool:
         return self.verdict is Verdict.PASS
 
+    @property
+    def failure_kind(self) -> Optional[str]:
+        """Why this is not a decided verdict, for a machine.
+
+        Three different fixes hide behind ``INVALID``, and exit code 3 cannot
+        tell them apart:
+
+        * ``self_audit`` -- the tool refused to run. Fix the tool.
+        * ``declaration_malformed`` -- the invocation was wrong. Fix the call.
+        * ``witness_missing`` -- nothing observed it. Collect the witness.
+
+        Derived from the reason sentence rather than stored beside it, so the
+        two can never disagree: there is one place that says "the tool is
+        broken", and this property only reads it. ``PASS`` and ``FAIL`` are
+        decided, so they have no kind -- a FAIL is a contradiction, not a
+        missing prerequisite.
+        """
+        if self.verdict is not Verdict.INVALID:
+            return None
+        if self.reason.startswith(SELF_AUDIT_REASON_PREFIX):
+            return "self_audit"
+        if self.reason.startswith(_MALFORMED_REASON_PREFIXES):
+            return "declaration_malformed"
+        return "witness_missing"
+
     def to_dict(self) -> Dict[str, Any]:
         """The full record, for ``--json`` and for the tests to assert on."""
         return {
             "verdict": self.verdict.value,
             "reason": self.reason,
             "next_step": self.next_step,
+            # Machine-readable twin of the reason's first clause; see the
+            # property. Never in the default output -- a human reads `reason`.
+            "failure_kind": self.failure_kind,
             "declaration": self.declaration,
             "witness_type": self.witness_type,
             "witness_scope": self.witness_scope,

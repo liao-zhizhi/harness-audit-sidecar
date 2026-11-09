@@ -824,8 +824,9 @@ next_step: re-run the command by hand to see why it failed, then re-run this che
 
 `PASS` prints two lines (there is no next step). Internal fields are wrapped, not
 removed — `--verbose` (human) or `--json` (machine) adds `witness_type`,
-`producer`, `topology`, `tier`, `dropped_assertions`, `cap_fired`,
-`renegotiation_class`, and the evidence itself. The trace shows both
+`producer`, `topology`, `cap_topology`, `failure_kind`, `tier`,
+`dropped_assertions`, `cap_fired`, `renegotiation_class`, and the evidence
+itself. The trace shows both
 `topology: local` and `cap_topology: sidecar`: the provenance enum has no
 `local`, so the receipt's word is mapped onto the cap's word explicitly rather
 than being hidden in a call site — it is a **semantic mapping, not a claim that
@@ -852,6 +853,45 @@ If you want to allow it, branch on the verdict instead of weakening the code:
   with:
     check: file src/main.py
 - run: echo "verdict was ${{ steps.audit.outputs.verdict }}"
+```
+
+**Three different repairs hide behind one `INVALID`.** Exit code 3 cannot tell
+them apart, and neither can `verdict` — both are `INVALID`. What separates them
+is the reason's first clause, which is a stable contract:
+
+| kind | reason starts with | what to fix |
+|---|---|---|
+| tool failure | `self-audit failed` | the tool refused to run; fix the tool |
+| bad invocation | `declaration malformed` / `no declaration given` | the call; fix the arguments |
+| missing witness | anything else | nothing observed it; collect the witness |
+
+The Action exposes `verdict` / `reason` / `exit_code`, so a workflow branches on
+the **reason prefix**. A direct CLI consumer gets the same distinction as a
+field instead of a string: `--json` carries `failure_kind`, one of
+`self_audit` / `declaration_malformed` / `witness_missing` (`null` for PASS and
+FAIL, which are decided). The field is derived from the sentence it labels, so
+the two cannot disagree — never branch on `verdict` to separate these, it is
+`INVALID` for all three:
+
+```yaml
+- id: audit
+  uses: liao-zhizhi/harness-audit-sidecar@v1
+  continue-on-error: true
+  with:
+    check: file src/main.py
+- run: |
+    reason="${{ steps.audit.outputs.reason }}"
+    case "${reason}" in
+      "self-audit failed"*)
+        echo "::error::harness-audit itself is broken; the claim was not judged"; exit 2 ;;
+      "declaration malformed"*|"no declaration given"*)
+        echo "::error::bad invocation: ${reason}"; exit 2 ;;
+      "")
+        ;;
+      *)
+        echo "not judged (witness missing): ${reason}"
+        echo "run \`harness-audit baseline\`, then re-run the check" ;;
+    esac
 ```
 
 "Changed" is a comparison, so `--file` and `--diff` need a recording first:
