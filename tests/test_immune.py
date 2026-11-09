@@ -623,16 +623,21 @@ class ProxyTierTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("bash"), "bash is required to run tool commands")
 class EscalationOutsideGitTest(unittest.TestCase):
-    """The crossover: a content assertion forces the full witness, and the
-    full witness cannot be collected because there is no repository.
+    """Escalation in a directory with no repository: the pairing matters.
 
-    The two halves are tested separately -- H2 escalates in a git repo and
-    reaches FAIL, M6 answers INVALID in a non-git directory -- and neither of
-    those says anything about the path where one causes the other. Without the
-    escalation the innate tier would drop the assertion and report PASS about a
-    file containing the wrong bytes; without the INVALID conversion the same
-    call would raise out of the proxy. Both are the failures this module
-    exists to catch, so the crossing is pinned rather than inferred.
+    A content assertion promotes a low-risk call to the full witness. Whether
+    that is answerable outside git depends on *what* the assertion needs: a
+    change set needs a repository, a content read does not. So both directions
+    are pinned here -- a claimed change set with no repository is ``INVALID``
+    (we did not look), and a matching content read with no repository is
+    ``PASS`` (we looked and it was right). Testing only the first invites the
+    over-correction that "non-git" means "refuse", which would make the second
+    a refusal to report evidence that was actually collected.
+
+    The two halves of the underlying fixes are tested elsewhere -- H2
+    escalates in a git repo and reaches FAIL, M6 answers INVALID in a non-git
+    directory for a plain change set -- and neither says anything about the
+    path where one causes the other.
     """
 
     def setUp(self) -> None:
@@ -697,6 +702,44 @@ class EscalationOutsideGitTest(unittest.TestCase):
         # And the proxy stays passive: the agent still sees what the tool
         # layer reported.
         self.assertEqual(response["status"], "ok")
+
+    def test_matching_assertion_without_a_change_set_is_a_pass(self) -> None:
+        # The mirror of the test above, and the reason it exists: the failure
+        # being avoided is not "non-git directories are suspicious" but "we did
+        # not look". Here the full witness *can* look -- the content read needs
+        # no repository -- so the answer is a real PASS. Anyone who later
+        # over-corrects the previous case into "non-git -> INVALID" would turn
+        # this one into "we looked and saw it was right, but refuse to say so",
+        # which is the same receipt defect in the other direction.
+        proxy = MCPProxy(
+            cwd=self.root,
+            runner=SafeRunner(timeout=20),
+            rules_dir=self.rules_dir,
+        )
+
+        def builder(_args):
+            return ToolInvocation(
+                command="printf 'EXPECTED-MARKER' >> note.txt",
+                intent="append EXPECTED-MARKER to note.txt",
+                expected_file="note.txt",
+                # Deliberately no ``expected_files``: without a change set the
+                # full witness never constructs a GitWitness, so a missing
+                # repository is not a missing witness.
+                expected_content="EXPECTED-MARKER",
+            )
+
+        proxy.register_tool("append_note", builder)
+        proxy.intercept_tool_call("append_note", {}, True)
+        result = proxy.audit_log[-1]
+        self.assertIs(result.verdict, Verdict.PASS)
+        # Promoted by the content assertion (rather than answered on a stat),
+        # and collecting no change set, because none was claimed.
+        self.assertEqual(result.tier, TIER_ADAPTIVE)
+        self.assertEqual(result.witness_scope, "full")
+        self.assertIs(result.effect_observed, True)
+        self.assertIsNone(result.git_repo)
+        self.assertEqual(result.dropped_assertions, ())
+        self.assertIn("witness matches intent", result.reason)
 
 
 @unittest.skipUnless(HAS_GIT, "git and bash are required for trace tests")
