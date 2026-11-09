@@ -693,6 +693,26 @@ class ReleaseChecklistTests(unittest.TestCase):
     detect it. This class is the forcing function: it fails until the author
     has updated ``RELEASE_CHECKLIST.md``, which is where the "renaming a prefix
     is a breaking change" rule lives.
+
+    What this class binds, stated here rather than in the checklist:
+
+    * **Table rows.** ``_classification_rows`` parses the rendered table on the
+      raw text and asserts class -> action. Not on ``cls.checklist``: flattening
+      whitespace collapses the table into one line, and assertions there would
+      pass on text that is no longer a table.
+    * **Cross-artifact agreement.** The same rule is stated by this document and
+      by ``_action_for`` in the survey. The test calls the function directly,
+      so a refactor of the tool breaks this test on purpose: that break is the
+      reminder that a changed rule wording has a document to match.
+    * **Not prose semantics.** A paragraph can be reworded and these tests stay
+      green, as long as the table rows and the constants still agree. Prose
+      still has to be read by a human and still has to match the table; there
+      is simply no machine assertion on it.
+
+    The scope is not written into the checklist because a "this section is
+    bound, the prose is not" note would itself be unbound prose, needing the
+    same note one level up. That has no terminus, and it reads as permission to
+    edit prose freely -- which is not what an absent assertion means.
     """
 
     @classmethod
