@@ -2,6 +2,28 @@
 
 **An audit tool for the agent execution layer**
 
+## Install (two commands)
+
+```bash
+pip install harness-audit-sidecar
+harness-audit setup
+```
+
+`setup` detects the Cursor / VS Code `mcp.json`, adds the server, merges
+`ref_roots.json`, and takes a baseline. It backs up every file it replaces and
+refuses to rewrite one it cannot parse.
+
+Three errors, and what to run:
+
+| What you see | What it means | Fix |
+|---|---|---|
+| `harness-audit: command not found` | installed into another interpreter | `python -m pip install harness-audit-sidecar`, then `python -m audit_sidecar.cli --help` |
+| `setup: refusing to write: ...` | the existing `mcp.json` is not valid JSON | fix or move the file, then `harness-audit setup` again |
+| `INVALID ... no recording says which changes came before` | there is no baseline to compare against | `harness-audit baseline` (or `harness-audit baseline --file src/main.py` for one file) |
+
+`INVALID` is not a bug report: it means the tool declined to judge because
+nothing witnessed the claim. Re-running the fix above is the whole remedy.
+
 > ⚠️ **Read this first:**
 >
 > - **PASS means the world matches the intent, not that the agent did anything.** A no-op on a
@@ -984,10 +1006,88 @@ fields are redacted first -- `file /home/me/app/main.py` becomes
 `file <redacted>`, and any absolute path left in the reason is replaced with a
 fixed marker. No code, no digest, no agent id, no `agent_id` field at all.
 
+The same flag also POSTs the usage aggregate (`verdicts`, `baseline_misses`,
+`tool_names`) to `/api/v1/usage/report`. That is a *second* request carrying
+counts only -- the usage rows themselves, with their timestamps and path hashes,
+never leave the machine.
+
 A failed upload never changes the exit code: the verdict was decided locally,
 and a display being down is not evidence about the claim. Its result goes to
 stderr so `--json` stays parseable and the first line of stdout remains the
 verdict.
+
+### `harness-audit up`: one command, three lines
+
+`setup`, `baseline` and `check` are each honest about their preconditions, which
+means a first run needs three of them. `up` runs whichever are missing and then
+judges, printing **at most three lines**: the verdict, `reason:`, and -- unless
+the verdict is `PASS` -- `next_step:`.
+
+```bash
+harness-audit up                      # configure if needed, record if needed, check --diff
+harness-audit up --file src/main.py   # judge one file
+harness-audit up --command "pytest -q"  # judge one command
+```
+
+* **It orchestrates; it does not judge.** No new verdict logic, no new reason
+  vocabulary. A failed prerequisite is reported as `INVALID` -- "nothing judged
+  this" -- which is the value that already means that.
+* **Failures end in a runnable command with this invocation's arguments in it**,
+  e.g. `harness-audit baseline --cwd /work/app --file src/main.py && harness-audit up --file src/main.py --cwd /work/app`.
+  A placeholder is a command the operator must edit before it can answer them.
+* **Setup and baseline chatter is captured, not printed.** A first run that
+  prints twelve lines makes the one line that matters unfindable; `--verbose`
+  adds the check's trace *after* the three lines, on request.
+
+### `harness-audit watch`: notify, never repair
+
+Polls the current repository (default every 2s), runs `check --diff` when the
+working tree changes, and raises a desktop notification on `FAIL` or `INVALID`.
+
+```bash
+harness-audit watch            # ctrl-c to stop
+harness-audit watch --interval 5
+```
+
+* **The signature is `git status --porcelain` plus the size and mtime of every
+  dirty or untracked path.** Porcelain alone does not change when an
+  already-dirty file is saved again, so a watcher built on it alone goes quiet
+  during an agent's edit-edit-edit sequence.
+* **`notify-send` on Linux, `osascript` on macOS, skipped on Windows.** The body
+  goes to stderr either way, so the loop still works over SSH; the notification
+  reads `FAIL: <first sentence of the reason> run \`harness-audit up\` for details`.
+* **No auto-fix, no auto-baseline, no ledger, no upload.** Re-baselining after a
+  change would make the change look like it happened before the claim -- the
+  exact fabrication `check` refuses. `PASS` is not notified: an interruption for
+  "everything is fine" is how notifications get muted.
+
+### Usage log: what was asked, never what was shown
+
+`check`, `baseline`, `setup`, `mcp_tool_call` and `suspected_uncovered` append
+one JSON row each to `~/.gradia/usage.jsonl` (override the directory with
+`HARNESS_AUDIT_USAGE_DIR`). It is append-only and never rewrites a row.
+
+* **No claim text, no plaintext paths, no code.** A command claim records
+  `declaration: "command"`; a file claim records `path_hash`, an HMAC-SHA256 of
+  the repository-relative path under a machine-local key
+  (`~/.gradia/usage.salt`, created `0600`). Anyone holding both the key and the
+  log can confirm a guessed path -- that is the honest limit of a hash -- so the
+  key is the boundary, and deleting it makes old rows unlinkable.
+* **`baseline_present`** is recorded on every `check`: `false` is the common
+  first-run state, and counting it is how "the operator never recorded" gets
+  distinguished from "the claim was contradicted".
+* **`suspected_uncovered`** is written when a `FAIL` has no audited write tool
+  call for the same path in the previous ten minutes. That is the signature of a
+  change made through a path the harness cannot see -- the editor's own file API,
+  a shell it did not launch -- and it is a *suspicion*, because a plain lie
+  produces the same trace.
+* **It never votes.** `record` swallows I/O errors, so a read-only home cannot
+  turn a `PASS` into a traceback; `check`'s exit code is computed before the log
+  is touched.
+* **`--upload` sends three aggregates** to `/api/v1/usage/report` --
+  `verdicts`, `baseline_misses`, `tool_names` -- and never the rows. The export
+  is a separate function from the append so that adding a field to a row cannot
+  silently widen what leaves the machine.
 
 ### GitHub Action
 

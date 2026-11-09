@@ -56,6 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import baseline as baseline_mod
 from . import report
+from . import usage
 from .check import (
     MALFORMED_REASON_PREFIX,
     NO_DECLARATION_REASON_PREFIX,
@@ -935,15 +936,25 @@ def _emit_check(outcome: CheckOutcome, *, verbose: bool, as_json: bool) -> None:
 
 
 def _finish_check(outcome: CheckOutcome, options: argparse.Namespace) -> int:
-    """Emit, optionally upload, return the verdict's exit code.
+    """Emit, observe, optionally upload, return the verdict's exit code.
 
-    The upload happens after the local output so a slow dashboard cannot delay
-    the line a CI step parses, and its result goes to stderr so ``--json``
-    stays parseable. A failed upload never changes the exit code: the verdict
-    was decided locally, and a display being down is not evidence about the
-    claim.
+    Order matters. The verdict is printed first (a CI step parses line 1), the
+    usage log is written next (it observes and cannot fail), and the network
+    happens last -- so a slow or absent dashboard cannot delay the answer.
+
+    A failed upload never changes the exit code: the verdict was decided
+    locally, and a display being down is not evidence about the claim.
     """
     _emit_check(outcome, verbose=options.verbose, as_json=options.json)
+
+    kind = "file" if options.file is not None else "command" if options.command is not None else "diff"
+    usage.observe_check(
+        outcome,
+        declaration_kind=kind,
+        cwd=os.path.abspath(options.cwd),
+        path=options.file if kind == "file" else None,
+    )
+
     if options.upload:
         # Flush before the network call: stdout is block-buffered when piped, so
         # without this the verdict can appear after the upload line, and a CI
@@ -953,6 +964,14 @@ def _finish_check(outcome: CheckOutcome, options: argparse.Namespace) -> int:
             outcome, options.upload_url, timeout=options.upload_timeout
         )
         print(report.summary_line(status, body), file=sys.stderr)
+        # The aggregate, not the rows: counts of verdicts, baseline misses and
+        # tool names. Sending the log itself would ship every path hash and
+        # every timestamp, which is a different product.
+        usage_status, usage_body = usage.upload_aggregate(
+            options.upload_url, timeout=options.upload_timeout
+        )
+        print(usage.summary_line(usage_status, usage_body), file=sys.stderr)
+    return _VERDICT_EXIT[outcome.verdict]
     return _VERDICT_EXIT[outcome.verdict]
 
 
@@ -1082,6 +1101,12 @@ def run_baseline(argv: List[str]) -> int:
         print("baseline: could not write {}: {}".format(cwd, problem), file=sys.stderr)
         return EXIT_USAGE
 
+    # A count and a flag; the recorded paths stay in the recording, which is
+    # already on disk and is the file the operator asked for.
+    usage.record_baseline(
+        files=len(recorded.files), local=bool(options.local), cwd=cwd
+    )
+
     in_repo = baseline_mod.resolve_repo(cwd) is not None
     if not in_repo:
         print(
@@ -1135,7 +1160,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     """Dispatch to ``init``, ``setup``, ``mcp``, ``baseline``, ``check`` or the demo."""
     args = list(sys.argv[1:] if argv is None else argv)
 
-    if args and args[0] in ("init", "setup", "mcp", "demo", "baseline", "check"):
+    if args and args[0] in ("init", "setup", "up", "watch", "mcp", "demo", "baseline", "check"):
         command, rest = args[0], args[1:]
         if command == "init":
             return run_init(rest)
@@ -1145,6 +1170,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             from .setup_cmd import run_setup
 
             return run_setup(rest)
+        if command == "up":
+            # The one-command entry. It orchestrates the three subcommands
+            # below rather than re-implementing them; see `up.py`.
+            from .up import run_up
+
+            return run_up(rest)
+        if command == "watch":
+            from .watch import run_watch
+
+            return run_watch(rest)
         if command == "mcp":
             # The stdio server behind the config `setup` writes. Aliasing it
             # here is what makes ``{"command": "harness-audit", "args": ["mcp"]}``
@@ -1163,8 +1198,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args:
         print(
-            "unknown command {!r}; expected 'init', 'setup', 'mcp', 'baseline', "
-            "'check' or no command for the demo".format(args[0]),
+            "unknown command {!r}; expected 'init', 'setup', 'up', 'watch', "
+            "'mcp', 'baseline', 'check' or no command for the demo".format(args[0]),
             file=sys.stderr,
         )
         return EXIT_USAGE

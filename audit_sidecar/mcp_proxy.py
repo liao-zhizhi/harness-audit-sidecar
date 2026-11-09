@@ -368,6 +368,17 @@ class MCPProxy:
     # -- public API ---------------------------------------------------
 
     @property
+    def cwd(self) -> str:
+        """The directory this proxy audits, absolute.
+
+        Read-only accessor added for the usage log, which needs to turn a tool
+        argument into the same repository-relative ``path_hash`` a ``check``
+        uses. Exposing the setter would let a caller change the audited project
+        mid-session while the trace kept one name for it.
+        """
+        return os.path.abspath(self._cwd)
+
+    @property
     def audit_log(self) -> Tuple[ExecutionResult, ...]:
         """Every audited call, oldest first. Read-only view."""
         return tuple(self._audit_log)

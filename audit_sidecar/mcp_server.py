@@ -48,6 +48,7 @@ import sys
 from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
 from . import __version__
+from . import usage
 from .immune_state import STATE_FILENAME
 from .judgment_base import RuleError, default_rules_dir, default_rules_dirs
 from .mcp_proxy import MCPProxy, UnknownToolError
@@ -578,6 +579,17 @@ class JsonRpcServer:
             ) from None
 
         result = self._proxy.audit_log[-1]
+        # Local usage row: the tool name and the verdict, plus a keyed hash of
+        # the path it touched. Not the path, not the arguments, not the output.
+        # `observe_check` is for declarations; this is the MCP surface, where
+        # the "declaration" is the call itself.
+        usage.record_tool_call(
+            tool_name=tool,
+            verdict=result.verdict,
+            tier=result.tier,
+            path_arg=args.get("path") if isinstance(args.get("path"), str) else None,
+            cwd=self._proxy.cwd,
+        )
         self._trace.write(
             _trace_record(
                 message_id,

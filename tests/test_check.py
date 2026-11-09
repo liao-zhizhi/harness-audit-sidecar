@@ -13,15 +13,25 @@ so each one gets a test:
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+# These tests drive the CLI, and the CLI now writes an append-only usage log.
+# Point it at a throwaway directory so running the suite never touches the
+# developer's ~/.gradia/usage.jsonl -- a test that edits the machine it runs on
+# is a test that has to be undone by hand.
+_USAGE_DIR = tempfile.mkdtemp(prefix="harness-usage-")
+os.environ["HARNESS_AUDIT_USAGE_DIR"] = _USAGE_DIR
+atexit.register(shutil.rmtree, _USAGE_DIR, True)
 
 import audit_sidecar.baseline as baseline_mod
 import audit_sidecar.cli as cli

@@ -12,6 +12,7 @@ whole claim and an in-process object cannot demonstrate it.
 
 from __future__ import annotations
 
+import atexit
 import io
 import json
 import os
@@ -21,6 +22,14 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+
+# These tests drive the CLI, and the CLI now writes an append-only usage log.
+# Point it at a throwaway directory so running the suite never touches the
+# developer's ~/.gradia/usage.jsonl -- a test that edits the machine it runs on
+# is a test that has to be undone by hand.
+_USAGE_DIR = tempfile.mkdtemp(prefix="harness-usage-")
+os.environ["HARNESS_AUDIT_USAGE_DIR"] = _USAGE_DIR
+atexit.register(shutil.rmtree, _USAGE_DIR, True)
 
 from audit_sidecar.immune_state import (
     ImmuneState,

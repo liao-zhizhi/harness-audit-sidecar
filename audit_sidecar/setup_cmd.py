@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import baseline as baseline_mod
+from . import usage
 from .self_audit import run_self_audit
 
 #: MCP server entry written into the client config. ``command`` is the CLI the
@@ -276,6 +277,14 @@ def _parse_args(argv: List[str]):
         help="record the baseline as ./.harness-baseline.json instead of the global file",
     )
     parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help=(
+            "write the config only; leave an existing recording untouched "
+            "(used by `up`, which must not overwrite the memory it is about to judge)"
+        ),
+    )
+    parser.add_argument(
         "--max-files",
         type=int,
         default=DEFAULT_MAX_FILES,
@@ -372,8 +381,24 @@ def run_setup(argv: List[str]) -> int:
                 _write_json(ref_path, roots_mapping, backup=True)
             )
             report["ref_roots"]["written"] = True
-        baseline_mod.record(cwd, files=files, local=options.local)
-        report["baseline"]["written"] = True
+        if not options.no_baseline:
+            baseline_mod.record(cwd, files=files, local=options.local)
+            report["baseline"]["written"] = True
+            # Setup takes a recording as one of its three steps. Logging it as a
+            # `baseline` event keeps the usage log's count of recordings true even
+            # when the operator never typed `harness-audit baseline`.
+            usage.record_baseline(
+                files=len(files), local=bool(options.local), cwd=cwd
+            )
+
+    usage.record_setup(
+        mcp_scope=report["mcp"]["scope"],
+        mcp_changed=bool(report["mcp"]["changed"]),
+        ref_roots_changed=bool(report["ref_roots"]["changed"]),
+        baseline_files=int(report["baseline"]["files"]),
+        baseline_written=bool(report["baseline"]["written"]),
+        print_only=bool(options.print_only),
+    )
 
     if options.json:
         print(json.dumps(report, indent=2, ensure_ascii=False, sort_keys=True))
