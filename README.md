@@ -654,6 +654,12 @@ witness means**.
   set and never yields a false `PASS`, which is why the whitelist is allowed to be implicit in
   behaviour — but it is pinned by `test_only_append_file_declares_a_payload_assertion`, so
   extending it is a deliberate edit rather than a drive-by.
+  **Outside a git repository the promotion cannot finish.** A promoted call needs the change set
+  to evaluate the assertion, so a low-risk tool that used to be judged by one `stat` answers
+  `INVALID` (with the missing repository named in `reason`) instead of `PASS` on the weaker
+  witness. Pinned by `test_non_payload_assertion_in_a_non_git_directory_is_invalid`, which is
+  the crossing of this escalation with the non-git `INVALID` rule — the two halves are easy to
+  test separately and easy to leave untested together.
 
 ### Known blind spot (written into the code, not into a footnote)
 
