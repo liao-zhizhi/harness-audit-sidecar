@@ -73,14 +73,24 @@ _ALIAS = re.compile(
     r"^\s*([A-Za-z_][A-Za-z0-9_]*)=.*?outputs\.([A-Za-z_][A-Za-z0-9_]*)"
 )
 
+#: A trailing comment is not code. The README itself suggests an alternative in
+#: one: `continue-on-error: true   # or: if: ...verdict != 'INVALID'`, which
+#: would otherwise classify a workflow that branches on nothing as
+#: `verdict_only` and inflate the one number the decision turns on. The `#`
+#: must be preceded by whitespace, so shell `${reason#prefix}` survives.
+_COMMENT = re.compile(r"(?:^|\s)#.*$", re.MULTILINE)
+
 _YAML_SUFFIXES = (".yml", ".yaml")
 
 
 def _classify(text: str) -> Dict[str, Any]:
     """Classify one workflow file. Pure, so the tests can pin each branch."""
-    lines = [
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    ]
+    lines = []
+    stripped = _COMMENT.sub("", text)
+    for line in stripped.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        lines.append(line)
     aliases: Dict[str, str] = {}
     for line in lines:
         match = _ALIAS.match(line)
@@ -120,7 +130,7 @@ def _classify(text: str) -> Dict[str, Any]:
         kind = "fourth_output"
     elif conditioned.get("reason"):
         for prefix in CONTRACT_PREFIXES:
-            if prefix in text and prefix not in prefixes_seen:
+            if prefix in stripped and prefix not in prefixes_seen:
                 prefixes_seen.append(prefix)
         kind = "reason_prefix" if prefixes_seen else "reason_other"
     elif conditioned.get("verdict"):

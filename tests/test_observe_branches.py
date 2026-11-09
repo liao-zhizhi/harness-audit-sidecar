@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -133,6 +134,32 @@ class ClassificationTests(unittest.TestCase):
         text = "# if: steps.audit.outputs.failure_kind == 'self_audit'\n"
         self.assertEqual(observer._classify(text)["class"], "no_branch")
 
+    def test_a_trailing_comment_is_not_a_branch(self):
+        # Verbatim from the README's own example, where the alternative is
+        # suggested *in a comment*. Counting it would inflate verdict_only,
+        # which is the only number the fourth-output decision rests on.
+        text = (
+            "  continue-on-error: true          "
+            "# or: if: steps.audit.outputs.verdict != 'INVALID'\n"
+            '- run: echo "verdict was ${{ steps.audit.outputs.verdict }}"\n'
+        )
+        result = observer._classify(text)
+        self.assertEqual(result["class"], "no_branch")
+        self.assertEqual(result["conditioned"], {})
+
+    def test_a_shell_parameter_expansion_is_not_a_comment(self):
+        # `${reason#prefix}` contains a `#` that is not preceded by whitespace.
+        # Stripping it would silently lose the case branch it lives in.
+        text = (
+            '    case "${reason#self-audit failed}" in\n'
+            '      "") exit 0 ;;\n'
+            "    esac\n"
+        )
+        # No output reference at all, so this is only a guard that the stripper
+        # does not mangle lines; the file stays unclassified rather than
+        # producing a false branch.
+        self.assertEqual(observer._classify(text)["class"], "no_branch")
+
 
 class ContractCouplingTests(unittest.TestCase):
     def test_the_survey_looks_for_the_live_prefixes(self):
@@ -148,6 +175,24 @@ class ContractCouplingTests(unittest.TestCase):
                 check_mod.NO_DECLARATION_REASON_PREFIX,
             ),
         )
+
+
+class ReadmeExampleTests(unittest.TestCase):
+    """The documented example must be a shape the survey recognises.
+
+    If the README's `case` snippet drifted into something this scan classifies
+    as `no_branch`, then following the docs would look like not using the
+    output at all -- and the survey that decides the fourth output would be
+    reading our own documentation as non-adoption.
+    """
+
+    def test_the_recommended_example_classifies_as_the_documented_path(self):
+        text = (_ROOT / "README.md").read_text(encoding="utf-8")
+        blocks = re.findall(r"```yaml\n(.*?)```", text, re.S)
+        snippets = [block for block in blocks if "case " in block]
+        self.assertTrue(snippets, "README no longer contains a `case` example")
+        result = observer._classify(snippets[0])
+        self.assertEqual(result["class"], "reason_prefix", snippets[0])
 
 
 class CommandLineTests(unittest.TestCase):
