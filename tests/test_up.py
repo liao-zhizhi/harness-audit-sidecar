@@ -99,32 +99,65 @@ class UpTestCase(unittest.TestCase):
 
 
 class FirstRunTests(UpTestCase):
-    def test_an_empty_directory_gets_setup_baseline_and_a_check(self):
+    def test_an_empty_directory_is_configured_but_not_judged(self):
         code, out, _err = self.run_up(*self.up_args("--diff", "--local"))
 
-        # Not a repository, so the diff cannot be read: INVALID is the honest
-        # answer, and the point of the test is that it is *reached*, not that it
-        # is PASS.
-        self.assertEqual(code, 3)
-        self.assert_three_lines_at_most(out, 3)
+        # A recording taken a moment ago cannot be contradicted by a change made
+        # before it exists, so the first run must stop after configuring rather
+        # than spend a verdict saying "nothing changed yet".
+        self.assertEqual(code, 0)
+        lines = out.splitlines()
+        self.assertEqual(lines[-1], "next: change something, then run harness-audit up again")
+        self.assertRegex(out, r"baseline recorded \(\d+ files?\)")
+        for line in lines:
+            self.assertNotIn(line, {"PASS", "FAIL", "INVALID", "NOT RUN"})
 
         config = json.loads(self.mcp.read_text(encoding="utf-8"))
         self.assertIn(MCP_SERVER_NAME, config["mcpServers"])
         self.assertTrue(self.roots.exists())
         self.assertTrue((self.project / ".harness-baseline.json").exists())
 
-    def test_the_setup_chatter_stays_out_of_the_three_lines(self):
+    def test_the_second_run_is_the_one_that_judges(self):
+        self.run_up(*self.up_args("--diff", "--local"))
+
+        # Configured and recorded now: setup and baseline are both answered, so
+        # the check is the only thing left. Not a git repo, so INVALID -- the
+        # point is that a check *ran*, and its verdict owns line one.
+        code, out, _err = self.run_up(*self.up_args("--diff", "--local"))
+
+        self.assertEqual(code, 3)
+        self.assertEqual(out.splitlines()[0], "INVALID")
+        self.assertNotIn("baseline recorded", out)
+        self.assertNotIn("next: change something", out)
+
+    def test_a_command_claim_still_runs_on_the_first_pass(self):
+        # `--command` reads an exit status; there is no recording to be
+        # unfalsifiable against, so skipping it would silently not run the
+        # command the operator asked about.
+        code, out, _err = self.run_up(*self.up_args("--command", "true", "--local"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines()[0], "PASS")
+
+    def test_the_setup_chatter_stays_out_of_the_output(self):
         _code, out, _err = self.run_up(*self.up_args("--diff", "--local"))
         for noise in ("mcp config", "baseline written", "repo             :"):
             self.assertNotIn(noise, out)
 
-    def test_the_run_is_recorded_in_the_usage_log(self):
+    def test_the_first_run_logs_setup_and_baseline_but_not_a_check(self):
+        self.run_up(*self.up_args("--diff", "--local"))
+        log = self.root / "usage" / "usage.jsonl"
+        events = [json.loads(line)["event"] for line in log.read_text(encoding="utf-8").splitlines()]
+        self.assertNotIn("check", events)
+        self.assertIn("baseline", events)
+        self.assertIn("setup", events)
+
+    def test_the_second_run_logs_the_check(self):
+        self.run_up(*self.up_args("--diff", "--local"))
         self.run_up(*self.up_args("--diff", "--local"))
         log = self.root / "usage" / "usage.jsonl"
         events = [json.loads(line)["event"] for line in log.read_text(encoding="utf-8").splitlines()]
         self.assertIn("check", events)
-        self.assertIn("baseline", events)
-        self.assertIn("setup", events)
 
 
 class AlreadyConfiguredTests(UpTestCase):
@@ -141,16 +174,29 @@ class AlreadyConfiguredTests(UpTestCase):
 
     def test_a_half_configuration_is_not_configured(self):
         # mcp entry but no ref_roots: the server would start and fail every
-        # `@alias`, so `up` must finish the job rather than skip it.
+        # `@alias`, so `up` must finish the job rather than skip it. Finishing
+        # the job includes taking the recording, which makes this a first run:
+        # it reports the configuration and does not judge.
         self.mcp.write_text(
             json.dumps({"mcpServers": {MCP_SERVER_NAME: {"command": "harness-audit"}}}),
             encoding="utf-8",
         )
-        code, _out, _err = self.run_up(*self.up_args("--diff", "--local"))
-        self.assertEqual(code, 3)
+        code, out, _err = self.run_up(*self.up_args("--diff", "--local"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("baseline recorded", out)
         self.assertTrue(self.roots.exists())
         alias = _alias_for(baseline_mod.resolve_repo(str(self.project)) or str(self.project))
         self.assertIn(alias, json.loads(self.roots.read_text(encoding="utf-8")))
+
+    def test_a_configuration_completed_earlier_is_not_rewritten(self):
+        self.configure()
+        baseline_mod.record(str(self.project), files=[], local=True)
+
+        with mock.patch.object(up_mod, "run_setup", side_effect=AssertionError("setup was called")):
+            code, out, _err = self.run_up(*self.up_args("--diff"))
+
+        self.assertEqual(code, 3)
+        self.assertEqual(out.splitlines()[0], "INVALID")
 
 
 @unittest.skipUnless(HAS_GIT, "git and bash are required for a real check")

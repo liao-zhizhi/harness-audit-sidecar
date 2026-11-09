@@ -28,6 +28,7 @@ atexit.register(shutil.rmtree, _USAGE_DIR, True)
 
 import audit_sidecar.cli as cli
 import audit_sidecar.report as report
+import audit_sidecar.usage as usage
 from audit_sidecar.check import CheckOutcome
 from audit_sidecar.verdict import Verdict
 
@@ -163,6 +164,37 @@ class UploadTransportTests(unittest.TestCase):
         self.assertIsNone(status)
         self.assertIn("no route", body["error"])
 
+    def test_the_default_is_the_public_dashboard(self):
+        # A localhost default only works on the author's machine; the deployed
+        # host is the one an install actually has a chance of reaching.
+        self.assertEqual(
+            report.DEFAULT_BASE_URL, "https://demo.silicon-probe.com"
+        )
+        with mock.patch.dict(os.environ, {report.UPLOAD_URL_ENV: ""}):
+            self.assertEqual(
+                report.resolve_url(),
+                "https://demo.silicon-probe.com/api/v1/check/report",
+            )
+
+    def test_the_environment_overrides_the_public_default(self):
+        with mock.patch.dict(os.environ, {report.UPLOAD_URL_ENV: "https://mine.example"}):
+            self.assertEqual(
+                report.resolve_url(), "https://mine.example/api/v1/check/report"
+            )
+
+    def test_an_api_key_is_sent_only_when_given(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["key"] = request.get_header("X-api-key")
+            return FakeResponse(200, b'{"recorded": true}')
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            report.upload(_outcome("diff", "x"), "http://dash")
+            self.assertIsNone(captured["key"])
+            report.upload(_outcome("diff", "x"), "http://dash", api_key="k-123")
+            self.assertEqual(captured["key"], "k-123")
+
     def test_the_summary_line_distinguishes_recorded_from_ignored(self):
         self.assertIn(
             "recorded", report.summary_line(200, {"recorded": True, "verdict": "FAIL"})
@@ -175,6 +207,114 @@ class UploadTransportTests(unittest.TestCase):
         self.assertIn("not sent", report.summary_line(None, {"error": "down"}))
 
 
+class ProbeTests(unittest.TestCase):
+    """The probe reads a status the way a router means it, not as a success flag.
+
+    This is the part that would silently be wrong: a healthy FastAPI deployment
+    answers ``OPTIONS`` on a POST-only route with **405**, so "non-2xx means not
+    deployed" would refuse every correct host. Both directions are pinned here.
+    """
+
+    def setUp(self) -> None:
+        report.reset_probe_cache()
+        self.addCleanup(report.reset_probe_cache)
+
+    def _probe(self, outcome):
+        """``outcome`` is a response, an exception, or an (status, allow) pair."""
+        import email.message
+        import urllib.error
+
+        def fake_urlopen(request, timeout=None):
+            self.method = request.get_method()
+            self.url = request.full_url
+            if isinstance(outcome, BaseException):
+                raise outcome
+            status, allow = outcome
+            if status >= 400:
+                headers = email.message.Message()
+                if allow:
+                    headers["Allow"] = allow
+                raise urllib.error.HTTPError(
+                    request.full_url, status, "no", headers, None
+                )
+            return FakeResponse(status, b"{}")
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            return report.probe("https://dash.example", cache=False)
+
+    def test_a_post_only_route_is_probed_as_present(self):
+        # Exactly what product_mvp answers: 405 + `Allow: POST`.
+        result = self._probe((405, "POST"))
+        self.assertTrue(result.ok, result.detail)
+        self.assertEqual(self.method, "OPTIONS")
+        self.assertEqual(self.url, "https://dash.example/api/v1/check/report")
+
+    def test_a_missing_route_is_probed_as_absent(self):
+        result = self._probe((404, ""))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, 404)
+
+    def test_an_ungated_answer_is_present(self):
+        self.assertTrue(self._probe((200, "")).ok)
+        self.assertTrue(self._probe((204, "")).ok)
+
+    def test_a_gated_route_is_present_because_the_post_will_explain_it(self):
+        self.assertTrue(self._probe((401, "")).ok)
+        self.assertTrue(self._probe((403, "")).ok)
+
+    def test_a_server_error_is_not_reported_as_not_deployed(self):
+        result = self._probe((503, ""))
+        self.assertFalse(result.ok)
+        self.assertIn("503", report.failure_message("https://dash.example", result))
+
+    def test_no_answer_names_the_host_and_the_flag(self):
+        result = self._probe(OSError("connection refused"))
+        self.assertFalse(result.ok)
+        message = report.failure_message("https://dash.example", result)
+        self.assertIn("cannot reach https://dash.example", message)
+        self.assertIn("--upload-url <your-instance>", message)
+
+    def test_the_missing_route_message_is_the_two_line_remediation(self):
+        message = report.failure_message(
+            "https://demo.silicon-probe.com", self._probe((404, ""))
+        )
+        self.assertEqual(
+            message,
+            "upload failed: https://demo.silicon-probe.com does not expose "
+            "/api/v1/check/report.\n"
+            "Either deploy the latest product_mvp to that host, or pass "
+            "--upload-url <your-instance>.",
+        )
+
+    def test_the_probe_is_cached_per_host(self):
+        calls = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request.full_url)
+            return FakeResponse(200, b"{}")
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            report.probe("https://dash.example")
+            report.probe("https://dash.example")
+
+        self.assertEqual(calls, ["https://dash.example/api/v1/check/report"])
+
+    def test_the_announcement_names_the_public_dashboard_once(self):
+        first = report.announcement("https://demo.silicon-probe.com")
+        self.assertEqual(
+            first,
+            "upload: posting to public dashboard https://demo.silicon-probe.com "
+            "(redacted payload)",
+        )
+        # Once per process: the second POST is not a second surprise.
+        self.assertIsNone(report.announcement("https://demo.silicon-probe.com"))
+
+    def test_a_private_host_is_not_called_public(self):
+        line = report.announcement("https://mine.example")
+        self.assertIn("https://mine.example", line)
+        self.assertNotIn("public dashboard", line)
+
+
 class CliUploadTests(unittest.TestCase):
     def setUp(self) -> None:
         import tempfile
@@ -182,6 +322,16 @@ class CliUploadTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.cwd = self._tmp.name
+
+        # This class is about the CLI's orchestration, not the socket. A test
+        # that reaches the internet is a test that fails on a train, so the
+        # probe is stubbed to "the route exists" unless a test says otherwise.
+        report.reset_probe_cache()
+        self.addCleanup(report.reset_probe_cache)
+        self.probe = report.Probe(True, 405, "route exists")
+        patcher = mock.patch.object(report, "probe", side_effect=lambda *a, **k: self.probe)
+        self.probe_call = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _run(self, argv):
         out, err = io.StringIO(), io.StringIO()
@@ -199,7 +349,7 @@ class CliUploadTests(unittest.TestCase):
     def test_a_reachable_dashboard_is_named_in_the_stderr_line(self):
         with mock.patch.object(
             report, "upload", return_value=(200, {"recorded": True, "verdict": "INVALID"})
-        ) as upload:
+        ) as upload, mock.patch.object(usage, "upload_aggregate", return_value=(200, {})):
             code, out, err = self._run(
                 ["--diff", "--cwd", self.cwd, "--upload", "--upload-url", "http://dash"]
             )
@@ -219,8 +369,57 @@ class CliUploadTests(unittest.TestCase):
         self.assertEqual(out.splitlines()[0], "INVALID")
         self.assertIn("upload: not sent", err)
 
+    def test_the_first_post_announces_the_public_dashboard(self):
+        with mock.patch.object(
+            report, "upload", return_value=(200, {"recorded": True, "verdict": "INVALID"})
+        ), mock.patch.object(usage, "upload_aggregate", return_value=(200, {})):
+            _code, _out, err = self._run(["--diff", "--cwd", self.cwd, "--upload"])
+
+        self.assertIn(
+            "upload: posting to public dashboard https://demo.silicon-probe.com "
+            "(redacted payload)",
+            err,
+        )
+
+    def test_a_missing_endpoint_posts_nothing_and_says_so(self):
+        self.probe = report.Probe(False, 404, "no route")
+        with mock.patch.object(report, "upload") as upload, mock.patch.object(
+            usage, "upload_aggregate"
+        ) as aggregate:
+            code, out, err = self._run(
+                ["--diff", "--cwd", self.cwd, "--upload", "--upload-url", "https://demo.silicon-probe.com"]
+            )
+
+        # The verdict is local, so it is unchanged; the *absence* of an upload
+        # is reported rather than dressed up as one.
+        self.assertEqual(code, 3)
+        self.assertEqual(out.splitlines()[0], "INVALID")
+        self.assertIn(
+            "upload failed: https://demo.silicon-probe.com does not expose "
+            "/api/v1/check/report.",
+            err,
+        )
+        self.assertIn(
+            "Either deploy the latest product_mvp to that host, or pass "
+            "--upload-url <your-instance>.",
+            err,
+        )
+        self.assertNotIn("upload: recorded", err)
+        self.assertNotIn("upload: not sent", err)
+        upload.assert_not_called()
+        aggregate.assert_not_called()
+
+    def test_the_probe_is_asked_before_the_first_post(self):
+        self.probe = report.Probe(True, 405, "route exists")
+        with mock.patch.object(report, "upload", return_value=(200, {"recorded": True})), \
+             mock.patch.object(usage, "upload_aggregate", return_value=(200, {})):
+            self._run(["--diff", "--cwd", self.cwd, "--upload"])
+
+        self.assertEqual(self.probe_call.call_count, 1)
+
     def test_verbose_and_json_still_work_with_upload(self):
-        with mock.patch.object(report, "upload", return_value=(200, {"recorded": True})):
+        with mock.patch.object(report, "upload", return_value=(200, {"recorded": True})), \
+             mock.patch.object(usage, "upload_aggregate", return_value=(200, {})):
             code, out, _ = self._run(
                 ["--diff", "--cwd", self.cwd, "--upload", "--json"]
             )

@@ -856,7 +856,10 @@ def _parse_check_args(argv: List[str]) -> argparse.Namespace:
         action="store_true",
         help=(
             "also POST the verdict to a dashboard's display ledger. Off by "
-            "default; sends verdict, reason and the claim shape only"
+            "default; sends verdict, reason and the claim shape only. "
+            "Uploading consumes the anonymous trial quota on the dashboard "
+            "(same budget as /api/v1/verify). Dense uploads can exhaust the "
+            "trial quota; pass --upload-api-key if you need more"
         ),
     )
     parser.add_argument(
@@ -867,6 +870,16 @@ def _parse_check_args(argv: List[str]) -> argparse.Namespace:
             "dashboard base URL for --upload (default: {} or ${})".format(
                 report.DEFAULT_BASE_URL, report.UPLOAD_URL_ENV
             )
+        ),
+    )
+    parser.add_argument(
+        "--upload-api-key",
+        default=None,
+        metavar="KEY",
+        help=(
+            "X-API-Key for --upload, lifting the anonymous trial quota "
+            "(default: ${}). Sending a key is opt-in; without it the request "
+            "is anonymous".format(report.API_KEY_ENV)
         ),
     )
     parser.add_argument(
@@ -960,17 +973,34 @@ def _finish_check(outcome: CheckOutcome, options: argparse.Namespace) -> int:
         # without this the verdict can appear after the upload line, and a CI
         # log would read as if the dashboard decided the result.
         sys.stdout.flush()
-        status, body = report.upload(
-            outcome, options.upload_url, timeout=options.upload_timeout
-        )
-        print(report.summary_line(status, body), file=sys.stderr)
-        # The aggregate, not the rows: counts of verdicts, baseline misses and
-        # tool names. Sending the log itself would ship every path hash and
-        # every timestamp, which is a different product.
-        usage_status, usage_body = usage.upload_aggregate(
-            options.upload_url, timeout=options.upload_timeout
-        )
-        print(usage.summary_line(usage_status, usage_body), file=sys.stderr)
+        note = report.announcement(options.upload_url)
+        if note:
+            print(note, file=sys.stderr)
+        # Probe before posting. "Sent" for a host that has no such route is the
+        # one failure mode this flag must not have: the operator would believe a
+        # remote display holds their verdict when nothing received it.
+        readiness = report.probe(options.upload_url, timeout=options.upload_timeout)
+        if not readiness.ok:
+            print(
+                report.failure_message(options.upload_url, readiness), file=sys.stderr
+            )
+        else:
+            status, body = report.upload(
+                outcome,
+                options.upload_url,
+                timeout=options.upload_timeout,
+                api_key=options.upload_api_key,
+            )
+            print(report.summary_line(status, body), file=sys.stderr)
+            # The aggregate, not the rows: counts of verdicts, baseline misses
+            # and tool names. Sending the log itself would ship every path hash
+            # and every timestamp, which is a different product.
+            usage_status, usage_body = usage.upload_aggregate(
+                options.upload_url,
+                timeout=options.upload_timeout,
+                api_key=options.upload_api_key,
+            )
+            print(usage.summary_line(usage_status, usage_body), file=sys.stderr)
     return _VERDICT_EXIT[outcome.verdict]
     return _VERDICT_EXIT[outcome.verdict]
 

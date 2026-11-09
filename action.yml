@@ -15,6 +15,13 @@ inputs:
       only input a new workflow needs.
     required: false
     default: ""
+  version:
+    description: >-
+      harness-audit-sidecar version to install. Default "latest" resolves the
+      newest release, which means `@v1` pins this workflow, not the bytes it
+      runs; set an exact version when a run has to be reproducible.
+    required: false
+    default: "latest"
   # Legacy inputs. They are read only when `check` is empty, so an existing
   # workflow keeps working without being rewritten in the same commit.
   file:
@@ -69,10 +76,23 @@ runs:
       shell: bash
       # Installed from PyPI, not from this checkout. That is the deliberate
       # trade: the action has no build step and works from `uses: ...@v1`, but
-      # `@v1` no longer pins the code -- pip resolves the newest release. Pin
-      # the version in the step (or vendor the source) if the workflow needs
-      # "this ref, these bytes".
-      run: python -m pip install --quiet harness-audit-sidecar
+      # `@v1` no longer pins the code -- pip resolves the newest release. The
+      # `version` input is how a workflow takes that back; see the README.
+      #
+      # The version arrives through the environment rather than being
+      # interpolated into the script, because `${{ }}` is textual substitution:
+      # an input containing `"` or `;` would become shell. As a value it can
+      # only be a version, and pip rejects the shapes that are not one.
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="${INPUT_VERSION:-latest}"
+        if [[ "${version}" == "latest" ]]; then
+          python -m pip install --quiet harness-audit-sidecar
+        else
+          python -m pip install --quiet "harness-audit-sidecar==${version}"
+        fi
 
     - name: Judge the declaration
       id: check

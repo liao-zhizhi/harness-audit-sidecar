@@ -11,6 +11,18 @@ The whole design is in the output contract:
 * **three lines at most** -- verdict, ``reason:``, ``next_step:``. No progress
   chatter from the setup or the recording it may have just taken. A first run
   that prints twelve lines makes the one line that matters unfindable.
+* **a first run does not judge.** If this invocation recorded the baseline, it
+  prints what it configured and stops:
+
+  ``baseline recorded (3 files)`` / ``next: change something, then run
+  harness-audit up again``
+
+  A recording taken a second ago cannot be contradicted by a change that
+  predates it, so ``check`` could only answer "nothing changed since the
+  recording" -- true about the lattice, and useless about the operator's world.
+  Setup is idempotent, so the second run has both halves and does judge.
+  ``--command`` is exempt: an exit status is not compared against a recording,
+  so there is nothing unfalsifiable about running it immediately.
 * **one corrective command, with this run's arguments in it.** Every failure
   path ends in a line the operator can paste. A placeholder is a command they
   have to edit before it runs, which is a worse answer than the ``INVALID`` that
@@ -19,14 +31,6 @@ The whole design is in the output contract:
   check ran, and a hand-built ``INVALID`` when a prerequisite could not be
   established -- the same four values, for the same reason ``check`` reports
   its own self-audit failure as ``INVALID`` rather than a crash.
-
-One consequence is worth stating where it will be read, because it looks like a
-bug the first time: **a first run on a tree that is already dirty reports
-``FAIL``** ("nothing changed since the recording"). The recording was taken a
-moment before the check, so the lattice is right and the tool has no memory of
-what came before that instant -- the same epistemic gap that makes ``check
---diff`` ``INVALID`` when there is no recording at all. ``up`` cannot invent the
-ordering it was not given; to judge a claim, record *before* the agent works.
 
 Nothing here writes a ledger, prints an upload, or changes a verdict rule: the
 only files it may write are the client config, a recording it was asked to
@@ -188,6 +192,19 @@ def _humanise(next_step: Optional[str], options: argparse.Namespace) -> Optional
     )
 
 
+def _report_config(*, configured: bool, files: int) -> None:
+    """What a first run prints: what was set up, and nothing else.
+
+    No verdict line, because nothing was judged -- printing ``INVALID`` here
+    would be a verdict about a claim this run never examined. The exit code is
+    ``0``: the setup succeeded, and that is all that was attempted.
+    """
+    if configured:
+        print("configured (mcp + ref_roots)")
+    print("baseline recorded ({} {})".format(files, "file" if files == 1 else "files"))
+    print("next: change something, then run harness-audit up again")
+
+
 def _report(verdict: Verdict, reason: str, next_step: Optional[str]) -> None:
     print(verdict.value)
     print("reason: {}".format(_one_line(reason)))
@@ -302,6 +319,7 @@ def run_up(argv: List[str]) -> int:
     # that here would overwrite the very memory this run is about to judge, and
     # a fresh recording made after the change can only produce a false FAIL.
     has_recording = baseline_mod.load(cwd) is not None
+    did_setup = False
 
     if not _is_configured(cwd, mcp_config=options.mcp_config, ref_roots=options.ref_roots):
         setup_argv = ["--cwd", cwd]
@@ -321,9 +339,18 @@ def run_up(argv: List[str]) -> int:
                 "setup could not write the client configuration",
                 "harness-audit setup {}".format(" ".join(_quote(a) for a in setup_argv)),
             )
+        did_setup = True
 
+    recorded_files = 0
+    did_record = False
     if not has_recording:
         files, _matched, _truncated = collect_common_files(cwd, limit=options.max_files)
+        if kind == "file" and options.file:
+            # The one file this run is about, recorded first. Otherwise the
+            # capped common-file walk can miss it, and the very next `up --file`
+            # would answer INVALID "the recording does not name it" -- a
+            # correction the operator already made impossible to fix.
+            files = list(dict.fromkeys([options.file, *files]))
         try:
             recorded, _written = baseline_mod.record(
                 cwd, files=files, local=options.local
@@ -339,12 +366,26 @@ def run_up(argv: List[str]) -> int:
                     )
                 ),
             )
+        recorded_files = len(recorded.files)
+        did_record = True
         # `up` took the recording itself, so it has to log it itself: the
         # `baseline` subcommand is not on the path here, and a log that only
         # sees the subcommand would claim this project was never recorded.
         usage.record_baseline(
-            files=len(recorded.files), local=bool(options.local), cwd=cwd
+            files=recorded_files, local=bool(options.local), cwd=cwd
         )
+
+    # A recording taken seconds ago cannot be contradicted by a change made
+    # before it exists, so judging now can only produce "nothing changed since
+    # the recording" -- a true statement about the lattice and a false one about
+    # the operator's world. Stop after configuring and say what to do next.
+    #
+    # ``--command`` is exempt: an exit status does not compare against a
+    # recording, so there is nothing unfalsifiable about running it now, and
+    # skipping it would silently not run the command the caller asked about.
+    if did_record and kind in ("file", "diff"):
+        _report_config(configured=did_setup, files=recorded_files)
+        return EXIT_PASS
 
     try:
         outcome = _judge(options, cwd)

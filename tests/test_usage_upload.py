@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest import mock
 
 import audit_sidecar.cli as cli
+import audit_sidecar.report as report
 import audit_sidecar.usage as usage
 
 
@@ -66,6 +67,16 @@ class AggregateUploadTests(unittest.TestCase):
         patch = mock.patch.dict(os.environ, {usage.USAGE_DIR_ENV: str(self.root)})
         patch.start()
         self.addCleanup(patch.stop)
+        # The probe is about the socket, not about the aggregate. Stubbed, and
+        # the per-process memo cleared, so one test's verdict about a host
+        # cannot decide the next test's.
+        report.reset_probe_cache()
+        self.addCleanup(report.reset_probe_cache)
+        probe = mock.patch.object(
+            report, "probe", return_value=report.Probe(True, 405, "route exists")
+        )
+        probe.start()
+        self.addCleanup(probe.stop)
         # Two check events and one tool call, so the aggregate has something in
         # every field and the "rows" key is easy to look for.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

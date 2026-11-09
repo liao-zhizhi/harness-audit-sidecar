@@ -326,6 +326,72 @@ class SetupTests(unittest.TestCase):
         self.assertIn("capped", out)
 
 
+    def test_the_ref_roots_line_names_the_file_and_its_backup(self):
+        # The default location, with a file already there so a backup is made.
+        # This is the line an operator reads to answer "which file did that
+        # just change, and where are the old bytes".
+        default = self.root / ".gradia" / "case_library" / "ref_roots.json"
+        default.parent.mkdir(parents=True, exist_ok=True)
+        default.write_text(json.dumps({"other": "/elsewhere"}), encoding="utf-8")
+
+        with mock.patch.object(setup_cmd, "REF_ROOTS_PATH", default), \
+             mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            code, out, err = _capture(
+                ["--cwd", str(self.project), "--mcp-config", str(self.mcp_path)]
+            )
+
+        self.assertEqual(code, 0, err)
+        line = next(line for line in out.splitlines() if line.startswith("ref_roots"))
+        self.assertEqual(
+            line,
+            "ref_roots    : ~/.gradia/case_library/ref_roots.json -- wrote "
+            "(backup: ref_roots.json.bak)",
+        )
+        self.assertTrue(Path(str(default) + ".bak").exists())
+        # The backup is folded into the line that names the file, not printed
+        # separately where it can be missed.
+        self.assertNotIn("  backup     :", out)
+
+    def test_an_unchanged_ref_roots_file_says_unchanged(self):
+        self.assertEqual(_capture(self.argv())[0], 0)
+        code, out, _ = _capture(self.argv())
+
+        self.assertEqual(code, 0)
+        line = next(line for line in out.splitlines() if line.startswith("ref_roots"))
+        self.assertIn("-- unchanged", line)
+        self.assertNotIn("backup", line)
+
+    def test_a_custom_ref_roots_path_is_called_out(self):
+        code, out, _err = _capture(self.argv())
+
+        self.assertEqual(code, 0)
+        line = next(line for line in out.splitlines() if line.startswith("ref_roots"))
+        # "the merge succeeded" and "the resolver will read it" are different
+        # facts; this is the second one.
+        self.assertIn(str(self.ref_path), line)
+        self.assertIn("(custom path, not the default)", line)
+
+    def test_the_default_path_is_shortened_and_not_called_custom(self):
+        default = self.root / ".gradia" / "case_library" / "ref_roots.json"
+        with mock.patch.object(setup_cmd, "REF_ROOTS_PATH", default), \
+             mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            code, out, err = _capture(
+                ["--cwd", str(self.project), "--mcp-config", str(self.mcp_path)]
+            )
+
+        self.assertEqual(code, 0, err)
+        line = next(line for line in out.splitlines() if line.startswith("ref_roots"))
+        self.assertEqual(line, "ref_roots    : ~/.gradia/case_library/ref_roots.json -- wrote")
+        self.assertNotIn("custom path", line)
+        self.assertTrue(default.exists())
+
+    def test_the_json_report_says_whether_the_path_is_the_default(self):
+        code, out, _err = _capture(self.argv("--json"))
+
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(out)["ref_roots"]["default"])
+
+
 class CliDispatchTests(unittest.TestCase):
     def test_setup_is_reachable_through_the_cli(self):
         with tempfile.TemporaryDirectory() as tmp:

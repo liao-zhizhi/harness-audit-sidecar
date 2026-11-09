@@ -362,6 +362,11 @@ def run_setup(argv: List[str]) -> int:
             "changed": roots_changed,
             "written": False,
             "backup": None,
+            # Whether this is the file `@alias` resolution reads by default.
+            # Recorded at write time because "which file did I just edit" is
+            # the question an operator asks when a lookup still fails, and a
+            # custom `--ref-roots` is invisible in the path alone.
+            "default": os.path.abspath(str(ref_path)) == os.path.abspath(str(REF_ROOTS_PATH)),
         },
         "baseline": {
             "files": len(files),
@@ -418,6 +423,22 @@ def _alias_for(project_root: str) -> str:
     return (cleaned or "repo").lower()
 
 
+def _display_path(path: str) -> str:
+    """``/home/me/.gradia/x.json`` -> ``~/.gradia/x.json``, for eye-readable output.
+
+    Only cosmetic: every path in the JSON report is still absolute, because a
+    machine consumer wants the real location and a human wants the short one.
+    """
+    home = os.path.expanduser("~")
+    try:
+        absolute = os.path.abspath(path)
+        if home and home != "/" and (absolute == home or absolute.startswith(home + os.sep)):
+            return "~" + absolute[len(home):]
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        pass
+    return path
+
+
 def _print_report(report: Dict[str, Any]) -> None:
     verb = "would write" if report["print_only"] else "wrote"
     print("project root : {}".format(report["project_root"]))
@@ -437,10 +458,16 @@ def _print_report(report: Dict[str, Any]) -> None:
 
     roots = report["ref_roots"]
     state = "unchanged" if not roots["changed"] else verb
-    print("ref_roots    : {} -- {}".format(roots["path"], state))
+    line = "ref_roots    : {} -- {}".format(_display_path(roots["path"]), state)
+    if roots.get("backup"):
+        line += " (backup: {})".format(os.path.basename(roots["backup"]))
+    if not roots.get("default", True):
+        # The one fact a failed `@alias` lookup needs: this run edited a file
+        # the resolver does not read, so the alias will not appear to work even
+        # though the write succeeded.
+        line += " (custom path, not the default)"
+    print(line)
     print("  alias      : {} -> {}".format(roots["alias"], roots["target"]))
-    if roots["backup"]:
-        print("  backup     : {}".format(roots["backup"]))
 
     baseline = report["baseline"]
     recorded = "would record" if report["print_only"] else "recorded"

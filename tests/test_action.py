@@ -102,6 +102,34 @@ class ActionShapeTests(unittest.TestCase):
         # the runner, so the package is the dependency rather than the checkout.
         self.assertNotIn("GITHUB_ACTION_PATH", install["run"])
 
+    def test_the_version_input_exists_and_defaults_to_latest(self):
+        # `@v1` pins the workflow; pip resolves the package. The input is how a
+        # workflow takes that back, so it must exist before the README can
+        # promise it.
+        version = self.action["inputs"]["version"]
+        self.assertEqual(version["required"], False)
+        self.assertEqual(version["default"], "latest")
+        self.assertIn("reproducible", version["description"].lower())
+
+    def test_the_install_step_branches_on_the_version(self):
+        install = self.steps[0]
+        script = install["run"]
+        # The input reaches the script as a value, not as `${{ }}` text: an
+        # interpolated input containing a quote would become shell syntax.
+        self.assertEqual(install["env"]["INPUT_VERSION"], "${{ inputs.version }}")
+        self.assertNotIn("${{ inputs.version }}", script)
+
+        self.assertIn('if [[ "${version}" == "latest" ]]', script)
+        self.assertIn("pip install --quiet harness-audit-sidecar\n", script + "\n")
+        self.assertIn('pip install --quiet "harness-audit-sidecar==${version}"', script)
+        # Exact pins fail loudly instead of silently resolving to newest.
+        self.assertIn("set -euo pipefail", script)
+
+    def test_the_readme_says_v1_does_not_pin_the_package(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("pins the workflow, not the package", readme)
+        self.assertIn("version: 0.10.1", readme)
+
     def test_the_judging_step_calls_the_check_subcommand(self):
         self.assertIn("harness-audit check", self.steps[-1]["run"])
 

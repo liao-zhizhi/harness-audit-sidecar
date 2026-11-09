@@ -90,10 +90,14 @@ UNCOVERED_WINDOW_SECONDS = 600.0
 _TAIL_LINES = 400
 
 #: Where ``--upload`` posts the aggregate. Same base URL as the verdict report,
-#: different path -- one is a decision, the other is a counter.
+#: different path -- one is a decision, the other is a counter. The default is
+#: the public dashboard for the same reason it is in ``report.py``: a local
+#: default would fail for every install that is not the author's.
 AGGREGATE_PATH = "/api/v1/usage/report"
-DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_BASE_URL = "https://demo.silicon-probe.com"
 UPLOAD_URL_ENV = "HARNESS_AUDIT_UPLOAD_URL"
+API_KEY_ENV = "HARNESS_AUDIT_API_KEY"
+API_KEY_HEADER = "X-API-Key"
 
 #: The only three things an aggregate upload carries. A test asserts the key
 #: set, so widening it is a visible decision rather than a convenience.
@@ -556,10 +560,15 @@ def aggregate(path: Optional[Path] = None) -> Dict[str, Any]:
 
 def resolve_url(explicit: Optional[str] = None) -> str:
     base = explicit or os.environ.get(UPLOAD_URL_ENV) or DEFAULT_BASE_URL
-    base = base.strip()
-    if base.endswith(AGGREGATE_PATH):
-        return base
-    return base.rstrip("/") + AGGREGATE_PATH
+    base = (base or "").strip().rstrip("/")
+    # A caller may hand the same flag to both uploads; if it already names the
+    # verdict report, take the base out of it rather than appending a second
+    # path. ``report.resolve_url`` accepts the full URL, so this must too.
+    for suffix in (AGGREGATE_PATH, "/api/v1/check/report"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+            break
+    return base + AGGREGATE_PATH
 
 
 def upload_aggregate(
@@ -567,6 +576,7 @@ def upload_aggregate(
     *,
     path: Optional[Path] = None,
     timeout: float = 5.0,
+    api_key: Optional[str] = None,
 ) -> Tuple[Optional[int], Dict[str, Any]]:
     """``(status, body)``; ``status`` is ``None`` when the request never landed.
 
@@ -575,17 +585,24 @@ def upload_aggregate(
     """
     payload = aggregate(path)
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    key = (api_key if api_key is not None else os.environ.get(API_KEY_ENV, "")) or ""
+    if key.strip():
+        headers[API_KEY_HEADER] = key.strip()
     request = urllib.request.Request(
         resolve_url(base_url),
         data=data,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, _decode(response.read())
     except urllib.error.HTTPError as error:
-        return error.code, _decode(error.read())
+        try:
+            return error.code, _decode(error.read())
+        finally:
+            error.close()
     except (urllib.error.URLError, OSError, TimeoutError) as error:
         return None, {"error": str(getattr(error, "reason", error))}
 

@@ -877,6 +877,24 @@ If you want to allow it, branch on the verdict instead of weakening the code:
 - run: echo "verdict was ${{ steps.audit.outputs.verdict }}"
 ```
 
+**`@v1` pins the workflow, not the package.** The action has no build step, so
+it installs `harness-audit-sidecar` from PyPI at run time; with the default
+`version: latest` pip resolves whatever the newest release is, and a re-run
+months later can execute different code. That is the right default for a
+`uses: ...@v1` line anyone can paste. When a run has to be reproducible -- a
+release gate, an audit trail, a postmortem -- name the version:
+
+```yaml
+- uses: liao-zhizhi/harness-audit-sidecar@v1
+  with:
+    version: 0.10.1            # exact pin; omit for latest
+    check: file src/main.py
+```
+
+`latest` (the default) installs `harness-audit-sidecar`; anything else installs
+`harness-audit-sidecar==<version>`, so a typo fails the install step instead of
+silently falling back to the newest release.
+
 **Three different repairs hide behind one `INVALID`.** Exit code 3 cannot tell
 them apart, and neither can `verdict` — both are `INVALID`. What separates them
 is the reason's first clause, which is a stable contract:
@@ -993,13 +1011,64 @@ harness-audit setup                # apply
   that can drift from the real one.
 
 Output names every file it wrote, how many baseline entries it recorded, and
-the next step (restart Cursor so the MCP config is reloaded).
+the next step (restart Cursor so the MCP config is reloaded). The `ref_roots`
+line is an absolute answer on purpose -- it names the file that was actually
+written, its `.bak`, and whether that file is the one `@alias` resolution reads:
+
+```
+mcp config   : ~/.cursor/mcp.json (user) -- wrote
+ref_roots    : ~/.gradia/case_library/ref_roots.json -- wrote (backup: ref_roots.json.bak)
+  alias      : project -> /work/app
+baseline     : recorded 42 file(s) -> ~/.gradia/baseline.json
+```
+
+```
+ref_roots    : /tmp/scratch/ref_roots.json -- wrote (backup: ref_roots.json.bak) (custom path, not the default)
+```
+
+A `--ref-roots` path says so, because "the merge succeeded" and "the resolver
+will see it" are different facts, and only the second one makes `@alias` work.
 
 ### `check --upload`: a display row, not a witness
 
-`--upload` is off by default. When set, the verdict is POSTed to the
+`--upload` is off by default. When set, the verdict is POSTed to the public
 dashboard's `/api/v1/check/report` (base URL from `--upload-url` or
-`HARNESS_AUDIT_UPLOAD_URL`; default `http://127.0.0.1:8000`).
+`HARNESS_AUDIT_UPLOAD_URL`; default `https://demo.silicon-probe.com`).
+
+```bash
+harness-audit check --file src/main.py --upload
+harness-audit check --file src/main.py --upload --upload-url http://127.0.0.1:8000   # your own instance
+harness-audit check --file src/main.py --upload --upload-api-key "$KEY"             # lift the trial quota
+```
+
+**Uploading consumes the anonymous trial quota on the dashboard** (the same
+budget `/api/v1/verify` draws from). Dense uploads -- a watcher, a loop, a CI
+matrix -- can exhaust the trial quota; pass `--upload-api-key` if you need more.
+The refusal is the dashboard's, and it is reported as an HTTP status on stderr,
+never as a verdict: a gate that fails because a display is out of budget would
+be a gate that reports on the display, not on the claim.
+
+**The endpoint is probed before the first POST**, because the default is now
+somebody else's host and a 404 would otherwise read as a successful upload:
+
+```
+upload: posting to public dashboard https://demo.silicon-probe.com (redacted payload)
+upload: recorded (FAIL)
+```
+
+and when nothing is deployed there:
+
+```
+upload failed: https://demo.silicon-probe.com does not expose /api/v1/check/report.
+Either deploy the latest product_mvp to that host, or pass --upload-url <your-instance>.
+```
+
+No silent fallback to localhost and no "accepted" line for a host that never
+answered: the exit code is unchanged (the verdict was decided locally), but the
+stderr line says plainly that nothing was posted. The probe reads the status the
+way a router means it -- `405` is *healthy* here (the route exists and takes
+POST only), `404` is not deployed, no answer at all is a different sentence
+naming the host.
 
 Exactly three fields leave the machine: `verdict`, `reason`, `check`. Both text
 fields are redacted first -- `file /home/me/app/main.py` becomes
@@ -1029,6 +1098,24 @@ harness-audit up --file src/main.py   # judge one file
 harness-audit up --command "pytest -q"  # judge one command
 ```
 
+**The first run configures and stops -- it does not judge.** A recording taken a
+second ago cannot be contradicted by a change that predates it, so running
+`check` immediately could only answer "nothing changed since the recording":
+true about the lattice, useless about the operator's world.
+
+```
+$ harness-audit up                     # empty project, first run
+configured (mcp + ref_roots)
+baseline recorded (3 files)
+next: change something, then run harness-audit up again
+```
+
+Exit code `0`, and no verdict line -- nothing was judged, so printing `INVALID`
+would be a claim about a claim this run never examined. The second run has both
+halves and does judge; `--command` is exempt because an exit status is not
+compared against a recording, so there is nothing unfalsifiable about running it
+immediately.
+
 * **It orchestrates; it does not judge.** No new verdict logic, no new reason
   vocabulary. A failed prerequisite is reported as `INVALID` -- "nothing judged
   this" -- which is the value that already means that.
@@ -1048,6 +1135,12 @@ working tree changes, and raises a desktop notification on `FAIL` or `INVALID`.
 harness-audit watch            # ctrl-c to stop
 harness-audit watch --interval 5
 ```
+
+`--interval <seconds>` (default `2`) is the pause between polls. Each poll is a
+`git status` plus a `stat` of every dirty path, so on a large repository a short
+interval is a steady tax on the disk; raise it there, and the loop only gets
+less responsive, never less correct -- a change is noticed on the next poll
+whenever it is set.
 
 * **The signature is `git status --porcelain` plus the size and mtime of every
   dirty or untracked path.** Porcelain alone does not change when an

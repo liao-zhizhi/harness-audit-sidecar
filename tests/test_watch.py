@@ -290,6 +290,44 @@ class RunWatchTests(unittest.TestCase):
         self.assertIn("not a git repository", err.getvalue())
         self.assertIn("harness-audit watch --cwd", err.getvalue())
 
+    def test_the_interval_flag_reaches_the_loop(self):
+        captured = {}
+
+        class RecordingLoop:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return 0
+
+        # The repository check is the only thing between the flag and the loop;
+        # stub it so this test is about the number, not about git.
+        with mock.patch.object(watch_mod, "_repo_root", return_value="/repo"), \
+             mock.patch.object(watch_mod, "WatchLoop", RecordingLoop):
+            code = watch_mod.run_watch(["--cwd", os.getcwd(), "--interval", "5"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["interval"], 5.0)
+        # And the value is actually the pause, not a number stored beside one.
+        loop = watch_mod.WatchLoop(cwd="/repo", interval=5)
+        self.assertEqual(loop._interval, 5.0)
+
+    def test_the_interval_defaults_to_two_seconds(self):
+        captured = {}
+
+        class RecordingLoop:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self):
+                return 0
+
+        with mock.patch.object(watch_mod, "_repo_root", return_value="/repo"), \
+             mock.patch.object(watch_mod, "WatchLoop", RecordingLoop):
+            watch_mod.run_watch(["--cwd", os.getcwd()])
+
+        self.assertEqual(captured["interval"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
