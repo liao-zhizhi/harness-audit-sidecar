@@ -874,7 +874,9 @@ Changing one of those strings will silently move the failure into another row of
 this table — the tests catch that (`failure_kind` is asserted end to end against
 real CLI output), but a reworded prefix still breaks every workflow that matches
 on it. Treat the first clause as an API version: add a new kind, do not rename
-an existing one.
+an existing one. The rename gate is in
+[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md), and the tests fail if that
+checklist and these constants disagree.
 
 The Action exposes `verdict` / `reason` / `exit_code`, so a workflow branches on
 the **reason prefix**. A direct CLI consumer gets the same distinction as a
