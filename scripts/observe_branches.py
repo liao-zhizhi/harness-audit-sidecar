@@ -430,12 +430,17 @@ def main(argv: List[str]) -> int:
 
     print("")
     print(
-        "{} file(s), {} using this Action, {} not (not evidence)".format(
+        "{} file(s), {} using this Action, {} not attributed".format(
             summary["files_total"],
             summary["files_attributed"],
             summary["files_unattributed"],
         )
     )
+    if summary["files_unattributed"]:
+        print(
+            "  not attributed = not counted: either a different action, or a "
+            "wrapper calling this one (see RELEASE_CHECKLIST.md)"
+        )
     if not summary["per_class"]:
         print("  nothing attributed to this Action -- the decision is moot here")
         return 0

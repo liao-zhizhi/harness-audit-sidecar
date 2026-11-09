@@ -730,6 +730,15 @@ class ReleaseChecklistTests(unittest.TestCase):
         self.assertIn("`NOT THIS ACTION`", self.checklist)
         self.assertIn("`action_versions`", self.checklist)
 
+    def test_the_wrapper_blind_spot_is_stated(self):
+        # Attribution reads direct `uses:` only, so a wrapper action that calls
+        # this one is reported as NOT THIS ACTION -- indirect adoption counted
+        # as none. Stated so the first batch is not read as "nobody adopted it".
+        self.assertIn("Attribution follows direct `uses:` lines only", self.checklist)
+        self.assertIn("a wrapper is not counted", self.checklist)
+        self.assertIn("*indirect* evidence, not zero evidence", self.checklist)
+        self.assertIn("known blind spot", self.checklist)
+
     def test_the_scan_scope_is_github_workflows_and_the_fallback_is_stated(self):
         # A survey that reads rule files reports noise as non-adoption, and one
         # that drops a flattened corpus reports zero as if it were a finding.

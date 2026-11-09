@@ -116,6 +116,20 @@ a generic output name: a workflow branching on `steps.x.outputs.verdict` may be
 using a different action entirely, and such a row is not weak evidence — it is
 no evidence. Those files are printed with `NOT THIS ACTION` and excluded.
 
+**Attribution follows direct `uses:` lines only, so a wrapper is not counted.**
+If a workflow calls `org/some-wrapper@v1` and that wrapper calls this Action
+inside itself, the row reads `NOT THIS ACTION` even though adoption is real.
+That case is *indirect* evidence, not zero evidence — and this tool cannot tell
+the two apart. It is not followed for a deliberate reason: one hop of shell
+alias is a text pattern, but one hop of `uses:` means fetching another
+repository's `action.yml`, and a survey that clones arbitrary referenced repos
+is a different, much larger tool. So the wrapper case is a **known blind spot**,
+stated rather than guessed around. Read the `NOT THIS ACTION` rows in the first
+batch by hand before concluding the count is low: a row whose `uses:` is an
+action that wraps this one is adoption, and the number undercounts it. Revisit
+only when a real wrapper sample exists — adding the hop then is a change with a
+test, not a hunch.
+
 Record the provenance for the first batch, because the axis that matters is
 ownership:
 

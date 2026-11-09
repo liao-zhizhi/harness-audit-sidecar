@@ -227,6 +227,26 @@ class AttributionTests(unittest.TestCase):
         text = "- uses: ./agent-harness-audit\n"
         self.assertTrue(observer._attribution(text)["uses_this_action"])
 
+    def test_attribution_stops_at_a_wrapper_and_that_is_deliberate(self):
+        # A wrapper action that calls this one internally is *indirect*
+        # adoption, and this scan reports it as unattributed. That is a known
+        # blind spot, not a bug being discovered later: following the `uses:`
+        # hop means fetching another repo's action.yml, which is a different
+        # (much larger) tool. If someone makes this green by resolving
+        # wrappers, they are changing what the survey measures -- update the
+        # checklist paragraph at the same time.
+        text = """
+- uses: org/some-wrapper@v1
+  id: audit
+- if: steps.audit.outputs.verdict != 'INVALID'
+  run: echo ok
+"""
+        result = observer._attribution(text)
+        self.assertFalse(result["uses_this_action"])
+        self.assertEqual(result["action_refs"], [])
+        # The row still classifies -- it just does not count towards adoption.
+        self.assertEqual(observer._classify(text)["class"], "verdict_only")
+
 
 class SummaryTests(unittest.TestCase):
     def _report(self, text, repo, path="w.yml"):
@@ -338,6 +358,23 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(row["path"], str(path))
             self.assertEqual(row["action_versions"], ["v1"])
             self.assertTrue(row["uses_this_action"])
+
+    def test_the_unattributed_count_does_not_claim_to_be_zero_evidence(self):
+        # A wrapper action that calls this one lands here too, so the summary
+        # line must not tell the reader these rows prove non-adoption.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wrapper.yml"
+            path.write_text(
+                "- uses: org/some-wrapper@v1\n"
+                "- if: steps.audit.outputs.verdict != 'INVALID'\n"
+                "  run: echo ok\n",
+                encoding="utf-8",
+            )
+            completed = self._run(str(path))
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("1 not attributed", completed.stdout)
+            self.assertIn("wrapper calling this one", completed.stdout)
+            self.assertNotIn("not evidence", completed.stdout)
 
     def test_an_empty_target_is_a_usage_error_not_a_clean_survey(self):
         # "no files" must not look like "no problems": exit 2, per the repo's
