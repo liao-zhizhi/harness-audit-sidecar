@@ -29,11 +29,12 @@ read without re-loading the policy that produced it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import AbstractSet, Any, Dict, FrozenSet, List, Optional, Tuple
 
 from .judgment_base import JudgmentBase, Rule
 from .verdict import Verdict, VerdictEngine
+from .witness_provenance import cap_verdict
 
 __all__ = ["RuleDecision", "RuleEngine"]
 
@@ -109,10 +110,22 @@ class RuleEngine:
         check: Any = None,
         *,
         witnesses: AbstractSet[str] = _NO_WITNESSES,
+        producer: Optional[str] = None,
+        topology: Optional[str] = None,
+        program_fact: Optional[bool] = None,
+        world_fact: Optional[bool] = None,
     ) -> Verdict:
         """Return just the verdict. Signature kept positional for callers."""
         return self.judge(
-            tool_name, intent=intent, effect=effect, check=check, witnesses=witnesses
+            tool_name,
+            intent=intent,
+            effect=effect,
+            check=check,
+            witnesses=witnesses,
+            producer=producer,
+            topology=topology,
+            program_fact=program_fact,
+            world_fact=world_fact,
         ).verdict
 
     def explain(
@@ -123,17 +136,32 @@ class RuleEngine:
         check: Any = None,
         tool_name: Optional[str] = None,
         witnesses: AbstractSet[str] = _NO_WITNESSES,
+        producer: Optional[str] = None,
+        topology: Optional[str] = None,
+        program_fact: Optional[bool] = None,
+        world_fact: Optional[bool] = None,
     ) -> Tuple[Verdict, str]:
         """``VerdictEngine``-shaped entry point (verdict, reason).
 
         ``tool_name=None`` means "no policy context", so the call is judged by
         the plain lattice. That keeps this a drop-in replacement for
-        ``VerdictEngine`` wherever a tool name is unavailable.
+        ``VerdictEngine`` wherever a tool name is unavailable. The provenance
+        caps live on the rule-aware path only: with no tool name there is no
+        place to declare them, and silently capping a bare lattice call would
+        make ``explain`` disagree with ``VerdictEngine.explain``.
         """
         if tool_name is None:
             return self._fallback.explain(intent=intent, effect=effect, check=check)
         decision = self.judge(
-            tool_name, intent=intent, effect=effect, check=check, witnesses=witnesses
+            tool_name,
+            intent=intent,
+            effect=effect,
+            check=check,
+            witnesses=witnesses,
+            producer=producer,
+            topology=topology,
+            program_fact=program_fact,
+            world_fact=world_fact,
         )
         return decision.verdict, decision.reason
 
@@ -145,6 +173,10 @@ class RuleEngine:
         effect: Any = None,
         check: Any = None,
         witnesses: AbstractSet[str] = _NO_WITNESSES,
+        producer: Optional[str] = None,
+        topology: Optional[str] = None,
+        program_fact: Optional[bool] = None,
+        world_fact: Optional[bool] = None,
     ) -> RuleDecision:
         """Capability marker used by ``SafeRunner`` to route rule-aware judging.
 
@@ -152,7 +184,15 @@ class RuleEngine:
         have it, so a plain engine keeps working unchanged.
         """
         return self.judge(
-            tool_name, intent=intent, effect=effect, check=check, witnesses=witnesses
+            tool_name,
+            intent=intent,
+            effect=effect,
+            check=check,
+            witnesses=witnesses,
+            producer=producer,
+            topology=topology,
+            program_fact=program_fact,
+            world_fact=world_fact,
         )
 
     def judge(
@@ -163,8 +203,46 @@ class RuleEngine:
         effect: Any = None,
         check: Any = None,
         witnesses: AbstractSet[str] = _NO_WITNESSES,
+        producer: Optional[str] = None,
+        topology: Optional[str] = None,
+        program_fact: Optional[bool] = None,
+        world_fact: Optional[bool] = None,
     ) -> RuleDecision:
-        """Judge one call and return the verdict together with its provenance."""
+        """Judge one call, then apply the witness-provenance caps.
+
+        The caps are applied last and only ever turn a PASS into INVALID, so the
+        monotonicity documented above still holds: a rule may tighten, and so
+        may a provenance declaration, but neither can loosen.
+        """
+        decision = self._judge(
+            tool_name,
+            intent=intent,
+            effect=effect,
+            check=check,
+            witnesses=witnesses,
+        )
+        capped, reason = cap_verdict(
+            decision.verdict,
+            decision.reason,
+            producer=producer,
+            topology=topology,
+            program_fact=program_fact,
+            world_fact=world_fact,
+        )
+        if capped is decision.verdict and reason == decision.reason:
+            return decision
+        return replace(decision, verdict=capped, reason=reason)
+
+    def _judge(
+        self,
+        tool_name: str,
+        *,
+        intent: Any = None,
+        effect: Any = None,
+        check: Any = None,
+        witnesses: AbstractSet[str] = _NO_WITNESSES,
+    ) -> RuleDecision:
+        """The uncapped judgment: fallback lattice, then policy rules."""
         if not isinstance(tool_name, str) or not tool_name:
             raise ValueError("tool_name must be a non-empty string")
 
