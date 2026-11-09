@@ -35,9 +35,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -81,6 +83,120 @@ _ALIAS = re.compile(
 _COMMENT = re.compile(r"(?:^|\s)#.*$", re.MULTILINE)
 
 _YAML_SUFFIXES = (".yml", ".yaml")
+
+#: ``uses: owner/action@ref``. The ref is kept: "which version people adopted"
+#: is a different question from "did they adopt it", and a v1 example copied
+#: around is not evidence about v2.
+_USE = re.compile(r"uses:\s*['\"]?([^\s'\"#]+)")
+#: ``verdict`` is a generic output name. A workflow that branches on
+#: ``steps.x.outputs.verdict`` may not be using this Action at all, and such a
+#: row is not weak evidence -- it is no evidence. Attribution is therefore a
+#: separate axis from classification, never folded into it.
+ACTION_MARKER = "harness-audit"
+
+
+def _attribution(text: str) -> Dict[str, Any]:
+    """Which action refs this file uses, and whether ours is among them."""
+    stripped = _COMMENT.sub("", text)
+    refs: List[str] = []
+    for match in _USE.finditer(stripped):
+        ref = match.group(1)
+        if ref not in refs:
+            refs.append(ref)
+    ours = [ref for ref in refs if ACTION_MARKER in ref]
+    versions = []
+    for ref in ours:
+        version = ref.rsplit("@", 1)[1] if "@" in ref else "(no ref)"
+        if version not in versions:
+            versions.append(version)
+    return {
+        "uses_this_action": bool(ours),
+        "action_refs": ours,
+        "action_versions": versions,
+    }
+
+
+def _signature(text: str) -> str:
+    """A fingerprint of the branch skeleton, for finding copies of one template.
+
+    Raw counts answer "how many files", not "how many independent adopters": if
+    the first ten ``verdict_only`` workflows came from one organisation's one
+    template, that is one decision made once and copied nine times. The
+    signature keeps only the lines that decide anything and normalises the two
+    things that legitimately differ between copies -- the step id and the
+    pinned ref -- so a copy lands in the same bucket as its original.
+
+    This detects *the same branch skeleton*, not semantic duplication. A
+    re-typed template that reorders its steps is a new cluster; that error is in
+    the safe direction (it over-counts distinct adopters, and the per-repo
+    count is printed next to it as the coarser guard).
+    """
+    lines: List[str] = []
+    for line in _COMMENT.sub("", text).splitlines():
+        if not (_FIELD.search(line) or _CONDITION.search(line) or "uses:" in line):
+            continue
+        normalised = " ".join(line.split())
+        normalised = re.sub(r"steps\.[A-Za-z0-9_-]+\.", "steps.X.", normalised)
+        normalised = re.sub(r"uses:\s*([^\s@]+)@\S+", r"uses: \1@REF", normalised)
+        lines.append(normalised)
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:12]
+
+
+def _repo_identity(path: str, cache: Dict[str, Dict[str, str]]) -> Dict[str, str]:
+    """Who owns this workflow, so copies can be told from independent adopters.
+
+    ``unknown`` is reported as ``unknown`` rather than guessed from the
+    directory name: a harvested folder of workflows is not a repo, and
+    inventing an owner there would manufacture exactly the independence the
+    count is supposed to measure.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    if directory in cache:
+        return cache[directory]
+
+    identity = {"repo": "unknown", "source": "unknown"}
+    try:
+        top = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if top.returncode == 0 and top.stdout.strip():
+            remote = subprocess.run(
+                ["git", "-C", directory, "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if remote.returncode == 0 and remote.stdout.strip():
+                identity = {
+                    "repo": _normalise_remote(remote.stdout.strip()),
+                    "source": "git-remote",
+                }
+            else:
+                identity = {
+                    "repo": os.path.basename(top.stdout.strip()),
+                    "source": "git-toplevel",
+                }
+    except OSError:
+        # git not installed is not an error: the survey still works, it just
+        # cannot cluster by owner.
+        pass
+    cache[directory] = identity
+    return identity
+
+
+def _normalise_remote(url: str) -> str:
+    """``git@github.com:org/repo.git`` and ``https://.../org/repo`` -> org/repo."""
+    cleaned = url.strip()
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[: -len(".git")]
+    for separator in (":", "/"):
+        if separator in cleaned and "@" in cleaned.split(separator)[0]:
+            cleaned = cleaned.split(separator, 1)[1]
+    match = re.search(r"([^/:]+/[^/:]+)$", cleaned)
+    return match.group(1) if match else cleaned
 
 
 def _classify(text: str) -> Dict[str, Any]:
@@ -186,6 +302,43 @@ def _iter_files(targets: Iterable[str]) -> List[str]:
     return sorted(set(paths))
 
 
+def _summarise(reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-class counts on three axes, because they answer different questions.
+
+    ``files`` is how much YAML exists. ``repos`` is how many owners decided
+    this. ``skeletons`` is how many distinct templates that produced -- and a
+    class whose files all share one skeleton is one decision copied, not N
+    independent ones. Files that do not use this Action are counted on none of
+    them: they are not evidence about this Action's interface.
+    """
+    attributed = [report for report in reports if report["uses_this_action"]]
+    per_class: Dict[str, Dict[str, Any]] = {}
+    for report in attributed:
+        bucket = per_class.setdefault(
+            report["class"],
+            {"files": 0, "repos": set(), "skeletons": set(), "versions": set()},
+        )
+        bucket["files"] += 1
+        bucket["repos"].add(report["repo"])
+        bucket["skeletons"].add(report["signature"])
+        bucket["versions"].update(report["action_versions"])
+
+    summary = {
+        "files_total": len(reports),
+        "files_attributed": len(attributed),
+        "files_unattributed": len(reports) - len(attributed),
+        "per_class": {},
+    }
+    for kind, bucket in per_class.items():
+        summary["per_class"][kind] = {
+            "files": bucket["files"],
+            "repos": len(bucket["repos"]),
+            "skeletons": len(bucket["skeletons"]),
+            "versions": sorted(bucket["versions"]),
+        }
+    return summary
+
+
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="observe_branches",
@@ -200,6 +353,7 @@ def main(argv: List[str]) -> int:
         print("no workflow files found", file=sys.stderr)
         return 2
 
+    repo_cache: Dict[str, Dict[str, str]] = {}
     reports = []
     for path in files:
         try:
@@ -209,11 +363,16 @@ def main(argv: List[str]) -> int:
             print("{}: {}".format(path, problem), file=sys.stderr)
             continue
         result = _classify(text)
+        result.update(_attribution(text))
+        result["signature"] = _signature(text)
         result["path"] = path
+        result.update(_repo_identity(path, repo_cache))
         reports.append(result)
 
+    summary = _summarise(reports)
+
     if options.json:
-        print(json.dumps(reports, indent=2, sort_keys=True))
+        print(json.dumps({"summary": summary, "files": reports}, indent=2, sort_keys=True))
         return 0
 
     width = max((len(r["class"]) for r in reports), default=10)
@@ -224,15 +383,48 @@ def main(argv: List[str]) -> int:
             print("    conditioned on: {}".format(", ".join(sorted(conditioned))))
         if report["prefixes"]:
             print("    prefixes: {}".format(", ".join(report["prefixes"])))
-
-    counts: Dict[str, int] = {}
-    for report in reports:
-        counts[report["class"]] = counts.get(report["class"], 0) + 1
+        print(
+            "    repo: {} ({}){}".format(
+                report["repo"],
+                report["source"],
+                "" if report["uses_this_action"] else "  NOT THIS ACTION",
+            )
+        )
+        if report["action_refs"]:
+            print("    uses: {}".format(", ".join(report["action_refs"])))
 
     print("")
-    print("{} file(s)".format(len(reports)))
-    for kind in sorted(counts):
-        print("  {:<{w}} {:>3}  {}".format(kind, counts[kind], _action_for(kind), w=width))
+    print(
+        "{} file(s), {} using this Action, {} not (not evidence)".format(
+            summary["files_total"],
+            summary["files_attributed"],
+            summary["files_unattributed"],
+        )
+    )
+    if not summary["per_class"]:
+        print("  nothing attributed to this Action -- the decision is moot here")
+        return 0
+
+    print("")
+    header = "{:<{w}}  {:>5} {:>5} {:>5}  {}".format(
+        "class", "files", "repos", "tmpl", "action", w=width
+    )
+    print(header)
+    for kind in sorted(summary["per_class"]):
+        bucket = summary["per_class"][kind]
+        print(
+            "{:<{w}}  {:>5} {:>5} {:>5}  {}".format(
+                kind,
+                bucket["files"],
+                bucket["repos"],
+                bucket["skeletons"],
+                _action_for(kind),
+                w=width,
+            )
+        )
+    print("")
+    print("tmpl = distinct branch skeletons. When files >> repos or files >> tmpl,")
+    print("the copies are one decision, not several independent ones.")
     return 0
 
 

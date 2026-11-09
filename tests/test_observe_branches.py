@@ -195,6 +195,114 @@ class ReadmeExampleTests(unittest.TestCase):
         self.assertEqual(result["class"], "reason_prefix", snippets[0])
 
 
+class AttributionTests(unittest.TestCase):
+    """A generic output name is not an adoption signal.
+
+    ``uses: some-other/action`` can expose ``outputs.verdict`` too. Counting
+    those rows as evidence would measure the popularity of the word "verdict",
+    not of this Action's interface.
+    """
+
+    def test_our_action_is_recognised_with_its_pinned_ref(self):
+        result = observer._attribution(VERDICT_ONLY)
+        self.assertTrue(result["uses_this_action"])
+        self.assertEqual(result["action_versions"], ["v1"])
+
+    def test_another_action_with_a_verdict_output_is_not_attributed(self):
+        text = """
+- uses: some-other/audit-thing@v3
+  id: audit
+- if: steps.audit.outputs.verdict != 'INVALID'
+  run: echo ok
+"""
+        result = observer._attribution(text)
+        self.assertFalse(result["uses_this_action"])
+        self.assertEqual(observer._classify(text)["class"], "verdict_only")
+
+    def test_an_unpinned_ref_is_recorded_as_such(self):
+        text = "- uses: liao-zhizhi/harness-audit-sidecar@main\n"
+        self.assertEqual(observer._attribution(text)["action_versions"], ["main"])
+
+    def test_a_local_action_path_still_attributes(self):
+        text = "- uses: ./agent-harness-audit\n"
+        self.assertTrue(observer._attribution(text)["uses_this_action"])
+
+
+class SummaryTests(unittest.TestCase):
+    def _report(self, text, repo, path="w.yml"):
+        report = observer._classify(text)
+        report.update(observer._attribution(text))
+        report["signature"] = observer._signature(text)
+        report["path"] = path
+        report["repo"] = repo
+        report["source"] = "test"
+        return report
+
+    def test_unattributed_files_count_on_no_axis(self):
+        reports = [
+            self._report(VERDICT_ONLY, "org/a", "a.yml"),
+            self._report("- uses: other/x@v1\n- if: steps.s.outputs.verdict\n", "org/b"),
+        ]
+        summary = observer._summarise(reports)
+        self.assertEqual(summary["files_total"], 2)
+        self.assertEqual(summary["files_attributed"], 1)
+        self.assertEqual(summary["files_unattributed"], 1)
+        self.assertEqual(summary["per_class"]["verdict_only"]["files"], 1)
+        self.assertEqual(summary["per_class"]["verdict_only"]["repos"], 1)
+
+    def test_copies_collapse_to_one_skeleton_but_stay_several_files(self):
+        # The case that motivated the axis: one template copied into three
+        # repos. Counting files would report a strong signal; the skeleton
+        # count reports one decision.
+        reports = [
+            self._report(VERDICT_ONLY, "org/a", "a.yml"),
+            self._report(VERDICT_ONLY, "org/b", "b.yml"),
+            self._report(VERDICT_ONLY, "org/c", "c.yml"),
+        ]
+        bucket = observer._summarise(reports)["per_class"]["verdict_only"]
+        self.assertEqual(bucket["files"], 3)
+        self.assertEqual(bucket["repos"], 3)
+        self.assertEqual(bucket["skeletons"], 1)
+
+    def test_versions_are_reported_per_class(self):
+        reports = [
+            self._report(VERDICT_ONLY, "org/a", "a.yml"),
+            self._report(
+                VERDICT_ONLY.replace("sidecar@v1", "sidecar@v0.10.1"), "org/b"
+            ),
+        ]
+        bucket = observer._summarise(reports)["per_class"]["verdict_only"]
+        self.assertEqual(bucket["versions"], ["v0.10.1", "v1"])
+
+
+class SignatureTests(unittest.TestCase):
+    def test_a_different_step_id_and_ref_is_the_same_skeleton(self):
+        # Copies legitimately rename the step and re-pin; that must not look
+        # like independent adoption. Only the step id and the ref change here.
+        first = VERDICT_ONLY
+        second = (
+            VERDICT_ONLY.replace("id: audit", "id: gate")
+            .replace("steps.audit", "steps.gate")
+            .replace("sidecar@v1", "sidecar@v2")
+        )
+        self.assertEqual(observer._signature(first), observer._signature(second))
+
+    def test_a_different_branch_is_a_different_skeleton(self):
+        self.assertNotEqual(
+            observer._signature(VERDICT_ONLY), observer._signature(REASON_OTHER)
+        )
+
+
+class RemoteNormalisationTests(unittest.TestCase):
+    def test_ssh_and_https_forms_agree(self):
+        for url in (
+            "git@github.com:org/repo.git",
+            "https://github.com/org/repo",
+            "https://github.com/org/repo.git",
+        ):
+            self.assertEqual(observer._normalise_remote(url), "org/repo", url)
+
+
 class CommandLineTests(unittest.TestCase):
     def _run(self, *args):
         return subprocess.run(
@@ -223,9 +331,13 @@ class CommandLineTests(unittest.TestCase):
             completed = self._run(str(path), "--json")
             self.assertEqual(completed.returncode, 0, completed.stderr)
             payload = json.loads(completed.stdout)
-            self.assertEqual(len(payload), 1)
-            self.assertEqual(payload[0]["class"], "verdict_only")
-            self.assertEqual(payload[0]["path"], str(path))
+            self.assertIn("summary", payload)
+            self.assertEqual(len(payload["files"]), 1)
+            row = payload["files"][0]
+            self.assertEqual(row["class"], "verdict_only")
+            self.assertEqual(row["path"], str(path))
+            self.assertEqual(row["action_versions"], ["v1"])
+            self.assertTrue(row["uses_this_action"])
 
     def test_an_empty_target_is_a_usage_error_not_a_clean_survey(self):
         # "no files" must not look like "no problems": exit 2, per the repo's

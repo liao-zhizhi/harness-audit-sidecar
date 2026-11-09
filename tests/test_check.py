@@ -714,6 +714,22 @@ class ReleaseChecklistTests(unittest.TestCase):
         self.assertIn("count before acting", self.checklist)
         self.assertIn("this is an incident, not a survey row", self.checklist)
 
+    def test_the_survey_counts_decisions_not_files(self):
+        # The correction after the tool first ran: ten copies of one template
+        # are one decision. If the checklist ever reports a single file count,
+        # the adoption decision goes back to being taken from copies.
+        self.assertIn("**A file count is not a count of decisions.**", self.checklist)
+        for axis in ("`files`", "`repos`", "`tmpl`"):
+            self.assertIn(axis, self.checklist, axis)
+        self.assertIn("`files >> tmpl` means copies", self.checklist)
+
+    def test_the_unattributed_rows_are_declared_not_evidence(self):
+        # `verdict` is a generic output name, so a row may not involve this
+        # Action at all. The checklist has to say it is excluded, not downweighted.
+        self.assertIn("not weak evidence — it is no evidence", self.checklist)
+        self.assertIn("`NOT THIS ACTION`", self.checklist)
+        self.assertIn("`action_versions`", self.checklist)
+
 
 if __name__ == "__main__":
     unittest.main()

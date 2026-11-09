@@ -101,6 +101,34 @@ Then act on the counts, not on one sample:
 | `fourth_output` | a workflow already assumes the output exists | adopt now — this is an incident, not a survey row |
 | `no_branch` | nothing conditions on any output | the deferred decision is moot |
 
+**A file count is not a count of decisions.** Every row above is reported on
+three axes, and only the last one answers "how many people independently
+decided this":
+
+- `files` — how much YAML exists.
+- `repos` — how many owners. Ten `verdict_only` files from one organisation's
+  one template is one decision, not ten.
+- `tmpl` — distinct branch skeletons (step ids and pinned refs normalised
+  away). `files >> tmpl` means copies.
+
+Only files that actually reference this Action are counted at all. `verdict` is
+a generic output name: a workflow branching on `steps.x.outputs.verdict` may be
+using a different action entirely, and such a row is not weak evidence — it is
+no evidence. Those files are printed with `NOT THIS ACTION` and excluded.
+
+Record the provenance for the first batch, because the axis that matters is
+ownership:
+
+```bash
+python3 scripts/observe_branches.py path/to/workflows/ --json > batch1.json
+```
+
+The JSON carries, per file: `repo` / `source` (`git-remote`, `git-toplevel`, or
+`unknown` for a harvested folder that is not a repo), `action_refs` and
+`action_versions`, `class`, `conditioned`, `prefixes`, and `signature`. A repo
+is reported as `unknown` rather than guessed from a directory name — inventing
+an owner would manufacture the independence the count exists to measure.
+
 Two cautions, because a miscounted survey is worse than no survey:
 
 - The scan is **line-level text**, not YAML parsing. It follows one alias hop
@@ -115,3 +143,4 @@ Two cautions, because a miscounted survey is worse than no survey:
 The fixtures in `tests/test_observe_branches.py` are hand-written to the shapes
 above. They prove the classifier behaves as documented; they are **not**
 samples of real external workflows, and no such corpus has been collected yet.
+The first batch is the first evidence.
