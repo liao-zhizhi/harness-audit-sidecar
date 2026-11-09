@@ -8,6 +8,7 @@ actually calls the subcommand the README advertises.
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -90,6 +91,32 @@ class ActionShapeTests(unittest.TestCase):
         description = self.action["outputs"]["exit_code"]["description"]
         self.assertIn("INVALID blocks CI by default", description)
         self.assertIn("continue-on-error", description)
+
+
+    def test_the_install_step_installs_the_sidecar_package(self):
+        install = self.steps[0]
+        self.assertEqual(install["shell"], "bash")
+        self.assertIn("pip install", install["run"])
+        self.assertIn("harness-audit-sidecar", install["run"])
+        # Nothing to build from: `uses: owner/repo@v1` does not place a wheel on
+        # the runner, so the package is the dependency rather than the checkout.
+        self.assertNotIn("GITHUB_ACTION_PATH", install["run"])
+
+    def test_the_judging_step_calls_the_check_subcommand(self):
+        self.assertIn("harness-audit check", self.steps[-1]["run"])
+
+    def test_the_removed_path_input_is_not_reintroduced(self):
+        raw = self.path.read_text(encoding="utf-8")
+        self.assertNotIn("pre-pr-audit-path", raw)
+        self.assertNotIn("pre_pr_audit_path", raw)
+        for step in self.steps:
+            self.assertNotIn("pre-pr-audit-path", json.dumps(step))
+
+    def test_the_readme_documents_the_v1_form_without_a_path(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("uses: liao-zhizhi/harness-audit-sidecar@v1", readme)
+        self.assertIn("check: file src/main.py", readme)
+        self.assertIn("harness-audit-sidecar` from PyPI", readme)
 
 
 if __name__ == "__main__":

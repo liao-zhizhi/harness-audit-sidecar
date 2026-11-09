@@ -65,12 +65,14 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install harness-audit
+    - name: Install harness-audit-sidecar
       shell: bash
-      # Installing from the action's own directory, not from PyPI: a pinned
-      # `uses: owner/repo@ref` should run the code at that ref, and a wheel
-      # from an index could be a different commit with the same version.
-      run: python -m pip install --quiet "${GITHUB_ACTION_PATH}"
+      # Installed from PyPI, not from this checkout. That is the deliberate
+      # trade: the action has no build step and works from `uses: ...@v1`, but
+      # `@v1` no longer pins the code -- pip resolves the newest release. Pin
+      # the version in the step (or vendor the source) if the workflow needs
+      # "this ref, these bytes".
+      run: python -m pip install --quiet harness-audit-sidecar
 
     - name: Judge the declaration
       id: check

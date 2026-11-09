@@ -939,6 +939,56 @@ different claim from "changed since your recording", and answering the second
 with the first would borrow a witness the caller never asked for. `--file` still
 records `git_dirty` in its evidence (`--verbose`), it just never lets it decide.
 
+### `harness-audit setup`: the install step, applied
+
+`init` prints the MCP stanza and never edits a client config. `setup` is the
+opt-in version of that trust: it detects Cursor's config (`./.cursor/mcp.json`
+first, then `~/.cursor/mcp.json`), merges one `harness-audit` entry into it,
+merges one `@alias` into `ref_roots.json`, and records a baseline.
+
+```bash
+harness-audit setup --print-only   # preview; writes nothing
+harness-audit setup                # apply
+```
+
+* **Merged, not replaced.** Other servers in `mcp.json` and other aliases in
+  `ref_roots.json` survive. A file that cannot be parsed is refused (exit `2`)
+  rather than rewritten: "it was backed up" is not a substitute for not
+  destroying it.
+* **Backed up first.** Every replaced file is copied to `<file>.bak`, then
+  `.bak.1`, `.bak.2` on later runs -- overwriting `.bak` would replace the
+  original content with the already-modified content, which is a backup that
+  cannot restore anything.
+* **No second console script.** The entry is
+  `{"command": "harness-audit", "args": ["mcp"]}`; `harness-audit mcp` is the
+  stdio server.
+* **The baseline is capped and the cap is reported** (default 200 files,
+  `--max-files`). Paths past the cap stay `INVALID` for `--file` with the exact
+  command that fixes it; the alternative -- an unbounded walk over a monorepo --
+  is a setup command that appears to hang.
+* **`--print-only` runs the same detection and merge** and prints the result.
+  It is the same code path with the writes withheld, not a second description
+  that can drift from the real one.
+
+Output names every file it wrote, how many baseline entries it recorded, and
+the next step (restart Cursor so the MCP config is reloaded).
+
+### `check --upload`: a display row, not a witness
+
+`--upload` is off by default. When set, the verdict is POSTed to the
+dashboard's `/api/v1/check/report` (base URL from `--upload-url` or
+`HARNESS_AUDIT_UPLOAD_URL`; default `http://127.0.0.1:8000`).
+
+Exactly three fields leave the machine: `verdict`, `reason`, `check`. Both text
+fields are redacted first -- `file /home/me/app/main.py` becomes
+`file <redacted>`, and any absolute path left in the reason is replaced with a
+fixed marker. No code, no digest, no agent id, no `agent_id` field at all.
+
+A failed upload never changes the exit code: the verdict was decided locally,
+and a display being down is not evidence about the claim. Its result goes to
+stderr so `--json` stays parseable and the first line of stdout remains the
+verdict.
+
 ### GitHub Action
 
 The action takes one input. `check` is the same declaration as above:
@@ -948,6 +998,14 @@ The action takes one input. `check` is the same declaration as above:
   with:
     check: file src/main.py
 ```
+
+No `pre-pr-audit-path` (or any other path input) is needed: the action installs
+`harness-audit-sidecar` from PyPI and calls `harness-audit check`. The witness is
+collected on the runner, so the workflow supplies the claim, not a location.
+
+Note the trade-off that comes with installing from the index: `@v1` pins the
+*workflow*, not the bytes. If a release must be reproducible, pin the package
+version in your own step instead of relying on the ref.
 
 Legacy `file:` / `command:` / `diff:` inputs are still read when `check` is
 empty, so an existing workflow keeps working; `check` wins when both are set.

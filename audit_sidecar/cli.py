@@ -9,6 +9,15 @@ Two things live here:
     config: printing is the whole contract, because a CLI that silently rewrites
     someone's MCP settings has to be trusted more than this one is.
 
+``harness-audit setup``
+    The same install, applied: writes ``.cursor/mcp.json`` (merged, backed up),
+    merges ``ref_roots.json``, and records a baseline. ``--print-only`` shows
+    exactly what it would do and writes nothing.
+
+``harness-audit mcp``
+    The stdio server, so the config ``setup`` writes needs no second console
+    script.
+
 ``harness-audit`` with no arguments
     The demo. It refuses to run unless the engine still passes its own
     known-answer fixtures, then walks through the four verdicts, the trust
@@ -27,8 +36,9 @@ Run with::
 
     python -m audit_sidecar.cli            # demo
     python -m audit_sidecar.cli init       # print MCP stanza + write ref_roots
+    python -m audit_sidecar.cli setup      # write Cursor MCP config + baseline
     python -m audit_sidecar.cli baseline   # record the working tree
-    python -m audit_sidecar.cli check --file src/main.py
+    python -m audit_sidecar.cli check --file src/main.py --upload
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import baseline as baseline_mod
+from . import report
 from .check import (
     MALFORMED_REASON_PREFIX,
     NO_DECLARATION_REASON_PREFIX,
@@ -839,6 +850,31 @@ def _parse_check_args(argv: List[str]) -> argparse.Namespace:
         action="store_true",
         help="show tier, dropped_assertions, cap_fired, renegotiation_class",
     )
+    parser.add_argument(
+        "--upload",
+        action="store_true",
+        help=(
+            "also POST the verdict to a dashboard's display ledger. Off by "
+            "default; sends verdict, reason and the claim shape only"
+        ),
+    )
+    parser.add_argument(
+        "--upload-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "dashboard base URL for --upload (default: {} or ${})".format(
+                report.DEFAULT_BASE_URL, report.UPLOAD_URL_ENV
+            )
+        ),
+    )
+    parser.add_argument(
+        "--upload-timeout",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="budget for --upload; a timeout never changes the verdict (default: 5)",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable trace")
     return parser.parse_args(argv)
 
@@ -898,6 +934,28 @@ def _emit_check(outcome: CheckOutcome, *, verbose: bool, as_json: bool) -> None:
         print(line)
 
 
+def _finish_check(outcome: CheckOutcome, options: argparse.Namespace) -> int:
+    """Emit, optionally upload, return the verdict's exit code.
+
+    The upload happens after the local output so a slow dashboard cannot delay
+    the line a CI step parses, and its result goes to stderr so ``--json``
+    stays parseable. A failed upload never changes the exit code: the verdict
+    was decided locally, and a display being down is not evidence about the
+    claim.
+    """
+    _emit_check(outcome, verbose=options.verbose, as_json=options.json)
+    if options.upload:
+        # Flush before the network call: stdout is block-buffered when piped, so
+        # without this the verdict can appear after the upload line, and a CI
+        # log would read as if the dashboard decided the result.
+        sys.stdout.flush()
+        status, body = report.upload(
+            outcome, options.upload_url, timeout=options.upload_timeout
+        )
+        print(report.summary_line(status, body), file=sys.stderr)
+    return _VERDICT_EXIT[outcome.verdict]
+
+
 def run_check(argv: List[str]) -> int:
     """Judge one declaration. Returns a process exit code.
 
@@ -918,8 +976,7 @@ def run_check(argv: List[str]) -> int:
             declaration="(none)",
             witness_type="none",
         )
-        _emit_check(outcome, verbose=options.verbose, as_json=options.json)
-        return _VERDICT_EXIT[outcome.verdict]
+        return _finish_check(outcome, options)
 
     cwd = os.path.abspath(options.cwd)
     if not os.path.isdir(cwd):
@@ -939,8 +996,7 @@ def run_check(argv: List[str]) -> int:
             declaration="(gate closed)",
             witness_type="none",
         )
-        _emit_check(outcome, verbose=options.verbose, as_json=options.json)
-        return EXIT_INVALID
+        return _finish_check(outcome, options)
 
     if options.file is not None:
         try:
@@ -958,8 +1014,7 @@ def run_check(argv: List[str]) -> int:
         except ValueError as problem:
             outcome = _malformed_declaration("diff", problem)
 
-    _emit_check(outcome, verbose=options.verbose, as_json=options.json)
-    return _VERDICT_EXIT[outcome.verdict]
+    return _finish_check(outcome, options)
 
 
 def _malformed_declaration(declaration: str, problem: Exception) -> CheckOutcome:
@@ -1077,13 +1132,27 @@ def run_baseline(argv: List[str]) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Dispatch to ``init``, ``baseline``, ``check`` or the demo."""
+    """Dispatch to ``init``, ``setup``, ``mcp``, ``baseline``, ``check`` or the demo."""
     args = list(sys.argv[1:] if argv is None else argv)
 
-    if args and args[0] in ("init", "demo", "baseline", "check"):
+    if args and args[0] in ("init", "setup", "mcp", "demo", "baseline", "check"):
         command, rest = args[0], args[1:]
         if command == "init":
             return run_init(rest)
+        if command == "setup":
+            # Imported here: setup_cmd imports baseline and self_audit, and
+            # keeping the import local means the demo path does not pay for it.
+            from .setup_cmd import run_setup
+
+            return run_setup(rest)
+        if command == "mcp":
+            # The stdio server behind the config `setup` writes. Aliasing it
+            # here is what makes ``{"command": "harness-audit", "args": ["mcp"]}``
+            # a working entry rather than a second console script the user has
+            # to have installed.
+            from .mcp_server import main as mcp_main
+
+            return mcp_main(rest)
         if command == "baseline":
             return run_baseline(rest)
         if command == "check":
@@ -1094,8 +1163,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args:
         print(
-            "unknown command {!r}; expected 'init', 'baseline', 'check' or no "
-            "command for the demo".format(args[0]),
+            "unknown command {!r}; expected 'init', 'setup', 'mcp', 'baseline', "
+            "'check' or no command for the demo".format(args[0]),
             file=sys.stderr,
         )
         return EXIT_USAGE
