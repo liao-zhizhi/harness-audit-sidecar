@@ -143,6 +143,10 @@ class CloudSync:
 
     TIMEOUT_SECONDS = 1.5
     ERROR_LOG_NAME = "cloud_sync_errors.log"
+    # Product UA, not Python-urllib/3.x: Cloudflare's bot rule 1010 rejects the
+    # default urllib signature. Do not impersonate a browser.
+    USER_AGENT = "{}/{}".format(SERVER_NAME, __version__)
+    CONTENT_TYPE = "application/json; charset=utf-8"
 
     def __init__(
         self,
@@ -195,8 +199,9 @@ class CloudSync:
                 self._endpoint,
                 data=payload,
                 headers={
-                    "Content-Type": "application/json; charset=utf-8",
+                    "Content-Type": self.CONTENT_TYPE,
                     "Authorization": "Bearer {}".format(self._key),
+                    "User-Agent": self.USER_AGENT,
                 },
                 method="POST",
             )
@@ -212,8 +217,19 @@ class CloudSync:
                 snippet = exc.read(240).decode("utf-8", "replace").replace("\n", " ")
             except Exception:
                 snippet = ""
+            header_bits = []
+            try:
+                headers = exc.headers
+                if headers is not None:
+                    for name in ("cf-ray", "server", "content-type"):
+                        value = headers.get(name)
+                        if value:
+                            header_bits.append("{}={}".format(name, value))
+            except Exception:
+                header_bits = []
+            extra = (" " + " ".join(header_bits)) if header_bits else ""
             self._note_failure(
-                "HTTP {} {}".format(exc.code, snippet).strip()
+                "HTTP {} {}{}".format(exc.code, snippet, extra).strip()
             )
         except Exception as exc:
             # Broken network, DNS, timeout: local audit already landed.

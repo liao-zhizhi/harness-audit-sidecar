@@ -128,7 +128,7 @@ class ActionShapeTests(unittest.TestCase):
     def test_the_readme_says_v1_does_not_pin_the_package(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("pins the workflow, not the package", readme)
-        self.assertIn("version: 0.10.1", readme)
+        self.assertIn("version: 0.10.2", readme)
 
     def test_the_judging_step_calls_the_check_subcommand(self):
         self.assertIn("harness-audit check", self.steps[-1]["run"])

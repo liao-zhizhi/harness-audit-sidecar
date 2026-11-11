@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE = "audit_sidecar.mcp_server"
@@ -416,6 +417,55 @@ class StartupTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0)
         self.assertIn("harness-audit-server", completed.stdout)
+        self.assertIn("--cloud-endpoint", completed.stdout)
+
+
+class CloudSyncHeaderTest(unittest.TestCase):
+    """The paid POST must not look like the default Python urllib client.
+
+    Cloudflare rule 1010 rejected ``User-Agent: Python-urllib/3.14`` while the
+    same URL accepted curl. Content-Type is set explicitly because urllib
+    would otherwise send form-urlencoded for some payloads.
+    """
+
+    def test_post_sets_product_user_agent_and_json_content_type(self) -> None:
+        from audit_sidecar import __version__
+        from audit_sidecar.mcp_server import CloudSync, SERVER_NAME
+
+        captured = {}
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            captured["ct"] = req.get_header("Content-type")
+            captured["method"] = req.get_method()
+            captured["timeout"] = timeout
+            return _Resp()
+
+        with mock.patch(
+            "audit_sidecar.mcp_server.urllib.request.urlopen", fake_urlopen
+        ):
+            sync = CloudSync("https://example.invalid/api/v1/assets/sync", "k")
+            sync.schedule({"tool": "write_file"})
+            sync.drain(2.0)
+
+        self.assertEqual(captured.get("method"), "POST")
+        self.assertEqual(
+            captured.get("ua"), "{}/{}".format(SERVER_NAME, __version__)
+        )
+        self.assertTrue(
+            (captured.get("ct") or "").startswith("application/json"),
+            captured.get("ct"),
+        )
+        self.assertNotIn("Python-urllib", captured.get("ua") or "")
 
 
 if __name__ == "__main__":
