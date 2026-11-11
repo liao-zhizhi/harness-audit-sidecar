@@ -45,6 +45,8 @@ import json
 import logging
 import os
 import sys
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
 from . import __version__
@@ -153,6 +155,29 @@ class TraceWriter:
             _LOG.error("could not append to trace %s: %s", self._path, problem)
 
 
+def _iso_timestamp() -> str:
+    """Timezone-aware ISO 8601 second precision, local offset included."""
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _next_step_offered(result: Any) -> bool:
+    """Whether this outcome offered a next_step to a human reader.
+
+    The MCP JSON-RPC result stays passive: the agent never sees a next_step.
+    ``check.py`` still offers one on every non-PASS verdict, and an explicit
+    ``result.next_step`` (if a future caller sets it) wins. This bit is for
+    the operator trace and the dream scanner, not for the wire.
+    """
+    explicit = getattr(result, "next_step", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return True
+    if explicit is True:
+        return True
+    verdict = getattr(result, "verdict", None)
+    value = getattr(verdict, "value", verdict)
+    return value not in (None, "PASS")
+
+
 def _trace_record(
     message_id: Any,
     tool: str,
@@ -163,11 +188,16 @@ def _trace_record(
     *,
     mcp_method: str = "tool_call",
     claim_basis: str = CLAIM_EXPLICIT,
+    session_id: Optional[str] = None,
+    timestamp: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
         "id": message_id,
         "tool": tool,
         "args_keys": sorted(args.keys()),
+        "timestamp": timestamp if timestamp is not None else _iso_timestamp(),
+        "session_id": session_id,
+        "next_step_offered": _next_step_offered(result),
         "intent": result.intent,
         "agent_reported_success": reported_success,
         # Which wire method produced this record, and how the claim behind it
@@ -245,6 +275,9 @@ class JsonRpcServer:
         self._client_ready = False
         self._protocol_version: Optional[str] = None
         self._client_info: Optional[Dict[str, Any]] = None
+        # One id for the life of this process. Dreaming needs to tell a
+        # session's FAIL cluster from two processes that both started at id=1.
+        self.session_id = str(uuid.uuid4())
 
     # -- negotiated state ---------------------------------------------
 
@@ -600,6 +633,7 @@ class JsonRpcServer:
                 self._proxy.immune_state.state,
                 mcp_method=mcp_method,
                 claim_basis=claim_basis,
+                session_id=self.session_id,
             )
         )
         return response

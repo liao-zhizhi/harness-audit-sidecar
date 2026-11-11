@@ -150,6 +150,10 @@ class HonestCallE2ETest(StdioServerTestCase):
         self.assertTrue(record["check_observed"])
         self.assertEqual(record["check_source"], "protocol")
         self.assertEqual(record["id"], 1)
+        self.assertEqual(record["tool"], "write_file")
+        self.assertIn("T", record["timestamp"])
+        self.assertTrue(record["session_id"])
+        self.assertIs(record["next_step_offered"], False)
 
 
 class SwallowedErrorE2ETest(StdioServerTestCase):
@@ -183,6 +187,9 @@ class SwallowedErrorE2ETest(StdioServerTestCase):
         self.assertFalse(record["effect_observed"])
         self.assertEqual(record["check_source"], "protocol")
         self.assertIn("false completion", record["reason"])
+        self.assertIs(record["next_step_offered"], True)
+        self.assertTrue(record["session_id"])
+        self.assertIn("T", record["timestamp"])
 
     def test_world_is_unchanged_after_the_lie(self) -> None:
         self.run_server(
@@ -205,8 +212,12 @@ class SwallowedErrorE2ETest(StdioServerTestCase):
         self.assertEqual(code, 0)
         responses = [json.loads(line) for line in stdout.splitlines() if line.strip()]
         self.assertEqual([r["id"] for r in responses], [1, 2, 3])
-        verdicts = [record["verdict"] for record in self.trace_records()]
+        records = self.trace_records()
+        verdicts = [record["verdict"] for record in records]
         self.assertEqual(verdicts, ["PASS", "FAIL", "PASS"])
+        session_ids = {record["session_id"] for record in records}
+        self.assertEqual(len(session_ids), 1)
+        self.assertTrue(session_ids.pop())
 
     def test_ids_are_echoed_for_string_ids(self) -> None:
         stdout, _stderr, code = self.run_server(
