@@ -48,6 +48,7 @@ import sys
 import threading
 import time
 import uuid
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Union
@@ -134,13 +135,24 @@ class CloudSync:
     hung socket must not delay or fail the audit. Posts run on daemon threads
     with a short timeout; ``drain`` is only called when the process is already
     leaving, so a one-shot test can still observe the request.
+
+    Failures are appended to ``error_log_path`` (beside the local trace) so a
+    paid user can see that sync did not land. The log must never contain the
+    key or the POST body.
     """
 
     TIMEOUT_SECONDS = 1.5
+    ERROR_LOG_NAME = "cloud_sync_errors.log"
 
-    def __init__(self, endpoint: str, key: str) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        key: str,
+        error_log_path: Optional[str] = None,
+    ) -> None:
         self._endpoint = endpoint
         self._key = key
+        self._error_log_path = error_log_path
         self._lock = threading.Lock()
         self._inflight: List[threading.Thread] = []
 
@@ -188,15 +200,47 @@ class CloudSync:
                 },
                 method="POST",
             )
-            urllib.request.urlopen(request, timeout=self.TIMEOUT_SECONDS)
+            with urllib.request.urlopen(
+                request, timeout=self.TIMEOUT_SECONDS
+            ) as response:
+                status = getattr(response, "status", 200)
+                if status >= 400:
+                    self._note_failure("HTTP {}".format(status))
+        except urllib.error.HTTPError as exc:
+            snippet = ""
+            try:
+                snippet = exc.read(240).decode("utf-8", "replace").replace("\n", " ")
+            except Exception:
+                snippet = ""
+            self._note_failure(
+                "HTTP {} {}".format(exc.code, snippet).strip()
+            )
+        except Exception as exc:
+            # Broken network, DNS, timeout: local audit already landed.
+            self._note_failure("{}: {}".format(type(exc).__name__, exc))
+
+    def _note_failure(self, reason: str) -> None:
+        """Append one redacted line. Never raises, never writes the key."""
+        path = self._error_log_path
+        if not path:
+            return
+        try:
+            stamp = datetime.now(timezone.utc).astimezone().isoformat(
+                timespec="seconds"
+            )
+            line = "{} endpoint={} {}\n".format(stamp, self._endpoint, reason)
+            if self._key:
+                line = line.replace(self._key, "<redacted>")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line)
         except Exception:
-            # Broken network, expired key, HTTP 4xx/5xx, DNS, timeout: local
-            # audit already landed. Swallow.
             return
 
 
 def _optional_cloud_sync(
-    endpoint: Optional[str], key: Optional[str]
+    endpoint: Optional[str],
+    key: Optional[str],
+    error_log_path: Optional[str] = None,
 ) -> Optional[CloudSync]:
     """Both flags required; one without the other is still local-only."""
     if not endpoint or not key:
@@ -205,7 +249,7 @@ def _optional_cloud_sync(
     key = key.strip()
     if not endpoint or not key:
         return None
-    return CloudSync(endpoint, key)
+    return CloudSync(endpoint, key, error_log_path=error_log_path)
 
 
 class TraceWriter:
@@ -904,12 +948,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 3
 
     trace_path = options.trace or os.path.join(cwd, TRACE_FILENAME)
+    abs_trace = os.path.abspath(trace_path)
+    error_log = os.path.join(
+        os.path.dirname(abs_trace), CloudSync.ERROR_LOG_NAME
+    )
     cloud_sync = _optional_cloud_sync(
         getattr(options, "cloud_endpoint", None),
         getattr(options, "cloud_key", None),
+        error_log_path=error_log,
     )
     try:
-        trace = TraceWriter(os.path.abspath(trace_path), cloud_sync=cloud_sync)
+        trace = TraceWriter(abs_trace, cloud_sync=cloud_sync)
     except OSError as problem:
         _LOG.error("could not open trace %s: %s", trace_path, problem)
         if isinstance(problem, PermissionError):

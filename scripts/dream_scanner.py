@@ -31,8 +31,9 @@ GAP_PREFIX = "GAP_"
 UPGRADE_THRESHOLD = 50
 UPGRADE_HINT = (
     "💡 你已积累 {count} 条本地防骗资产。它们目前只保存在这台电脑上。"
-    "为了跨设备备份和永存，可前往 https://audit.silicon-probe.com/pricing "
-    "获取云端 Key，并用 ./setup_audit.sh --cloud <KEY> 重新配置。"
+    "为了跨设备备份和永存，可前往 https://audit.silicon-probe.com "
+    "查看云端同步方案（即将上线），或联系作者获取云端 Key，"
+    "再用 ./setup_audit.sh --cloud <KEY> 重新配置。"
 )
 ClusterKey = Tuple[str, str, str]
 
