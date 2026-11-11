@@ -28,6 +28,12 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 TRACE_NAME = "audit_trace.jsonl"
 DEFAULT_MIN_FREQUENCY = 3
 GAP_PREFIX = "GAP_"
+UPGRADE_THRESHOLD = 50
+UPGRADE_HINT = (
+    "💡 你已积累 {count} 条本地防骗资产。它们目前只保存在这台电脑上。"
+    "为了跨设备备份和永存，可前往 https://audit.silicon-probe.com/pricing "
+    "获取云端 Key，并用 ./setup_audit.sh --cloud <KEY> 重新配置。"
+)
 ClusterKey = Tuple[str, str, str]
 
 
@@ -346,6 +352,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if options.dry_run:
         print("dream_scanner: dry-run, no gaps written")
+        maybe_upgrade_hint(record_count)
         assert_rules_untouched(root, before_scan_rules)
         assert_rules_untouched(sidecar_root / "audit_sidecar", before_pkg_rules)
         return 0
@@ -357,9 +364,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     for gap in written:
         print("  {}".format(gap["gap_id"]))
 
+    maybe_upgrade_hint(record_count)
     assert_rules_untouched(root, before_scan_rules)
     assert_rules_untouched(sidecar_root / "audit_sidecar", before_pkg_rules)
     return 0
+
+
+def maybe_upgrade_hint(record_count: int) -> None:
+    if record_count > UPGRADE_THRESHOLD:
+        print(UPGRADE_HINT.format(count=record_count))
 
 
 if __name__ == "__main__":

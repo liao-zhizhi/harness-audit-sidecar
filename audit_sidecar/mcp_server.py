@@ -45,7 +45,10 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 import uuid
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Union
 
@@ -124,6 +127,87 @@ def _result(message_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "result": result}
 
 
+class CloudSync:
+    """Optional paid-tier upload. Never on the verdict path.
+
+    Local JSONL is the source of truth. A missing network, a rejected key, or a
+    hung socket must not delay or fail the audit. Posts run on daemon threads
+    with a short timeout; ``drain`` is only called when the process is already
+    leaving, so a one-shot test can still observe the request.
+    """
+
+    TIMEOUT_SECONDS = 1.5
+
+    def __init__(self, endpoint: str, key: str) -> None:
+        self._endpoint = endpoint
+        self._key = key
+        self._lock = threading.Lock()
+        self._inflight: List[threading.Thread] = []
+
+    def schedule(self, record: Dict[str, Any]) -> None:
+        try:
+            payload = json.dumps(
+                {"cloud_key": self._key, "trace": record},
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return
+        try:
+            thread = threading.Thread(
+                target=self._post, args=(payload,), daemon=True
+            )
+            with self._lock:
+                self._inflight.append(thread)
+            thread.start()
+        except Exception:
+            return
+
+    def drain(self, timeout: float = 2.0) -> None:
+        """Wait briefly for in-flight posts. Never raises."""
+        try:
+            with self._lock:
+                threads = list(self._inflight)
+            deadline = time.monotonic() + timeout
+            for thread in threads:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                thread.join(remaining)
+        except Exception:
+            return
+
+    def _post(self, payload: bytes) -> None:
+        try:
+            request = urllib.request.Request(
+                self._endpoint,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Authorization": "Bearer {}".format(self._key),
+                },
+                method="POST",
+            )
+            urllib.request.urlopen(request, timeout=self.TIMEOUT_SECONDS)
+        except Exception:
+            # Broken network, expired key, HTTP 4xx/5xx, DNS, timeout: local
+            # audit already landed. Swallow.
+            return
+
+
+def _optional_cloud_sync(
+    endpoint: Optional[str], key: Optional[str]
+) -> Optional[CloudSync]:
+    """Both flags required; one without the other is still local-only."""
+    if not endpoint or not key:
+        return None
+    endpoint = endpoint.strip()
+    key = key.strip()
+    if not endpoint or not key:
+        return None
+    return CloudSync(endpoint, key)
+
+
 class TraceWriter:
     """Append-only JSONL audit trace.
 
@@ -131,8 +215,11 @@ class TraceWriter:
     concurrent reader sees whole lines rather than a torn record.
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(
+        self, path: str, cloud_sync: Optional[CloudSync] = None
+    ) -> None:
         self._path = path
+        self._cloud_sync = cloud_sync
         # Create eagerly so the file exists even if no call is ever audited;
         # an E2E test then cannot pass by finding a stale file.
         with open(self._path, "a", encoding="utf-8"):
@@ -153,6 +240,17 @@ class TraceWriter:
             # An audit log that cannot be written is an incident, but refusing
             # to answer would take the agent down with it. Report, keep serving.
             _LOG.error("could not append to trace %s: %s", self._path, problem)
+            return
+        self._offer_cloud(record)
+
+    def _offer_cloud(self, record: Dict[str, Any]) -> None:
+        sync = self._cloud_sync
+        if sync is None:
+            return
+        try:
+            sync.schedule(record)
+        except Exception:
+            return
 
 
 def _iso_timestamp() -> str:
@@ -699,6 +797,19 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         action="store_true",
         help="suppress diagnostic logging on stderr",
     )
+    parser.add_argument(
+        "--cloud-endpoint",
+        default=None,
+        help=(
+            "optional URL to POST each local trace record after it is written. "
+            "Does nothing unless --cloud-key is also set. Failures are ignored"
+        ),
+    )
+    parser.add_argument(
+        "--cloud-key",
+        default=None,
+        help="bearer key for --cloud-endpoint; local-only when omitted",
+    )
     return parser.parse_args(argv)
 
 
@@ -793,8 +904,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 3
 
     trace_path = options.trace or os.path.join(cwd, TRACE_FILENAME)
+    cloud_sync = _optional_cloud_sync(
+        getattr(options, "cloud_endpoint", None),
+        getattr(options, "cloud_key", None),
+    )
     try:
-        trace = TraceWriter(os.path.abspath(trace_path))
+        trace = TraceWriter(os.path.abspath(trace_path), cloud_sync=cloud_sync)
     except OSError as problem:
         _LOG.error("could not open trace %s: %s", trace_path, problem)
         if isinstance(problem, PermissionError):
@@ -837,6 +952,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except BrokenPipeError:
         # The agent hung up. Nothing to report, and stdout is gone anyway.
         return 0
+    finally:
+        if cloud_sync is not None:
+            cloud_sync.drain()
 
 
 if __name__ == "__main__":
