@@ -107,7 +107,14 @@ export class SidecarProcess {
 
   start(runtime: Runtime, workspaceRoot: string): void {
     this.stop();
-    const args = [...runtime.args, "--cwd", workspaceRoot];
+    const trace = path.join(workspaceRoot, "audit_trace.jsonl");
+    const args = [
+      ...runtime.args,
+      "--cwd",
+      workspaceRoot,
+      "--trace",
+      trace,
+    ];
     this.child = spawn(runtime.command, args, {
       cwd: workspaceRoot,
       env: runtime.env,

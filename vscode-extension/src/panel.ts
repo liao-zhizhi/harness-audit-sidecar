@@ -3,8 +3,9 @@ import * as path from "path";
 import * as vscode from "vscode";
 import {
   buildSidecarEntry,
-  injectMcpJson,
+  injectGlobalMcpJson,
   isEnabled,
+  isEnabledInWorkspace,
 } from "./mcpConfig";
 import { Runtime, SidecarProcess, resolveRuntime } from "./sidecar";
 import { loadTrace, renderPanelHtml } from "./trace";
@@ -40,6 +41,15 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   }
 
+  globallyEnabled(): boolean {
+    return isEnabled();
+  }
+
+  shouldAutoStart(): boolean {
+    const root = this.workspaceRoot();
+    return this.globallyEnabled() || (root ? isEnabledInWorkspace(root) : false);
+  }
+
   private ensureRuntime(): Runtime {
     if (!this.runtime) {
       this.runtime = resolveRuntime(this.context.extensionPath);
@@ -48,11 +58,6 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
   }
 
   async enable(): Promise<void> {
-    const root = this.workspaceRoot();
-    if (!root) {
-      void vscode.window.showErrorMessage("请先打开一个工作区文件夹。");
-      return;
-    }
     let runtime: Runtime;
     try {
       runtime = this.ensureRuntime();
@@ -61,12 +66,14 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
       this.render(String(error));
       return;
     }
-    const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot, root);
-    const result = injectMcpJson(root, entry);
-    this.start();
+    const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot);
+    const result = injectGlobalMcpJson(entry);
+    if (this.workspaceRoot()) {
+      this.start();
+    }
     this.render();
     const restart = await vscode.window.showInformationMessage(
-      `已写入 ${result.path}。重启窗口后 Cursor 会拉起审计器。`,
+      `已写入全局 ${result.path}。之后每个工作区都会自动拉起审计器，日志写在该文件夹的 audit_trace.jsonl。请重启窗口让 Cursor 加载 MCP。`,
       "重启窗口"
     );
     if (restart === "重启窗口") {
@@ -77,6 +84,7 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
   start(): void {
     const root = this.workspaceRoot();
     if (!root) {
+      this.render();
       return;
     }
     try {
@@ -149,14 +157,13 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     if (!this.view) {
       return;
     }
-    const root = this.workspaceRoot();
-    const enabled = root ? isEnabled(root) : false;
+    const enabled = this.globallyEnabled();
     const running = this.process.running;
     const nonce = String(Date.now());
     const body = enabled
       ? this.panelBody()
       : `<button class="go" id="enable">一键开启因果审计</button>
-         <p class="hint">不会在仓库里跑安装脚本，也不会要求 git commit 或 pipx。点击后写入 <code>.cursor/mcp.json</code>，然后重启窗口。</p>`;
+         <p class="hint">一次写入用户级 <code>~/.cursor/mcp.json</code>，之后每个工作区自动拉起，日志落在当前文件夹的 <code>audit_trace.jsonl</code>。不改仓库、不要求 git、不要求 pipx。</p>`;
     this.view.webview.html = `<!DOCTYPE html>
 <html lang="zh">
 <head>

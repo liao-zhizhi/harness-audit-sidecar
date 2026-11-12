@@ -2,7 +2,7 @@
   "name": "harness-audit",
   "displayName": "因果审计 Harness Audit",
   "description": "Frictionless Cursor/VS Code connector for harness-audit-sidecar. No pipx, no hand-written mcp.json.",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "publisher": "liao-zhizhi",
   "private": true,
   "engines": {
@@ -37,7 +37,7 @@
     "commands": [
       {
         "command": "harnessAudit.enable",
-        "title": "一键开启因果审计"
+        "title": "全局开启因果审计"
       },
       {
         "command": "harnessAudit.start",
@@ -52,7 +52,8 @@
   "scripts": {
     "compile": "tsc -p . && node scripts/sync-python.js",
     "watch": "tsc -watch -p .",
-    "verify": "npm run compile && node scripts/verify.mjs"
+    "verify": "npm run compile && node scripts/verify.mjs",
+    "package": "npm run compile && npx --yes @vscode/vsce package --allow-missing-repository --skip-license"
   },
   "dependencies": {
     "harness-audit-sidecar": "file:./vendor/harness-audit-sidecar"

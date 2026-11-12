@@ -144,7 +144,7 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.10.4) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.10.5) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune

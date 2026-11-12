@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import { AuditViewProvider } from "./panel";
-import { isEnabled } from "./mcpConfig";
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new AuditViewProvider(context);
@@ -9,11 +8,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("harnessAudit.enable", () => provider.enable()),
     vscode.commands.registerCommand("harnessAudit.start", () => provider.start()),
     vscode.commands.registerCommand("harnessAudit.stop", () => provider.stop()),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      if (provider.shouldAutoStart()) {
+        provider.start();
+      }
+    }),
     { dispose: () => provider.dispose() }
   );
 
-  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (root && isEnabled(root)) {
+  if (provider.shouldAutoStart()) {
     provider.start();
   }
 }

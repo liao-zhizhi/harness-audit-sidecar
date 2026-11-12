@@ -9,12 +9,19 @@ import { createRequire } from "module";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { injectMcpJson, isEnabled, buildSidecarEntry, mcpPathFor } = require("../out/mcpConfig.js");
+const {
+  injectGlobalMcpJson,
+  isEnabled,
+  isEnabledInWorkspace,
+  buildSidecarEntry,
+  globalMcpPath,
+} = require("../out/mcpConfig.js");
 const { loadTrace, renderPanelHtml, countVerdicts } = require("../out/trace.js");
 const { resolvePythonRoot, resolveRuntime } = require("../out/sidecar.js");
 
 const extRoot = join(here, "..");
-const empty = mkdtempSync(join(tmpdir(), "harness-audit-empty-"));
+const fakeHome = mkdtempSync(join(tmpdir(), "harness-audit-home-"));
+const emptyWs = mkdtempSync(join(tmpdir(), "harness-audit-ws-"));
 let failed = 0;
 
 function check(name, cond) {
@@ -31,16 +38,35 @@ try {
   check("pythonRoot has audit_sidecar", require("fs").existsSync(join(pythonRoot, "audit_sidecar", "__init__.py")));
 
   const runtime = resolveRuntime(extRoot);
-  const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot, empty);
-  check("not enabled before inject", !isEnabled(empty));
-  const written = injectMcpJson(empty, entry);
-  check("mcp.json path is .cursor/mcp.json", written.path === mcpPathFor(empty));
-  check("enabled after inject", isEnabled(empty));
+  const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot);
+  check("global entry has no baked-in workspace cwd", !entry.args.includes(emptyWs));
+  check("global entry is the python module", entry.args.includes("audit_sidecar.mcp_server"));
+  check("not globally enabled before inject", !isEnabled(fakeHome));
+  check("workspace is not required", !isEnabledInWorkspace(emptyWs));
+
+  const written = injectGlobalMcpJson(entry, fakeHome);
+  check("writes ~/.cursor/mcp.json under the user home", written.path === globalMcpPath(fakeHome));
+  check("does not create project .cursor/mcp.json", !isEnabledInWorkspace(emptyWs));
+  check("globally enabled after inject", isEnabled(fakeHome));
+
   const doc = JSON.parse(readFileSync(written.path, "utf8"));
-  check("server name harness-audit", Boolean(doc.mcpServers["harness-audit"]));
-  check("no pipx in command", !String(doc.mcpServers["harness-audit"].command).includes("pipx"));
-  check("module is mcp_server", doc.mcpServers["harness-audit"].args.includes("audit_sidecar.mcp_server"));
-  check("cwd is the empty workspace", doc.mcpServers["harness-audit"].args.includes(empty));
+  const server = doc.mcpServers["harness-audit"];
+  check("server name harness-audit", Boolean(server));
+  check("no pipx in command", !String(server.command).includes("pipx"));
+  check("module is mcp_server", server.args.includes("audit_sidecar.mcp_server"));
+  check("no --cwd in the global entry", !server.args.includes("--cwd"));
+
+  const otherHome = mkdtempSync(join(tmpdir(), "harness-audit-home2-"));
+  mkdirSync(join(otherHome, ".cursor"), { recursive: true });
+  writeFileSync(
+    join(otherHome, ".cursor", "mcp.json"),
+    JSON.stringify({ mcpServers: { other: { command: "echo" } } }, null, 2)
+  );
+  injectGlobalMcpJson(entry, otherHome);
+  const merged = JSON.parse(readFileSync(join(otherHome, ".cursor", "mcp.json"), "utf8"));
+  check("preserves other global servers", Boolean(merged.mcpServers.other));
+  check("upserts harness-audit beside them", Boolean(merged.mcpServers["harness-audit"]));
+  rmSync(otherHome, { recursive: true, force: true });
 
   const sample = join(extRoot, "..", "examples", "sample_trace.jsonl");
   const rows = loadTrace(readFileSync(sample, "utf8"));
@@ -55,13 +81,13 @@ try {
   const workspace = join(extRoot, ".test-workspace");
   mkdirSync(workspace, { recursive: true });
   writeFileSync(join(workspace, "audit_trace.jsonl"), readFileSync(sample));
-  check("F5 workspace starts without mcp.json", !isEnabled(workspace));
-  check("F5 workspace has jsonl for the panel", require("fs").existsSync(join(workspace, "audit_trace.jsonl")));
+  check("a workspace folder is not how enablement is stored", !isEnabledInWorkspace(workspace));
 
-  console.log("\nworkspace", empty);
+  console.log("\nglobal mcp.json");
   console.log(readFileSync(written.path, "utf8"));
 } finally {
-  rmSync(empty, { recursive: true, force: true });
+  rmSync(fakeHome, { recursive: true, force: true });
+  rmSync(emptyWs, { recursive: true, force: true });
 }
 
 if (failed) {

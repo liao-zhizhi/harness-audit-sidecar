@@ -1,11 +1,14 @@
 /**
- * Merge a harness-audit MCP server into ``.cursor/mcp.json``.
+ * Merge a harness-audit MCP server into the **user-level** Cursor config.
  *
- * Same contract as ``audit_sidecar.setup_cmd.merge_mcp``: other servers stay,
- * our entry is upserted, the file is never replaced wholesale.
+ * One write to ``~/.cursor/mcp.json`` covers every workspace. The entry has
+ * no baked-in ``--cwd``: Cursor starts the server with the open folder as
+ * cwd, so ``audit_trace.jsonl`` lands in that folder. Other servers in the
+ * file are preserved.
  */
 
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 
 export const SERVER_NAME = "harness-audit";
@@ -17,12 +20,15 @@ export interface McpServerEntry {
   env?: Record<string, string>;
 }
 
+export function globalMcpPath(homeDir: string = os.homedir()): string {
+  return path.join(homeDir, MCP_RELPATH);
+}
+
 export function mcpPathFor(workspaceRoot: string): string {
   return path.join(workspaceRoot, MCP_RELPATH);
 }
 
-export function isEnabled(workspaceRoot: string): boolean {
-  const file = mcpPathFor(workspaceRoot);
+function hasServer(file: string): boolean {
   if (!fs.existsSync(file)) {
     return false;
   }
@@ -34,6 +40,14 @@ export function isEnabled(workspaceRoot: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function isEnabled(homeDir: string = os.homedir()): boolean {
+  return hasServer(globalMcpPath(homeDir));
+}
+
+export function isEnabledInWorkspace(workspaceRoot: string): boolean {
+  return hasServer(mcpPathFor(workspaceRoot));
 }
 
 export function mergeMcpDocument(
@@ -69,10 +83,9 @@ export function mergeMcpDocument(
 }
 
 export function injectMcpJson(
-  workspaceRoot: string,
+  file: string,
   entry: McpServerEntry
 ): { changed: boolean; path: string } {
-  const file = mcpPathFor(workspaceRoot);
   let document: unknown = {};
   if (fs.existsSync(file)) {
     const text = fs.readFileSync(file, "utf8").trim();
@@ -88,14 +101,20 @@ export function injectMcpJson(
   return { changed, path: file };
 }
 
+export function injectGlobalMcpJson(
+  entry: McpServerEntry,
+  homeDir: string = os.homedir()
+): { changed: boolean; path: string } {
+  return injectMcpJson(globalMcpPath(homeDir), entry);
+}
+
 export function buildSidecarEntry(
   python: string,
-  pythonRoot: string,
-  workspaceRoot: string
+  pythonRoot: string
 ): McpServerEntry {
   return {
     command: python,
-    args: ["-m", "audit_sidecar.mcp_server", "--cwd", workspaceRoot],
+    args: ["-m", "audit_sidecar.mcp_server"],
     env: { PYTHONPATH: pythonRoot },
   };
 }
