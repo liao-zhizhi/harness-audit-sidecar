@@ -385,22 +385,19 @@ class RunnerGitWitnessTest(GitRepositoryTestCase):
         self.assertFalse(result.check_observed)
         self.assertIs(result.verdict, Verdict.FAIL)
 
-    def test_not_a_repo_is_invalid_not_an_exception(self) -> None:
-        # A first run in a scratch directory is ordinary. Raising took the
-        # sidecar down with no record; "we did not look" is INVALID, and the
-        # call still has to appear in the audit log.
+    def test_not_a_repo_falls_back_to_stat_and_still_runs(self) -> None:
+        # A first run in a scratch directory is ordinary. Git cannot look, so
+        # the runner stats the declared path and the command still executes.
         with tempfile.TemporaryDirectory() as plain:
             result = self.runner.run_shell(
-                "true",
+                "printf 'x\\n' > x.py",
                 cwd=plain,
-                intent_desc="edit something",
+                intent_desc="edit x.py",
                 expected_files_modified=["x.py"],
             )
-            self.assertIs(result.verdict, Verdict.INVALID)
-            self.assertIsNone(result.effect_observed)
-            self.assertIn("no independent witness", result.reason)
-            # The baseline could not be captured, so the command must not run.
-            self.assertEqual(os.listdir(plain), [])
+            self.assertIs(result.verdict, Verdict.PASS)
+            self.assertEqual(result.witness_scope, "stat")
+            self.assertTrue(os.path.isfile(os.path.join(plain, "x.py")))
 
     def test_bare_string_expected_is_rejected(self) -> None:
         with self.assertRaises(TypeError):

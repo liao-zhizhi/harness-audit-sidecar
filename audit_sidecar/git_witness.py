@@ -82,8 +82,10 @@ _VCS_ARTEFACT = os.path.join(".git")
 class GitWitnessError(RuntimeError):
     """Raised when the witness cannot observe a repository at all.
 
-    This is deliberately not swallowed: an audit that cannot look must say so
-    rather than report "nothing changed" and let a PASS through.
+    ``SafeRunner.run_shell`` catches this during construction or snapshot
+    (not a repo, missing git, timeout) and falls back to declared-file
+    ``stat`` so the command still runs. An unreadable change set *after*
+    the command has already executed is still "we could not look".
     """
 
 

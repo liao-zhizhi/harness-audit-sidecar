@@ -1,0 +1,65 @@
+{
+  "name": "harness-audit",
+  "displayName": "因果审计 Harness Audit",
+  "description": "Frictionless Cursor/VS Code connector for harness-audit-sidecar. No pipx, no hand-written mcp.json.",
+  "version": "0.10.3",
+  "publisher": "liao-zhizhi",
+  "private": true,
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "harnessAudit",
+          "title": "因果审计",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "harnessAudit": [
+        {
+          "type": "webview",
+          "id": "harnessAudit.panel",
+          "name": "因果审计"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "harnessAudit.enable",
+        "title": "一键开启因果审计"
+      },
+      {
+        "command": "harnessAudit.start",
+        "title": "Start sidecar"
+      },
+      {
+        "command": "harnessAudit.stop",
+        "title": "Stop sidecar"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p . && node scripts/sync-python.js",
+    "watch": "tsc -watch -p .",
+    "verify": "npm run compile && node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "harness-audit-sidecar": "file:./vendor/harness-audit-sidecar"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -276,7 +276,8 @@ class RuleEngine:
         unsatisfied = tuple(
             rule
             for rule in rules
-            if rule.require_witness and rule.witness_type not in witnesses
+            if rule.require_witness
+            and not self._witness_collected(rule, witnesses)
         )
 
         # 2. A violated expectation is the strongest finding: the witness is
@@ -349,6 +350,23 @@ class RuleEngine:
             # Carried through so a reconstructed Rule equals the loaded one;
             # the engine itself does not act on declared risk.
             risk_level=entry.get("risk_level"),
+        )
+
+    @staticmethod
+    def _witness_collected(rule: Rule, witnesses: AbstractSet[str]) -> bool:
+        """Whether the run produced the witness the rule named.
+
+        ``stat`` stands in for ``git_diff`` when the runner could not read a
+        repository (missing git, not a repo, timeout). Refusing that stand-in
+        would turn a declared-file mtime change into INVALID -- the git wall
+        the fallback exists to remove. A rule that asked for ``file`` still
+        needs a content read; ``stat`` does not provide one.
+        """
+        if rule.witness_type in witnesses:
+            return True
+        return (
+            rule.witness_type == WITNESS_GIT_DIFF
+            and "stat" in witnesses
         )
 
     @staticmethod

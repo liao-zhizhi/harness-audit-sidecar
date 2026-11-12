@@ -1,0 +1,6 @@
+{
+  "name": "harness-audit-sidecar",
+  "version": "0.10.3",
+  "description": "Locator for the Python harness-audit-sidecar package bundled with the VS Code extension.",
+  "main": "index.js"
+}

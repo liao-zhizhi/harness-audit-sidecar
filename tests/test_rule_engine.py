@@ -453,26 +453,21 @@ expectation: "file_modified"
         proxy = MCPProxy(cwd=self.root, rules_dir=SHIPPED_RULES)
         self.assertIn("no_file_drift", proxy.judgment_base.rule_ids)
 
-    def test_missing_witness_is_recorded_not_raised(self):
+    def test_missing_git_falls_back_to_stat_and_the_write_still_runs(self):
         # A working directory that is not a git repository is an ordinary
-        # first run, not an incident. The call must still produce a verdict
-        # and a record: "we did not look" is INVALID, never PASS and never a
-        # traceback that leaves the agent with no audit trail.
+        # first run. The command must still execute; declared-file mtime/size
+        # is the witness, recorded as witness_scope=stat.
         plain = tempfile.mkdtemp(prefix="harness-nogit-")
         self.addCleanup(shutil.rmtree, plain, True)
         proxy = MCPProxy(cwd=plain, runner=SafeRunner(timeout=20))
-        # The runner is where the missing change set is discovered (it owns the
-        # GitWitness), so the operator warning moved there when ``run_shell``
-        # stopped raising.
         with self.assertLogs("audit_sidecar.runner", level="WARNING"):
             response = proxy.intercept_tool_call(
                 "write_file", {"path": "t.py", "content": "v"}, True
             )
         result = proxy.audit_log[-1]
-        self.assertIs(result.verdict, Verdict.INVALID)
-        self.assertIsNone(result.effect_observed)
-        self.assertIn("no independent witness", result.reason)
-        # The proxy stays passive even when it cannot witness the call.
+        self.assertIs(result.verdict, Verdict.PASS)
+        self.assertEqual(result.witness_scope, "stat")
+        self.assertTrue(os.path.isfile(os.path.join(plain, "t.py")))
         self.assertEqual(response["status"], "ok")
 
 

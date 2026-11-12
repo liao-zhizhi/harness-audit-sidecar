@@ -26,3 +26,10 @@ audit_trace.jsonl
 # ignore rule is later widened (for example to *.jsonl).
 !examples/sample_trace.jsonl
 .coverage
+
+# VS Code / Cursor extension build
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+vscode-extension/.test-workspace/
+vscode-extension/vendor/harness-audit-sidecar/python/

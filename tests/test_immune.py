@@ -667,7 +667,7 @@ class EscalationOutsideGitTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_non_payload_assertion_in_a_non_git_directory_is_invalid(self) -> None:
+    def test_non_git_directory_falls_back_to_stat_and_still_runs(self) -> None:
         proxy = MCPProxy(
             cwd=self.root,
             runner=SafeRunner(timeout=20),
@@ -679,37 +679,20 @@ class EscalationOutsideGitTest(unittest.TestCase):
                 command="printf 'WRONG' >> note.txt",
                 intent="append EXPECTED-MARKER to note.txt",
                 expected_file="note.txt",
-                # The change set is what makes the full witness need git. At
-                # ``risk_level: low`` this alone would still be judged by the
-                # innate tier (one stat, no repository); it is the content
-                # assertion below that promotes the call to the full witness,
-                # and that promotion is the thing under test.
                 expected_files=("note.txt",),
                 expected_content="EXPECTED-MARKER",
             )
 
         proxy.register_tool("append_note", builder)
-        # Must not raise: an ordinary first run in a scratch directory is not
-        # an incident.
         response = proxy.intercept_tool_call("append_note", {}, True)
         result = proxy.audit_log[-1]
-        self.assertIs(result.verdict, Verdict.INVALID)
-        self.assertIsNone(result.effect_observed)
-        # It really was promoted: the tier is derived from the witness scope
-        # that was collected, so this is the policy taking effect and not a
-        # coincidence of the directory.
-        self.assertEqual(result.tier, TIER_ADAPTIVE)
-        self.assertEqual(result.witness_scope, "full")
-        # The assertion was not dropped, it was attempted and could not be
-        # observed; those are different claims about the run.
-        self.assertEqual(result.dropped_assertions, ())
-        self.assertIn("no independent witness", result.reason)
-        self.assertIn("git", result.reason)
-        # The command never ran: without a baseline there is no way to tell
-        # its effect from dirt that was already there.
-        self.assertEqual(os.listdir(self.root), [])
-        # And the proxy stays passive: the agent still sees what the tool
-        # layer reported.
+        # Git cannot look, so the runner stats the declared path. The
+        # command executes; content is not re-read (that is the residual of
+        # the stat tier).
+        self.assertIs(result.verdict, Verdict.PASS)
+        self.assertEqual(result.witness_scope, "stat")
+        self.assertEqual(result.tier, TIER_INNATE)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "note.txt")))
         self.assertEqual(response["status"], "ok")
 
     def test_matching_assertion_without_a_change_set_is_a_pass(self) -> None:

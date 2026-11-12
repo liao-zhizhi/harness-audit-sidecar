@@ -255,6 +255,13 @@ class SafeRunner:
         deliberate: ``expected_content`` is rejected (checking it would read
         the file) and ``unexpected_changes`` is always empty (nothing surveyed
         the tree, so claiming to know would be a fabrication).
+
+        If ``"full"`` was requested but git cannot be read (not a repository,
+        missing binary, or a timeout), the run **falls back to ``stat``** on
+        exactly ``expected_files_modified`` / ``expected_file``. The command
+        still runs. The trace records ``witness_scope="stat"``. This is not
+        INVALID: a declared-file mtime/size change is a witness, just a
+        weaker one than a change set.
         """
         if not isinstance(command, str) or not command.strip():
             raise ValueError("command must be a non-empty string")
@@ -266,7 +273,8 @@ class SafeRunner:
                     list(_SCOPES), witness_scope
                 )
             )
-        stat_scope = witness_scope == WITNESS_SCOPE_STAT
+        collected_scope = witness_scope
+        stat_scope = collected_scope == WITNESS_SCOPE_STAT
         if expected_content is not None and expected_file is None:
             raise ValueError(
                 "expected_content requires expected_file: content alone does "
@@ -304,59 +312,47 @@ class SafeRunner:
         # The baseline must be captured before the command can touch anything.
         git_witness: Optional[GitWitness] = None
         baseline: Optional[Dict[str, str]] = None
+        declared_paths = expected_paths
         if expected_paths is not None and not stat_scope:
             try:
                 git_witness = GitWitness(
                     repo_path if repo_path else cwd, timeout=effective_timeout
                 )
+                # Map the caller's paths (relative to cwd) into repo-root space
+                # before comparing them with what git reports. Skipping this
+                # makes a correct edit inside a subdirectory look like drift.
+                #
+                # When cwd sits outside the repository -- the caller pointed
+                # at one tree but ran the command somewhere else --
+                # cwd-relative paths would be meaningless, so the repository
+                # root becomes the base.
+                repo_root = git_witness.repo_root
+                cwd_abs = os.path.abspath(cwd)
+                inside = cwd_abs == repo_root or cwd_abs.startswith(
+                    repo_root + os.sep
+                )
+                expected_paths = tuple(
+                    git_witness.resolve_expected(
+                        expected_paths, cwd if inside else repo_root
+                    )
+                )
+                baseline = git_witness.snapshot()
             except GitWitnessError as problem:
-                # An ordinary first run in a non-git directory used to raise out
-                # of ``run_shell``, taking the sidecar down with no record. "We
-                # did not look" is INVALID, not an exception, and the command
-                # must not run: without a baseline its effect cannot be
-                # separated from whatever dirt was already there.
+                # Not a repository, git missing, or a timeout (including a
+                # tree too large to snapshot). Blocking the command or
+                # answering INVALID would recreate the git wall: a declared
+                # path can still be witnessed by mtime/size, and only those
+                # paths are statted -- never a directory walk.
                 _LOG.warning(
-                    "no independent witness: %s; recording INVALID rather "
-                    "than running an unauditable command",
+                    "git witness unavailable (%s); falling back to "
+                    "declared-file mtime/size (witness_scope=stat)",
                     problem,
                 )
-                return ExecutionResult(
-                    intent=intent_desc,
-                    effect_observed=None,
-                    check_observed=(
-                        True if reported_success is None else reported_success
-                    ),
-                    verdict=Verdict.INVALID,
-                    command=command,
-                    cwd=os.path.abspath(cwd),
-                    reason=(
-                        "no independent witness: {}; refusing to claim PASS. "
-                        "Point repo_path at a git repository, or accept the "
-                        "plain lattice".format(problem)
-                    ),
-                    check_source=(
-                        "exit-status" if reported_success is None else "protocol"
-                    ),
-                    witness_scope=witness_scope,
-                )
-            # Map the caller's paths (relative to cwd) into repo-root space
-            # before comparing them with what git reports. Skipping this makes
-            # a correct edit inside a subdirectory look like drift.
-            #
-            # When cwd sits outside the repository -- the caller pointed at one
-            # tree but ran the command somewhere else -- cwd-relative paths
-            # would be meaningless, so the repository root becomes the base.
-            repo_root = git_witness.repo_root
-            cwd_abs = os.path.abspath(cwd)
-            inside = cwd_abs == repo_root or cwd_abs.startswith(
-                repo_root + os.sep
-            )
-            expected_paths = tuple(
-                git_witness.resolve_expected(
-                    expected_paths, cwd if inside else repo_root
-                )
-            )
-            baseline = git_witness.snapshot()
+                git_witness = None
+                baseline = None
+                expected_paths = declared_paths
+                stat_scope = True
+                collected_scope = WITNESS_SCOPE_STAT
 
         # Innate tier: capture the cheap baseline (mtime + size) before the
         # command runs, for exactly the paths the call claimed to touch.
@@ -577,7 +573,7 @@ class SafeRunner:
             rule_id=rule_id,
             rules_matched=rules_matched,
             rules_violated=rules_violated,
-            witness_scope=witness_scope,
+            witness_scope=collected_scope,
             witness_mtime=witness_mtime,
         )
 

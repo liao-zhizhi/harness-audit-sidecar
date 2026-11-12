@@ -650,12 +650,9 @@ class MCPProxy:
                 witness_scope=WITNESS_SCOPE_STAT if innate else WITNESS_SCOPE_FULL,
             )
         except GitWitnessError as problem:
-            # The requested change-set witness cannot be collected -- usually
-            # because the working directory is not a git repository. That is
-            # "we did not look", not "we looked and it passed", so the verdict
-            # is INVALID and the run is still recorded. Raising here instead
-            # would take the whole sidecar down on an ordinary first run in a
-            # scratch directory, and leave no trace to explain why.
+            # ``run_shell`` now falls back to declared-file stat instead of
+            # raising on a missing repository. This branch remains as a
+            # safety net for a GitWitnessError that escaped the runner.
             result = self._unwitnessed(invocation, agent_reported_success, problem)
         if dropped:
             # ``replace`` rather than mutation: ExecutionResult is frozen, and

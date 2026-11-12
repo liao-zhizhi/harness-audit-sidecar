@@ -1,0 +1,5 @@
+node_modules/
+out/
+*.vsix
+.test-workspace/
+vendor/harness-audit-sidecar/python/
