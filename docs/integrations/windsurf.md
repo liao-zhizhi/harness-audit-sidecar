@@ -36,3 +36,5 @@ Cascade 打开的配置一般是 `~/.codeium/windsurf/mcp_config.json`（Linux/m
 ```
 
 `command` 必须在 PATH 里。找不到时改成绝对路径。换项目时同步改 `--cwd` 和 `--trace`。审计日志落在该项目的 `audit_trace.jsonl`。
+
+遇到问题？请提交 Issue：https://github.com/liao-zhizhi/harness-audit-sidecar/issues

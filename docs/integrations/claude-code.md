@@ -47,3 +47,5 @@ claude mcp list
 ```
 
 换项目时改两个绝对路径。审计日志落在该项目的 `audit_trace.jsonl`。
+
+遇到问题？请提交 Issue：https://github.com/liao-zhizhi/harness-audit-sidecar/issues

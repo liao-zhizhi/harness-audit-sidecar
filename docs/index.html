@@ -155,12 +155,15 @@
     .btn-ghost:hover { border-color: #52525b; background: #18181b; }
     footer {
       color: var(--dim);
-      font-size: 12px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
+      font-size: 11px;
+      line-height: 1.7;
+      letter-spacing: 0.02em;
       border-top: 1px solid var(--line);
       padding-top: 20px;
     }
+    footer a { color: #71717a; text-decoration: none; border-bottom: 1px solid var(--line); }
+    footer a:hover { color: var(--muted); }
+    footer .copy { margin-top: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
     @media (max-width: 640px) {
       .wrap { padding-top: 28px; }
       .actions { grid-template-columns: 1fr; }
@@ -222,7 +225,21 @@
       <a class="btn btn-ghost" href="https://github.com/liao-zhizhi/harness-audit-sidecar">View on GitHub</a>
     </div>
 
-    <footer>100% Local. Zero Configuration. Requires no server.</footer>
+    <footer>
+      <div>Feedback &amp; Bug Reports: <a href="https://github.com/liao-zhizhi/harness-audit-sidecar/issues">GitHub Issues</a></div>
+      <div>Commercial / Team Inquiries: <span id="mail">contact [at] causalaudit.net</span></div>
+      <div class="copy">© 2026 Causal Audit. 100% Local &amp; Open Source.</div>
+    </footer>
   </main>
+  <script>
+    (function () {
+      var el = document.getElementById("mail");
+      if (!el) return;
+      var user = "contact";
+      var host = "causalaudit.net";
+      var addr = user + "@" + host;
+      el.innerHTML = '<a href="mailto:' + addr + '">' + addr + "</a>";
+    })();
+  </script>
 </body>
 </html>

@@ -38,3 +38,5 @@ VS Code 扩展通常打开的是该 JSON。Cline CLI 则是 `~/.cline/data/setti
 ```
 
 `command` 必须在 PATH 里。找不到时改成 `harness-audit-server` 的绝对路径（`which harness-audit-server`）。换项目时同步改 `--cwd` 和 `--trace`。
+
+遇到问题？请提交 Issue：https://github.com/liao-zhizhi/harness-audit-sidecar/issues

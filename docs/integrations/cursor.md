@@ -36,3 +36,5 @@ permalink: /integrations/cursor.html
 ```
 
 换工作区时同步改 `--cwd`、`--trace` 和 `cwd`。改完后 Reload Window。
+
+遇到问题？请提交 Issue：https://github.com/liao-zhizhi/harness-audit-sidecar/issues
