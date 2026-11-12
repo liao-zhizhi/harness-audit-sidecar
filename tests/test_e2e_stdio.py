@@ -423,6 +423,40 @@ class StartupTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         self.assertIn("harness-audit-server", completed.stdout)
         self.assertIn("--cloud-endpoint", completed.stdout)
+        self.assertIn("report", completed.stdout.lower())
+
+    def test_report_subcommand_renders_the_trace(self) -> None:
+        scratch = tempfile.TemporaryDirectory(prefix="harness-report-")
+        self.addCleanup(scratch.cleanup)
+        trace = os.path.join(scratch.name, "audit_trace.jsonl")
+        with open(trace, "w", encoding="utf-8") as handle:
+            handle.write(
+                '{"timestamp":"2026-11-12T06:00:00+00:00","tool":"write_file",'
+                '"intent":"modify file target.py","verdict":"FAIL",'
+                '"reason":"false completion","missing_expected":["target.py"],'
+                '"unexpected_changes":[]}\n'
+            )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                MODULE,
+                "report",
+                "--lang",
+                "zh",
+                "--no-color",
+                "--trace",
+                trace,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=PACKAGE_ROOT,
+            timeout=STARTUP_TIMEOUT,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("【FAIL】", completed.stdout)
+        self.assertIn("没动的文件", completed.stdout)
+        self.assertNotIn("unrecognized arguments", completed.stderr)
 
 
 class CloudSyncHeaderTest(unittest.TestCase):

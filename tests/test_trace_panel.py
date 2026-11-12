@@ -188,6 +188,17 @@ class LoadAndCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("[FAIL]", out.getvalue())
 
+    def test_server_entry_dispatches_report(self):
+        from audit_sidecar.mcp_server import main as server_main
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = server_main(
+                ["report", "--lang", "zh", "--no-color", "--trace", str(self.trace)]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("【FAIL】", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

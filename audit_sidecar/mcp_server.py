@@ -815,8 +815,11 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         prog="harness-audit-server",
         description=(
             "Stdio JSON-RPC sidecar that audits agent tool calls against "
-            "independently witnessed effects."
+            "independently witnessed effects. `harness-audit-server report` "
+            "renders ./audit_trace.jsonl as a terminal panel "
+            "(same as `harness-audit report`)."
         ),
+        epilog="Subcommand: report [--lang zh|en]  render the local audit_trace.jsonl panel",
     )
     parser.add_argument(
         "--cwd",
@@ -939,8 +942,18 @@ def _configure_stdio() -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Entry point for the console script and ``python -m``."""
-    options = _parse_args(argv if argv is not None else sys.argv[1:])
+    """Entry point for the console script and ``python -m``.
+
+    Bare invocation is the stdio sidecar. ``report`` is the same panel as
+    ``harness-audit report``, so ``harness-audit-server report --lang zh``
+    is a command rather than an argparse error.
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    if args and args[0] == "report":
+        from .trace_panel import run_report
+
+        return run_report(args[1:])
+    options = _parse_args(args)
 
     logging.basicConfig(
         level=logging.ERROR if options.quiet else logging.WARNING,

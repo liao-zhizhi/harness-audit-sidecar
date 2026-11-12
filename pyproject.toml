@@ -52,10 +52,11 @@ Issue-Tracker = "https://github.com/liao-zhizhi/harness-audit-sidecar/issues"
 dev = []
 
 [project.scripts]
-# Console script used as the stdio sidecar for an agent client.
+# Stdio sidecar. Bare invocation speaks MCP; `report` is dispatched to the
+# same panel as `harness-audit report` (`audit_sidecar.trace_panel:run_report`).
 harness-audit-server = "audit_sidecar.mcp_server:main"
-# Developer-facing CLI: `harness-audit init` prints the MCP stanza and writes
-# ref_roots.json; bare `harness-audit` runs the demo.
+# Developer-facing CLI: `harness-audit init` / `check` / `report`; bare
+# `harness-audit` runs the demo.
 harness-audit = "audit_sidecar.cli:main"
 
 [tool.setuptools]
