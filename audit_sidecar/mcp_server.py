@@ -691,7 +691,8 @@ class JsonRpcServer:
         # MCP's defined tool-result fields stay as the agent saw them.
         # ``status`` is dropped (not in the spec). ``__audit_warning__`` is
         # passed through on FAIL so a client can render the lie without
-        # flipping ``isError``.
+        # flipping ``isError``. ``__precheck_warning__`` is the same kind of
+        # optional sibling: parent missing before execute, not a verdict.
         payload = {
             "content": response.get("content", []),
             "isError": bool(response.get("isError")),
@@ -699,6 +700,9 @@ class JsonRpcServer:
         warning = response.get("__audit_warning__")
         if warning:
             payload["__audit_warning__"] = warning
+        precheck = response.get("__precheck_warning__")
+        if precheck:
+            payload["__precheck_warning__"] = precheck
         return payload
 
     def _resolve_claim(self, params: Dict[str, Any], tool: str) -> tuple:

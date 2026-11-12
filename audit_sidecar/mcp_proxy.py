@@ -55,6 +55,7 @@ __all__ = [
     "ToolInvocation",
     "UnknownToolError",
     "audit_warning_text",
+    "precheck_warning_text",
 ]
 
 
@@ -69,6 +70,21 @@ def audit_warning_text(result: ExecutionResult) -> Optional[str]:
         return None
     reason = (result.reason or "").strip() or "（未给出原因）"
     return "审计器发现假完成：原因 {}".format(reason)
+
+
+def precheck_warning_text(result: ExecutionResult) -> Optional[str]:
+    """Optional parent-missing note. Never a lattice value.
+
+    Only present when a declared path's parent directory did not exist
+    before execute. Does not block the command and does not replace FAIL.
+    """
+    if not result.prechecks:
+        return None
+    missing = []
+    for item in result.prechecks:
+        if item.missing_dir not in missing:
+            missing.append(item.missing_dir)
+    return "目标路径的父目录当前不存在：{}".format(", ".join(missing))
 
 
 _LOG = logging.getLogger(__name__)
@@ -745,10 +761,12 @@ class MCPProxy:
 
         ``status`` / ``isError`` / ``content`` still reflect the tool-layer
         claim, not the witness: correcting the agent's belief is out of
-        scope. On FAIL a sibling ``__audit_warning__`` is appended so a
+        scope.         On FAIL a sibling ``__audit_warning__`` is appended so a
         human (or a client that renders extra fields) can see the lie
-        without parsing ``audit_trace.jsonl``. The lattice value itself
-        is not a field on this object.
+        without parsing ``audit_trace.jsonl``. A missing parent directory
+        adds ``__precheck_warning__`` the same way: optional, never a
+        lattice field, never a change to ``status`` / ``isError`` /
+        ``content``. The lattice value itself is not a field on this object.
         """
         if reported_success:
             text = "{}: ok".format(tool_name)
@@ -764,6 +782,9 @@ class MCPProxy:
         warning = audit_warning_text(result)
         if warning:
             payload["__audit_warning__"] = warning
+        precheck = precheck_warning_text(result)
+        if precheck:
+            payload["__precheck_warning__"] = precheck
         return payload
 
     # -- dunder -------------------------------------------------------

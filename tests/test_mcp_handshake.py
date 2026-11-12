@@ -359,8 +359,14 @@ class ToolsCallTest(McpClientTestCase):
         result = responses[1]["result"]
         self.assertIs(result["isError"], False)
         self.assertEqual(result["content"][0]["text"], "write_file: ok")
-        self.assertEqual(set(result), {"content", "isError", "__audit_warning__"})
+        self.assertEqual(
+            set(result),
+            {"content", "isError", "__audit_warning__", "__precheck_warning__"},
+        )
         self.assertTrue(result["__audit_warning__"].startswith("审计器发现假完成：原因 "))
+        self.assertTrue(
+            result["__precheck_warning__"].startswith("目标路径的父目录当前不存在：")
+        )
         self.assertFalse(os.path.exists(self.path("missing_dir")))
 
         record = self.trace_records()[0]

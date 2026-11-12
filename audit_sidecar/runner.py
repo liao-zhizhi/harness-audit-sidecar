@@ -29,6 +29,7 @@ import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .git_witness import GitWitness, GitWitnessError
@@ -37,6 +38,7 @@ from .verdict import Verdict, VerdictEngine
 
 __all__ = [
     "ExecutionResult",
+    "ParentPrecheck",
     "SafeRunner",
     "DEFAULT_TIMEOUT",
     "WITNESS_SCOPE_FULL",
@@ -76,6 +78,19 @@ done
 # Exit with the command's status, not with printf's.
 exit "$_audit_status"
 """
+
+
+@dataclass(frozen=True)
+class ParentPrecheck:
+    """One declared path whose parent directory was missing before execute.
+
+    Informational only. Presence never changes the lattice verdict; the
+    command still runs and the post-effect witness still judges.
+    """
+
+    path: str
+    missing_dir: str
+    timestamp: str
 
 
 @dataclass(frozen=True)
@@ -132,6 +147,9 @@ class ExecutionResult:
     # is about *less* than the caller asked for, and the trace says so instead
     # of letting a weaker claim read as a full one.
     dropped_assertions: Tuple[str, ...] = ()
+    # Parent-directory existence, checked before the command. Empty when
+    # every declared path had a directory to land in. Does not affect verdict.
+    prechecks: Tuple[ParentPrecheck, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -295,6 +313,9 @@ class SafeRunner:
             )
 
         expected_paths = self._normalise_expected(expected_files_modified)
+        # Warn only. A missing parent is not a verdict: the command still
+        # runs, and the post-effect witness still judges what actually landed.
+        prechecks = self._missing_parent_prechecks(cwd, expected_paths)
 
         effective_timeout = self._timeout if timeout is None else float(timeout)
         if effective_timeout <= 0:
@@ -575,6 +596,7 @@ class SafeRunner:
             rules_violated=rules_violated,
             witness_scope=collected_scope,
             witness_mtime=witness_mtime,
+            prechecks=prechecks,
         )
 
     def raw_exit_status(
@@ -607,6 +629,40 @@ class SafeRunner:
         return completed.returncode
 
     # -- internals ----------------------------------------------------
+
+    @staticmethod
+    def _missing_parent_prechecks(
+        cwd: str, expected_paths: Optional[Tuple[str, ...]]
+    ) -> Tuple[ParentPrecheck, ...]:
+        """``exists``/isdir of each declared path's dirname, before execute."""
+        if not expected_paths:
+            return ()
+        stamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        base = os.path.abspath(cwd)
+        found: List[ParentPrecheck] = []
+        for path in expected_paths:
+            absolute = (
+                path if os.path.isabs(path) else os.path.abspath(os.path.join(base, path))
+            )
+            parent = os.path.dirname(absolute)
+            if not parent:
+                parent = base
+            if os.path.isdir(parent):
+                continue
+            relative = os.path.relpath(parent, base)
+            missing_dir = (
+                parent
+                if relative.startswith(os.pardir + os.sep) or relative == os.pardir
+                else relative
+            )
+            found.append(
+                ParentPrecheck(
+                    path=path,
+                    missing_dir=missing_dir.replace("\\", "/"),
+                    timestamp=stamp,
+                )
+            )
+        return tuple(found)
 
     @staticmethod
     def _normalise_expected(

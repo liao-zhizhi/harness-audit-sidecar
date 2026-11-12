@@ -399,5 +399,66 @@ class ContractTest(ProxyTestCase):
         self.assertIs(self.proxy.audit_log[-1].verdict, Verdict.PASS)
 
 
+class ParentPrecheckTest(ProxyTestCase):
+    """Missing parent warns before execute; it never replaces the verdict."""
+
+    def test_missing_parent_warns_and_still_fails(self) -> None:
+        response = self.proxy.intercept_tool_call(
+            "write_file",
+            {"path": "fake_dir/test.txt", "content": "x\n"},
+            True,
+        )
+        self.assertEqual(response["status"], "ok")
+        self.assertFalse(response["isError"])
+        self.assertEqual(response["content"][0]["text"], "write_file: ok")
+        self.assertIn("__precheck_warning__", response)
+        self.assertEqual(
+            response["__precheck_warning__"],
+            "目标路径的父目录当前不存在：fake_dir",
+        )
+        self.assertIn("__audit_warning__", response)
+        result = self.proxy.audit_log[-1]
+        self.assertIs(result.verdict, Verdict.FAIL)
+        self.assertEqual(len(result.prechecks), 1)
+        self.assertEqual(result.prechecks[0].path, "fake_dir/test.txt")
+        self.assertEqual(result.prechecks[0].missing_dir, "fake_dir")
+        self.assertTrue(result.prechecks[0].timestamp)
+
+    def test_existing_parent_has_no_precheck_and_can_pass(self) -> None:
+        response = self.proxy.intercept_tool_call(
+            "write_file",
+            {"path": "target.py", "content": "value = 1\n"},
+            True,
+        )
+        self.assertNotIn("__precheck_warning__", response)
+        self.assertNotIn("__audit_warning__", response)
+        self.assertEqual(response["status"], "ok")
+        self.assertFalse(response["isError"])
+        result = self.proxy.audit_log[-1]
+        self.assertIs(result.verdict, Verdict.PASS)
+        self.assertEqual(result.prechecks, ())
+
+    def test_unwritable_existing_parent_fails_without_precheck(self) -> None:
+        locked = self.path("locked_dir")
+        os.mkdir(locked)
+        os.chmod(locked, 0o555)
+        try:
+            response = self.proxy.intercept_tool_call(
+                "write_file",
+                {"path": "locked_dir/test.txt", "content": "x\n"},
+                True,
+            )
+        finally:
+            os.chmod(locked, 0o755)
+        self.assertNotIn("__precheck_warning__", response)
+        self.assertEqual(response["status"], "ok")
+        self.assertFalse(response["isError"])
+        self.assertIn("__audit_warning__", response)
+        result = self.proxy.audit_log[-1]
+        self.assertIs(result.verdict, Verdict.FAIL)
+        self.assertEqual(result.prechecks, ())
+        self.assertFalse(os.path.exists(self.path("locked_dir/test.txt")))
+
+
 if __name__ == "__main__":
     unittest.main()
