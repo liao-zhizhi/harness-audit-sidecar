@@ -457,6 +457,19 @@ class MCPProxy:
                 tool_name,
             )
             return TIER_ADAPTIVE
+        if tier == TIER_INNATE:
+            try:
+                from .memory_bus import intent_requires_full_witness
+
+                if intent_requires_full_witness(invocation.intent, tool_name):
+                    _LOG.info(
+                        "escalating %s to the adaptive tier: memory-layer "
+                        "sidecar_rules.yaml matched a high-risk intent",
+                        tool_name,
+                    )
+                    return TIER_ADAPTIVE
+            except Exception:
+                _LOG.debug("memory-layer overlay skipped", exc_info=True)
         return tier
 
     def register_tool(

@@ -302,6 +302,22 @@ class TraceWriter:
             _LOG.error("could not append to trace %s: %s", self._path, problem)
             return
         self._offer_cloud(record)
+        self._offer_memory(record)
+
+    def _offer_memory(self, record: Dict[str, Any]) -> None:
+        """On FAIL, copy a structured event into Gradia's memory bus.
+
+        Never raises: an unwritable memory file must not become an outage,
+        and the lattice value is already on the local trace.
+        """
+        if record.get("verdict") != "FAIL":
+            return
+        try:
+            from .memory_bus import record_physical_fault
+
+            record_physical_fault(record)
+        except Exception:
+            _LOG.debug("memory bus skipped", exc_info=True)
 
     def _offer_cloud(self, record: Dict[str, Any]) -> None:
         sync = self._cloud_sync
@@ -1026,6 +1042,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     # makes `validate_citation` answerable over the same JSON-RPC surface --
     # and judged by the same lattice -- as the file tools.
     register_citation_tool(proxy)
+
+    try:
+        from .memory_bus import load_overlay, rules_path
+
+        overlay = load_overlay()
+        if overlay:
+            _LOG.warning(
+                "loaded memory-layer sidecar overlay %s (schema=%s)",
+                rules_path(),
+                overlay.get("schema"),
+            )
+    except Exception:
+        _LOG.debug("memory-layer overlay not loaded", exc_info=True)
 
     server = JsonRpcServer(proxy, trace)
     try:
