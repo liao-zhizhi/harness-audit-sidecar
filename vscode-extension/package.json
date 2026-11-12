@@ -2,7 +2,7 @@
   "name": "harness-audit",
   "displayName": "因果审计 Harness Audit",
   "description": "Frictionless Cursor/VS Code connector for harness-audit-sidecar. No pipx, no hand-written mcp.json.",
-  "version": "0.10.5",
+  "version": "0.10.9",
   "publisher": "liao-zhizhi",
   "private": true,
   "engines": {

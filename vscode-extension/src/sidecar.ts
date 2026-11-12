@@ -11,11 +11,15 @@
  * ``SafeRunner._stat_snapshot`` in ``audit_sidecar/runner.py`` (declared-file
  * mtime/size only, no tree walk). Non-git workspaces currently record
  * INVALID on the full tier — that is the Python gate, not this connector.
+ *
+ * ``--cwd`` and ``--trace`` always come from the active workspace root, never
+ * from the editor process cwd.
  */
 
 import { ChildProcess, spawn, spawnSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
+import { resolveWorkspaceRoot, workspaceBindArgs } from "./mcpConfig";
 
 export interface Runtime {
   python: string;
@@ -107,20 +111,15 @@ export class SidecarProcess {
 
   start(runtime: Runtime, workspaceRoot: string): void {
     this.stop();
-    const trace = path.join(workspaceRoot, "audit_trace.jsonl");
-    const args = [
-      ...runtime.args,
-      "--cwd",
-      workspaceRoot,
-      "--trace",
-      trace,
-    ];
+    const abs = resolveWorkspaceRoot(workspaceRoot);
+    const args = [...runtime.args, ...workspaceBindArgs(abs)];
     this.child = spawn(runtime.command, args, {
-      cwd: workspaceRoot,
+      cwd: abs,
       env: runtime.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    this.child.stdin?.write("");
+    // Do not write to stdin. This process speaks JSON-RPC; an empty write is
+    // at best a no-op and at worst a torn first frame if a newline follows.
     this.child.on("exit", () => {
       this.running = false;
       this.child = undefined;

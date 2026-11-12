@@ -1048,7 +1048,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         overlay = load_overlay()
         if overlay:
-            _LOG.warning(
+            # INFO, not WARNING: Cursor's MCP client logs stderr WARNING as
+            # [error] and a reconnect after pkill already races; do not look
+            # like a crash during initialize.
+            _LOG.info(
                 "loaded memory-layer sidecar overlay %s (schema=%s)",
                 rules_path(),
                 overlay.get("schema"),

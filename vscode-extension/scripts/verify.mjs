@@ -2,6 +2,7 @@
 "use strict";
 
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs";
+import { spawnSync } from "child_process";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -14,7 +15,12 @@ const {
   isEnabled,
   isEnabledInWorkspace,
   buildSidecarEntry,
+  boundCwdFromEntry,
   globalMcpPath,
+  resolveWorkspaceRoot,
+  workspaceBindArgs,
+  workspaceBindMatches,
+  tracePathFor,
 } = require("../out/mcpConfig.js");
 const { loadTrace, renderPanelHtml, countVerdicts } = require("../out/trace.js");
 const { resolvePythonRoot, resolveRuntime } = require("../out/sidecar.js");
@@ -36,10 +42,45 @@ function check(name, cond) {
 try {
   const pythonRoot = resolvePythonRoot(extRoot);
   check("pythonRoot has audit_sidecar", require("fs").existsSync(join(pythonRoot, "audit_sidecar", "__init__.py")));
+  const compiled = spawnSync(
+    "python3",
+    ["-m", "py_compile", join(pythonRoot, "audit_sidecar", "mcp_server.py")],
+    { encoding: "utf8" },
+  );
+  check("mcp_server.py compiles", compiled.status === 0);
+  if (compiled.status !== 0) {
+    console.error(compiled.stderr || compiled.stdout);
+  }
 
   const runtime = resolveRuntime(extRoot);
-  const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot);
-  check("global entry has no baked-in workspace cwd", !entry.args.includes(emptyWs));
+  let threw = false;
+  try {
+    buildSidecarEntry(runtime.python, runtime.pythonRoot, "");
+  } catch {
+    threw = true;
+  }
+  check("buildSidecarEntry requires a workspace root", threw);
+
+  const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot, emptyWs);
+  const bind = workspaceBindArgs(emptyWs);
+  check("global entry includes --cwd", entry.args.includes("--cwd"));
+  check("global entry --cwd is the workspace root", entry.args[entry.args.indexOf("--cwd") + 1] === emptyWs);
+  check("global entry spawn cwd is the workspace root", entry.cwd === emptyWs);
+  check("global entry includes --trace", entry.args.includes("--trace"));
+  check(
+    "global entry --trace is workspace audit_trace.jsonl",
+    entry.args[entry.args.indexOf("--trace") + 1] === tracePathFor(emptyWs)
+  );
+  check("fresh entry matches the workspace bind", workspaceBindMatches(entry, emptyWs));
+
+  const relative = buildSidecarEntry(runtime.python, runtime.pythonRoot, ".");
+  check("relative workspace --cwd is absolute", require("path").isAbsolute(relative.args[relative.args.indexOf("--cwd") + 1]));
+  check("relative workspace spawn cwd is absolute", require("path").isAbsolute(relative.cwd));
+  check(
+    "relative workspace resolves to process cwd",
+    relative.cwd === resolveWorkspaceRoot(".") && relative.args[relative.args.indexOf("--cwd") + 1] === resolveWorkspaceRoot(".")
+  );
+  check("workspaceBindArgs order is --cwd then --trace", bind[0] === "--cwd" && bind[2] === "--trace");
   check("global entry is the python module", entry.args.includes("audit_sidecar.mcp_server"));
   check("not globally enabled before inject", !isEnabled(fakeHome));
   check("workspace is not required", !isEnabledInWorkspace(emptyWs));
@@ -54,7 +95,40 @@ try {
   check("server name harness-audit", Boolean(server));
   check("no pipx in command", !String(server.command).includes("pipx"));
   check("module is mcp_server", server.args.includes("audit_sidecar.mcp_server"));
-  check("no --cwd in the global entry", !server.args.includes("--cwd"));
+  check("mcp.json has --cwd", server.args.includes("--cwd"));
+  check("mcp.json --cwd is the active workspace", server.args[server.args.indexOf("--cwd") + 1] === emptyWs);
+  check("mcp.json spawn cwd is the active workspace", server.cwd === emptyWs);
+  check("mcp.json has --trace", server.args.includes("--trace"));
+  check(
+    "mcp.json --trace is <workspace>/audit_trace.jsonl",
+    server.args[server.args.indexOf("--trace") + 1] === join(emptyWs, "audit_trace.jsonl")
+  );
+  check("boundCwdFromEntry reads --cwd", boundCwdFromEntry(server) === emptyWs);
+
+  const staleHome = mkdtempSync(join(tmpdir(), "harness-audit-home-stale-"));
+  const staleEntry = {
+    command: runtime.python,
+    args: ["-m", "audit_sidecar.mcp_server"],
+    env: { PYTHONPATH: runtime.pythonRoot },
+  };
+  injectGlobalMcpJson(staleEntry, staleHome);
+  const upgraded = injectGlobalMcpJson(
+    buildSidecarEntry(runtime.python, runtime.pythonRoot, emptyWs),
+    staleHome
+  );
+  check("upgrades a 0.10.5 entry that had no --cwd", upgraded.changed);
+  const upgradedDoc = JSON.parse(readFileSync(join(staleHome, ".cursor", "mcp.json"), "utf8"));
+  const upgradedServer = upgradedDoc.mcpServers["harness-audit"];
+  check(
+    "upgrade writes absolute --cwd",
+    upgradedServer.args[upgradedServer.args.indexOf("--cwd") + 1] === emptyWs
+  );
+  check(
+    "upgrade writes absolute --trace",
+    upgradedServer.args[upgradedServer.args.indexOf("--trace") + 1] === join(emptyWs, "audit_trace.jsonl")
+  );
+  check("upgrade writes spawn cwd", upgradedServer.cwd === emptyWs);
+  rmSync(staleHome, { recursive: true, force: true });
 
   const otherHome = mkdtempSync(join(tmpdir(), "harness-audit-home2-"));
   mkdirSync(join(otherHome, ".cursor"), { recursive: true });
@@ -67,6 +141,25 @@ try {
   check("preserves other global servers", Boolean(merged.mcpServers.other));
   check("upserts harness-audit beside them", Boolean(merged.mcpServers["harness-audit"]));
   rmSync(otherHome, { recursive: true, force: true });
+
+  const otherWs = mkdtempSync(join(tmpdir(), "harness-audit-ws2-"));
+  const rebound = buildSidecarEntry(runtime.python, runtime.pythonRoot, otherWs);
+  const rewritten = injectGlobalMcpJson(rebound, fakeHome);
+  check("rebinding to another workspace rewrites mcp.json", rewritten.changed);
+  const reboundDoc = JSON.parse(readFileSync(written.path, "utf8"));
+  const reboundServer = reboundDoc.mcpServers["harness-audit"];
+  check(
+    "rebind updates --cwd",
+    reboundServer.args[reboundServer.args.indexOf("--cwd") + 1] === otherWs
+  );
+  check("rebind updates spawn cwd", reboundServer.cwd === otherWs);
+  check(
+    "rebind updates --trace",
+    reboundServer.args[reboundServer.args.indexOf("--trace") + 1] === join(otherWs, "audit_trace.jsonl")
+  );
+  const same = injectGlobalMcpJson(rebound, fakeHome);
+  check("rebind is a no-op when --cwd is already this workspace", !same.changed);
+  rmSync(otherWs, { recursive: true, force: true });
 
   const sample = join(extRoot, "..", "examples", "sample_trace.jsonl");
   const rows = loadTrace(readFileSync(sample, "utf8"));

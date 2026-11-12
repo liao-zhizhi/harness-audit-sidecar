@@ -6,11 +6,11 @@ import {
   injectGlobalMcpJson,
   isEnabled,
   isEnabledInWorkspace,
+  resolveWorkspaceRoot,
+  TRACE_NAME,
 } from "./mcpConfig";
 import { Runtime, SidecarProcess, resolveRuntime } from "./sidecar";
 import { loadTrace, renderPanelHtml } from "./trace";
-
-const TRACE_NAME = "audit_trace.jsonl";
 
 export class AuditViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
@@ -38,7 +38,8 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
   }
 
   workspaceRoot(): string | undefined {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    return folder ? resolveWorkspaceRoot(folder) : undefined;
   }
 
   globallyEnabled(): boolean {
@@ -57,7 +58,67 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     return this.runtime;
   }
 
+  /**
+   * Force-write the current window's absolute workspace into
+   * ``~/.cursor/mcp.json`` ``--cwd`` / ``--trace``. No-op until globally
+   * enabled, or when no folder is open.
+   */
+  syncGlobalWorkspaceBind(): boolean {
+    const root = this.workspaceRoot();
+    if (!root || !this.globallyEnabled()) {
+      return false;
+    }
+    try {
+      const runtime = this.ensureRuntime();
+      const { changed } = this.bindGlobalSidecar(runtime, root);
+      if (changed) {
+        this.promptReload(root);
+      }
+      return changed;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Rewrite ~/.cursor/mcp.json so Cursor's MCP process uses this folder. */
+  private bindGlobalSidecar(runtime: Runtime, workspaceRoot: string): {
+    changed: boolean;
+    path: string;
+  } {
+    return injectGlobalMcpJson(
+      buildSidecarEntry(runtime.python, runtime.pythonRoot, workspaceRoot)
+    );
+  }
+
+  private lastPromptedBind: string | undefined;
+
+  private promptReload(root: string): void {
+    if (this.lastPromptedBind === root) {
+      return;
+    }
+    this.lastPromptedBind = root;
+    void vscode.window
+      .showInformationMessage(
+        `审计工作区已绑定到 ${root}。请重启窗口，让 Cursor 的 MCP 进程使用新的 --cwd / --trace。`,
+        "重启窗口"
+      )
+      .then((choice) => {
+        if (choice === "重启窗口") {
+          return vscode.commands.executeCommand("workbench.action.reloadWindow");
+        }
+        return undefined;
+      });
+  }
+
   async enable(): Promise<void> {
+    const root = this.workspaceRoot();
+    if (!root) {
+      const message =
+        "请先打开一个工作区文件夹。全局审计器必须把 --cwd / --trace 绑到 vscode.workspace.workspaceFolders[0]。";
+      void vscode.window.showErrorMessage(message);
+      this.render(message);
+      return;
+    }
     let runtime: Runtime;
     try {
       runtime = this.ensureRuntime();
@@ -66,14 +127,12 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
       this.render(String(error));
       return;
     }
-    const entry = buildSidecarEntry(runtime.python, runtime.pythonRoot);
-    const result = injectGlobalMcpJson(entry);
-    if (this.workspaceRoot()) {
-      this.start();
-    }
+    const result = this.bindGlobalSidecar(runtime, root);
+    this.start();
     this.render();
+    this.lastPromptedBind = root;
     const restart = await vscode.window.showInformationMessage(
-      `已写入全局 ${result.path}。之后每个工作区都会自动拉起审计器，日志写在该文件夹的 audit_trace.jsonl。请重启窗口让 Cursor 加载 MCP。`,
+      `已写入全局 ${result.path}，--cwd / --trace 已绑定到 ${root}。请重启窗口让 Cursor 加载 MCP。`,
       "重启窗口"
     );
     if (restart === "重启窗口") {
@@ -89,7 +148,14 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     }
     try {
       const runtime = this.ensureRuntime();
-      this.process.start(runtime, root);
+      this.syncGlobalWorkspaceBind();
+      // Cursor owns the stdio MCP process from ~/.cursor/mcp.json. Spawning a
+      // second mcp_server here races that client and leaves the agent on
+      // "Not connected" after pkill / reload. Only spawn when MCP is not
+      // globally configured (legacy local panel).
+      if (!this.globallyEnabled()) {
+        this.process.start(runtime, root);
+      }
       this.watchTrace();
       this.render();
     } catch (error) {
@@ -158,12 +224,15 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const enabled = this.globallyEnabled();
-    const running = this.process.running;
+    // When globally enabled, Cursor's MCP process is the sidecar. The panel
+    // child is not spawned, so process.running would stay false (Stop) even
+    // though mcp.json is bound — that was the shield showing Stop after pkill.
+    const running = this.process.running || enabled;
     const nonce = String(Date.now());
     const body = enabled
       ? this.panelBody()
       : `<button class="go" id="enable">一键开启因果审计</button>
-         <p class="hint">一次写入用户级 <code>~/.cursor/mcp.json</code>，之后每个工作区自动拉起，日志落在当前文件夹的 <code>audit_trace.jsonl</code>。不改仓库、不要求 git、不要求 pipx。</p>`;
+         <p class="hint">一次写入用户级 <code>~/.cursor/mcp.json</code>，并把 <code>--cwd</code> / <code>--trace</code> 绑到当前工作区根目录。日志落在该文件夹的 <code>audit_trace.jsonl</code>。不改仓库、不要求 git、不要求 pipx。</p>`;
     this.view.webview.html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -194,8 +263,8 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
 <body>
   <div class="status">
     <span class="pill ${running ? "on" : "off"}">${running ? "Start · 运行中" : "Stop · 已停止"}</span>
-    ${enabled && !running ? `<button id="start">Start</button>` : ""}
-    ${enabled && running ? `<button id="stop">Stop</button>` : ""}
+    ${!enabled && this.process.running ? `<button id="stop">Stop</button>` : ""}
+    ${enabled ? `<span class="hint">Cursor 管 MCP。若 Agent 报 Not connected，请重启窗口。</span>` : ""}
   </div>
   ${error ? `<p class="err">${String(error).replace(/[<>&]/g, "")}</p>` : ""}
   ${body}
