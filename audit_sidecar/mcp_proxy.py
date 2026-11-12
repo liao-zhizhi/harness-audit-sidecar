@@ -13,10 +13,12 @@ and judges the tool layer's claim against that witness. The claim is passed in
 as the agent saw it; it is deliberately *not* re-derived from the exit status,
 because re-deriving it would launder exactly the lie under audit.
 
-The proxy is *passive*. It returns to the caller the response the agent would
-have received, unchanged, and keeps its judgement in an internal log. A sidecar
-that rewrites the agent's view stops being an observer and becomes part of the
-system under test.
+The proxy is *passive on the claim*. ``status`` / ``isError`` / ``content``
+still match what the tool layer reported; rewriting those would make the
+sidecar part of the system under test. On FAIL a sibling
+``__audit_warning__`` is appended so a human client can surface the lie
+without opening ``audit_trace.jsonl``. The lattice value itself is not a
+response field.
 
 The real protocol is JSON-RPC over stdio or SSE. This module models the call
 boundary as a Python method so the audit logic can be exercised without a
@@ -52,7 +54,23 @@ __all__ = [
     "MCPProxy",
     "ToolInvocation",
     "UnknownToolError",
+    "audit_warning_text",
 ]
+
+
+def audit_warning_text(result: ExecutionResult) -> Optional[str]:
+    """Human-readable FAIL note, or None when the verdict is not FAIL.
+
+    The sentence is Chinese because the operator-facing product is Chinese.
+    Tests that dump the JSON envelope must allow this field; they must not
+    treat it as a lattice leak.
+    """
+    if result.verdict is not Verdict.FAIL:
+        return None
+    reason = (result.reason or "").strip() or "（未给出原因）"
+    return "审计器发现假完成：原因 {}".format(reason)
+
+
 _LOG = logging.getLogger(__name__)
 
 
@@ -715,9 +733,12 @@ class MCPProxy:
     ) -> Dict[str, Any]:
         """Build the MCP-shaped response the agent receives.
 
-        The body deliberately reflects ``reported_success`` rather than the
-        witness. Leaking the witness through the response would let the agent
-        route around the audit.
+        ``status`` / ``isError`` / ``content`` still reflect the tool-layer
+        claim, not the witness: correcting the agent's belief is out of
+        scope. On FAIL a sibling ``__audit_warning__`` is appended so a
+        human (or a client that renders extra fields) can see the lie
+        without parsing ``audit_trace.jsonl``. The lattice value itself
+        is not a field on this object.
         """
         if reported_success:
             text = "{}: ok".format(tool_name)
@@ -725,11 +746,15 @@ class MCPProxy:
             text = "{}: failed (underlying exit status {})".format(
                 tool_name, result.exit_code
             )
-        return {
+        payload: Dict[str, Any] = {
             "status": "ok" if reported_success else "error",
             "isError": not reported_success,
             "content": [{"type": "text", "text": text}],
         }
+        warning = audit_warning_text(result)
+        if warning:
+            payload["__audit_warning__"] = warning
+        return payload
 
     # -- dunder -------------------------------------------------------
 

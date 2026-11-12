@@ -24,13 +24,13 @@ Methods
 
 Two properties matter more than the protocol details:
 
-* **The response is passive.** The agent receives exactly what the tool layer
-  claimed, and nothing about the verdict. Leaking the verdict would let the
-  agent detect the audit and adapt, which destroys the audit's value. The same
-  rule is why ``initialize`` omits MCP's optional ``instructions`` field: a
-  server that announces "your calls are being judged" has turned a detector
-  into a deterrent.
-* **The verdict goes to a trace file, not the wire.** A JSONL record per call,
+* **The claim stays passive.** ``content`` / ``isError`` still match what the
+  tool layer claimed. The lattice value is not a field on the result, and
+  ``initialize`` still omits MCP's optional ``instructions`` field so the
+  server does not announce "your calls are being judged" as a deterrent.
+  On FAIL a sibling ``__audit_warning__`` is passed through so a human
+  client can surface a false completion without opening the trace file.
+* **The verdict still goes to a trace file.** A JSONL record per call,
   flushed immediately, so the audit survives the process being killed. If the
   trace cannot be written the call is still answered -- an unwritable log must
   not become an outage -- but the failure is reported on stderr.
@@ -672,13 +672,18 @@ class JsonRpcServer:
                 INVALID_PARAMS, "Unknown tool: {}".format(tool)
             ) from None
 
-        # Exactly the two fields the specification defines for a tool result.
-        # The proxy's extra "status" field is dropped: a strict client is
-        # entitled to validate this object.
-        return {
+        # MCP's defined tool-result fields stay as the agent saw them.
+        # ``status`` is dropped (not in the spec). ``__audit_warning__`` is
+        # passed through on FAIL so a client can render the lie without
+        # flipping ``isError``.
+        payload = {
             "content": response.get("content", []),
             "isError": bool(response.get("isError")),
         }
+        warning = response.get("__audit_warning__")
+        if warning:
+            payload["__audit_warning__"] = warning
+        return payload
 
     def _resolve_claim(self, params: Dict[str, Any], tool: str) -> tuple:
         """Work out what the claim under audit is for a ``tools/call``.

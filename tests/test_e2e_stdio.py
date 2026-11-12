@@ -129,8 +129,9 @@ class HonestCallE2ETest(StdioServerTestCase):
         self.assertEqual(response["result"]["status"], "ok")
         self.assertFalse(response["result"]["isError"])
 
-        # The verdict must not leak onto the wire.
-        self.assertNotIn("verdict", json.dumps(response))
+        # A PASS call has no warning and no lattice field on the wire.
+        self.assertNotIn("verdict", response["result"])
+        self.assertNotIn("__audit_warning__", response["result"])
         self.assertNotIn("FAIL", json.dumps(response))
 
     def test_write_actually_happened(self) -> None:
@@ -178,6 +179,10 @@ class SwallowedErrorE2ETest(StdioServerTestCase):
         self.assertEqual(response["id"], 7)
         self.assertEqual(response["result"]["status"], "ok")
         self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["content"][0]["text"], "write_file: ok")
+        self.assertTrue(
+            response["result"]["__audit_warning__"].startswith("审计器发现假完成：原因 ")
+        )
 
         # ...while the audit record disagrees.
         records = self.trace_records()

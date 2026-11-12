@@ -32,6 +32,10 @@ Two things live here:
     Record the current working tree so a later ``--file`` / ``--diff`` check
     can answer "changed", not merely "exists" / "non-empty".
 
+``harness-audit report``
+    Render ``audit_trace.jsonl`` as a terminal panel (``--lang zh|en``).
+    FAIL rows highlight ``reason``, untouched files, and extra files.
+
 Run with::
 
     python -m audit_sidecar.cli            # demo
@@ -39,6 +43,7 @@ Run with::
     python -m audit_sidecar.cli setup      # write Cursor MCP config + baseline
     python -m audit_sidecar.cli baseline   # record the working tree
     python -m audit_sidecar.cli check --file src/main.py --upload
+    python -m audit_sidecar.cli report --lang zh
 """
 
 from __future__ import annotations
@@ -1187,10 +1192,10 @@ def run_baseline(argv: List[str]) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Dispatch to ``init``, ``setup``, ``mcp``, ``baseline``, ``check`` or the demo."""
+    """Dispatch to ``init``, ``setup``, ``mcp``, ``baseline``, ``check``, ``report`` or the demo."""
     args = list(sys.argv[1:] if argv is None else argv)
 
-    if args and args[0] in ("init", "setup", "up", "watch", "mcp", "demo", "baseline", "check"):
+    if args and args[0] in ("init", "setup", "up", "watch", "mcp", "demo", "baseline", "check", "report"):
         command, rest = args[0], args[1:]
         if command == "init":
             return run_init(rest)
@@ -1222,6 +1227,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             return run_baseline(rest)
         if command == "check":
             return run_check(rest)
+        if command == "report":
+            from .trace_panel import run_report
+
+            return run_report(rest)
         args = []
     if args and args[0] in ("-h", "--help", "help"):
         print(__doc__)
@@ -1229,7 +1238,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args:
         print(
             "unknown command {!r}; expected 'init', 'setup', 'up', 'watch', "
-            "'mcp', 'baseline', 'check' or no command for the demo".format(args[0]),
+            "'mcp', 'baseline', 'check', 'report' or no command for the demo".format(args[0]),
             file=sys.stderr,
         )
         return EXIT_USAGE

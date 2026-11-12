@@ -356,7 +356,11 @@ class ToolsCallTest(McpClientTestCase):
             ]
         )
         self.assertEqual(code, 0, stderr)
-        self.assertIs(responses[1]["result"]["isError"], False)
+        result = responses[1]["result"]
+        self.assertIs(result["isError"], False)
+        self.assertEqual(result["content"][0]["text"], "write_file: ok")
+        self.assertEqual(set(result), {"content", "isError", "__audit_warning__"})
+        self.assertTrue(result["__audit_warning__"].startswith("审计器发现假完成：原因 "))
         self.assertFalse(os.path.exists(self.path("missing_dir")))
 
         record = self.trace_records()[0]
@@ -464,9 +468,15 @@ class ToolsCallTest(McpClientTestCase):
                 ),
             ]
         )
-        wire = json.dumps(responses)
-        for leak in ("FAIL", "verdict", "witness", "false completion"):
-            self.assertNotIn(leak, wire)
+        result = responses[1]["result"]
+        # The lattice is not a result field. The claim stays ok. A sibling
+        # warning names the lie so a client can render it without flipping
+        # isError — extra keys must not break that envelope.
+        self.assertNotIn("verdict", result)
+        self.assertIs(result["isError"], False)
+        self.assertEqual(result["content"][0]["text"], "write_file: ok")
+        self.assertIn("__audit_warning__", result)
+        self.assertTrue(result["__audit_warning__"].startswith("审计器发现假完成：原因 "))
         # And the verdict is still on disk, where the operator can see it.
         self.assertEqual(self.trace_records()[0]["verdict"], "FAIL")
 

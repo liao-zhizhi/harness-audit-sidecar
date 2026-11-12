@@ -172,7 +172,9 @@ class DispatchTests(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(cli.main(["--help"]), 0)
-        self.assertIn("harness-audit init", out.getvalue())
+        text = out.getvalue()
+        self.assertIn("harness-audit init", text)
+        self.assertIn("harness-audit report", text)
 
     def test_a_nonexistent_directory_is_an_error(self):
         code, _stdout, stderr = _capture(["--cwd", "/no/such/dir/for/init", "--local"])

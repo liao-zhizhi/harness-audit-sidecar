@@ -144,7 +144,7 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.10.2) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.10.3) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
@@ -154,7 +154,7 @@ flares, earlier than any real false completion.
 > external rule packages, mounted through the membrane), a stdio server, and chronic drift
 > detection (`analyze_chronic_drift`, §"The two failures"), and the MCP handshake
 > (`initialize` / `tools/list` / `tools/call`). The core loop
-> (execute → witness → verdict → record) runs, backed by 588 tests (581 passing, 7 skipped);
+> (execute → witness → verdict → record) runs, backed by 925 tests (918 passing, 7 skipped);
 > but concurrency and forwarding to an external MCP server are missing, and the claim under
 > audit is still not observable on `tools/call` (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
@@ -835,6 +835,13 @@ harness-audit check --file src/main.py    # claim: this file changed
 harness-audit check --command "pytest -q" # claim: this command succeeded
 harness-audit check --diff                # claim: the working tree changed
 ```
+
+`harness-audit report --lang zh` (or `--lang en`; default follows `LANG`) reads
+`./audit_trace.jsonl` and draws a terminal panel: time, tool, 【PASS】/【FAIL】/
+【INVALID】/【NOT_RUN】, intent, and on FAIL the `reason`, untouched files, and
+extra files. It does not re-judge. On a FAIL tool call the MCP envelope still
+returns `ok`; a sibling `__audit_warning__` names the false completion so the
+operator does not have to parse the JSONL by hand.
 
 Default output is the whole public answer:
 
@@ -1610,16 +1617,16 @@ The last row is the crux. `test_check_is_not_rederived_from_exit_status` asserts
 `check_source == "protocol"`, `check_observed is True` and `exit_code != 0`, so any change to
 the derivation fails the test immediately.
 
-**Two: the proxy is passive.**
+**Two: the proxy is passive on the claim.**
 
-The response returned to the agent **mirrors** the tool layer's claim exactly and never mixes in
-the witness's conclusion. `MCPProxy` does not correct the agent's beliefs; it only records the
-disagreement in its own log. An "auditor" that corrects the agent on its behalf stops being an
-observer and becomes part of the system under audit — and once it errs, there is no second pair
-of eyes.
+`status` / `isError` / `content` still **mirror** the tool layer's claim. `MCPProxy` does
+not flip `ok` into an error when the witness disagrees — an auditor that rewrites the
+agent's belief stops being an observer. On `FAIL` a sibling field `__audit_warning__`
+is appended (`审计器发现假完成：原因 …`) so a human client can surface the lie without
+`cat`-ing `audit_trace.jsonl`. The lattice value itself is not a result field.
 
 `test_response_stays_passive` pins this down: in the lying scenario the response is still
-`status='ok'`, and neither `FAIL` nor `witness` appears in it.
+`status='ok'` / `write_file: ok`, and `__audit_warning__` names the false completion.
 
 ### Real output for Case D (section [5] of `cli.py`)
 

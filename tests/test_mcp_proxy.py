@@ -77,6 +77,7 @@ class HonestCallTest(ProxyTestCase):
         )
         self.assertEqual(response["status"], "ok")
         self.assertFalse(response["isError"])
+        self.assertNotIn("__audit_warning__", response)
         result = self.proxy.audit_log[-1]
         self.assertEqual(result.check_source, "protocol")
         self.assertTrue(result.check_observed)
@@ -156,8 +157,8 @@ class SwallowedErrorTest(ProxyTestCase):
         self.assertEqual(self.changed(), [])
 
     def test_response_stays_passive(self) -> None:
-        # An observer must not correct the agent's belief: leaking the witness
-        # through the response would let the agent route around the audit.
+        # The claim fields still mirror the tool layer. FAIL is not a lattice
+        # field on the envelope; a sibling warning tells a human the lie.
         response = self.proxy.intercept_tool_call(
             "write_file",
             {"path": "missing_dir/target.py", "content": "x\n"},
@@ -165,8 +166,29 @@ class SwallowedErrorTest(ProxyTestCase):
         )
         self.assertEqual(response["status"], "ok")
         self.assertFalse(response["isError"])
-        self.assertNotIn("FAIL", str(response))
-        self.assertNotIn("witness", str(response))
+        self.assertEqual(response["content"][0]["text"], "write_file: ok")
+        self.assertNotIn("verdict", response)
+        self.assertIn("__audit_warning__", response)
+        self.assertTrue(
+            response["__audit_warning__"].startswith("审计器发现假完成：原因 ")
+        )
+
+    def test_run_command_fail_keeps_ok_and_adds_warning(self) -> None:
+        response = self.proxy.intercept_tool_call(
+            "run_command",
+            {
+                "command": "printf x > wrong.py",
+                "expected_files_modified": ["target.py"],
+            },
+            True,
+        )
+        self.assertEqual(response["status"], "ok")
+        self.assertFalse(response["isError"])
+        self.assertEqual(response["content"][0]["text"], "run_command: ok")
+        self.assertTrue(
+            response["__audit_warning__"].startswith("审计器发现假完成：原因 ")
+        )
+        self.assertIs(self.proxy.audit_log[-1].verdict, Verdict.FAIL)
 
     def test_silent_tool_is_fail_even_with_no_error(self) -> None:
         # A tool implementation that does nothing at all, and still reports
@@ -207,6 +229,7 @@ class FalseFailureTest(ProxyTestCase):
         )
         self.assertEqual(response["status"], "error")
         self.assertTrue(response["isError"])
+        self.assertIn("__audit_warning__", response)
 
 
 class ArgumentSafetyTest(ProxyTestCase):
