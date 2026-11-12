@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#09090b">
+  <title>{% if page.title %}{{ page.title }} — {% endif %}Causal Audit</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --panel: #0c0c0e;
+      --line: #27272a;
+      --text: #e4e4e7;
+      --muted: #8b8b93;
+      --dim: #52525b;
+      --pass: #3fb950;
+      --fail: #f85149;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    body {
+      min-height: 100vh;
+      font: 15px/1.55 ui-monospace, "SF Mono", "Cascadia Mono", "Cascadia Code", Consolas, Menlo, monospace;
+    }
+    a { color: var(--pass); }
+    .wrap { width: min(780px, calc(100% - 40px)); margin: 0 auto; padding: 40px 0 48px; }
+    .brand {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+      color: var(--dim); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+      margin-bottom: 28px;
+    }
+    .brand a { color: var(--text); text-decoration: none; letter-spacing: 0.12em; font-weight: 600; }
+    h1 { font-size: 28px; letter-spacing: -0.03em; margin: 0 0 8px; }
+    h2 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); margin: 28px 0 10px; }
+    p, li { color: var(--muted); }
+    ul { padding-left: 1.2em; }
+    code { color: var(--text); }
+    pre {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+      padding: 14px 16px; overflow-x: auto; color: #d4d4d8; font: inherit; font-size: 13px;
+    }
+    pre code { font: inherit; }
+    footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="brand">
+      <a href="/">causalaudit.net</a>
+      <span>mcp integration</span>
+    </div>
+    {{ content }}
+    <footer>100% Local. Zero Configuration. Requires no server.</footer>
+  </main>
+</body>
+</html>

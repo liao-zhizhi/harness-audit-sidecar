@@ -1,0 +1,11 @@
+title: Causal Audit
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter_opts:
+    disable: true
+defaults:
+  - scope:
+      path: "integrations"
+    values:
+      layout: default
