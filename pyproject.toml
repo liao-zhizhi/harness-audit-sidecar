@@ -12,7 +12,7 @@ build-backend = "setuptools.build_meta"
 # permanent support cost, and "which one is on PyPI?" is a question nobody should
 # have to ask about an audit tool.
 name = "harness-audit-sidecar"
-version = "0.10.3"
+version = "0.10.4"
 description = "Execution-layer audit sidecar for AI agent harnesses: four-valued verdicts judged against independently collected witnesses."
 readme = "README.md"
 requires-python = ">=3.9"

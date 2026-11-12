@@ -144,7 +144,7 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.10.3) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.10.4) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
@@ -154,7 +154,7 @@ flares, earlier than any real false completion.
 > external rule packages, mounted through the membrane), a stdio server, and chronic drift
 > detection (`analyze_chronic_drift`, §"The two failures"), and the MCP handshake
 > (`initialize` / `tools/list` / `tools/call`). The core loop
-> (execute → witness → verdict → record) runs, backed by 925 tests (918 passing, 7 skipped);
+> (execute → witness → verdict → record) runs, backed by 935 tests (928 passing, 7 skipped);
 > but concurrency and forwarding to an external MCP server are missing, and the claim under
 > audit is still not observable on `tools/call` (see "Known boundaries").
 > **Trial use and feedback are welcome; do not wire it into critical paths yet.**
