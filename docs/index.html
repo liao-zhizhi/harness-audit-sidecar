@@ -339,6 +339,38 @@
     .why .card-good .zh { color: var(--text); }
     .why .card-good .en { color: #86efac; }
     .why .caveat { margin-top: 14px; }
+    .why-claim {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 10px 14px;
+    }
+    .why-claim summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .why-claim summary:hover { color: var(--text); }
+    .why-claim p {
+      margin: 12px 0 0;
+      font-size: 11px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .why-claim p .zh {
+      display: block;
+      margin: 4px 0 6px;
+      font-size: 11px;
+      color: var(--text);
+    }
+    .why-claim p .en {
+      display: block;
+      margin: 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
     @media (max-width: 640px) {
       .wrap { padding-top: 28px; }
       .actions { grid-template-columns: 1fr; }
@@ -470,6 +502,24 @@ The only defense is external</h3>
       </article>
       <p class="caveat bi">注：当前结论基于 `chmod 000` 和缺父目录场景的实测。对于更复杂的物理环境，Sidecar 的拦截判据需要相应扩展。
 Note: Current conclusions are based on tests with `chmod 000` and missing parent directories. For more complex physical environments, Sidecar's blocking criteria will need to be extended.</p>
+      <details class="why-claim">
+        <summary>The precise claim / 精确命题</summary>
+        <p>
+          命题
+          <span class="zh">提示词是生成层的条件引导，不是运行层的执行契约。它能提高模型“想到某件事”的概率，但不能保证模型“执行某件事”；它没有独立见证来验证执行结果，也没有拒绝权来阻断错误动作。</span>
+          <span class="en">Prompting is conditional guidance at the generation layer, not an execution contract at the runtime layer. It can raise the probability that a model "thinks of" something, but it cannot guarantee that the model "does" it; it has no independent witness to verify execution and no refusal power to block a wrong action.</span>
+        </p>
+        <p>
+          四组证据
+          <span class="zh">① 规则覆盖不足时，模型把“缺父目录”的规则套到 chmod 000 场景，仍失败；② 移除显式规则后，工具描述等隐式提示仍驱动模型调用；③ 无规则、无探测工具时，模型 5 次中 2 次直接写入失败，未自发请求物理见证；④ 痛觉注入把避坑率从 0/5 提到 5/5，但依赖外部持续注入，不依赖模型自己记住。</span>
+          <span class="en">① When a rule under-covers, the model applies the "missing parent directory" rule to a chmod 000 case and still fails; ② after removing explicit rules, implicit prompts such as tool descriptions still drive calls; ③ with no rules and no probe tool, the model wrote directly and failed 2 of 5 times, never requesting a physical witness on its own; ④ pain injection raised avoidance from 0/5 to 5/5, but depends on continuous external injection, not on the model remembering.</span>
+        </p>
+        <p>
+          边界
+          <span class="zh">本命题只覆盖“需要可验证执行”的 Agent 运行时场景，不覆盖创意生成、写作风格等只需影响生成方向的场景。在这些场景里，提示词作为引导仍然有效。</span>
+          <span class="en">This claim covers only agent runtime scenarios that require verifiable execution. It does not cover creative generation or writing style, where prompting as guidance remains effective.</span>
+        </p>
+      </details>
     </section>
 
     <section class="tools" aria-label="支持的工具 · Supported tools">
