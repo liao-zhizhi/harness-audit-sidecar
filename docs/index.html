@@ -458,7 +458,7 @@ Sample audit log below. Commands, paths, and status words stay in English.</p>
       <h2>For Developers / 开发者入口</h2>
       <p class="zh">抓住编码智能体的假完成。同一套 harness-audit-sidecar，用物理见证审计「完成了」这个声称。</p>
       <p class="en">Catches false completion in coding agents. Same harness-audit-sidecar package. It audits the claim with physical witnesses.</p>
-      <pre class="cmd"><span class="k">$</span> pipx install 'harness-audit-sidecar&gt;=0.11.3'</pre>
+      <pre class="cmd"><span class="k">$</span> pipx install 'harness-audit-sidecar'</pre>
       <p class="zh">验证：让 Agent 执行 <code>echo test &gt; trial_check.txt</code>，然后看 <code>audit_trace.jsonl</code> 是否出现 PASS；再写一个不存在目录下的文件，看是否出现 FAIL。</p>
       <p class="en">Verify: ask the agent to run <code>echo test &gt; trial_check.txt</code>, then check <code>audit_trace.jsonl</code> for PASS. Then write a file under a missing directory and check for FAIL.</p>
       <p class="more"><a href="https://github.com/liao-zhizhi/harness-audit-sidecar/blob/master/docs/FOR_DEVELOPERS.md">开发者指南 · Developer guide</a></p>

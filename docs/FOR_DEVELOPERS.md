@@ -19,8 +19,10 @@ Agent 说「完成了」时，用这些见证核对声称，而不是给会话�
 ## Install / 安装
 
 ```bash
-pipx install 'harness-audit-sidecar>=0.11.3'
+pipx install 'harness-audit-sidecar'
 ```
+
+Current pin is in the root README (and on PyPI). Do not copy a version number here.
 
 Or install the VSIX from GitHub Releases / the site download button. Cursor steps: [integrations/cursor.md](integrations/cursor.md). After install, **Reload once**.
 
