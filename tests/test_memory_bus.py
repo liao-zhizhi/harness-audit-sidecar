@@ -174,6 +174,7 @@ class MemoryBusTest(unittest.TestCase):
                 "intent": "modify file fake_dir/test.txt",
                 "reason": "false completion: report says success, witness says no effect",
                 "timestamp": "2026-11-13T02:00:00+00:00",
+                "id": 17,
                 "prechecks": [
                     {
                         "path": "fake_dir/test.txt",
@@ -184,6 +185,10 @@ class MemoryBusTest(unittest.TestCase):
             }
         )
         self.assertEqual([row["scale"] for row in rows], ["MICRO", "TACTICAL"])
+        self.assertEqual(str(rows[0]["extra"]["trace_id"]), "17")
+        self.assertEqual(str(rows[0]["trace_id"]), "17")
+        self.assertEqual(str(rows[1]["extra"]["trace_id"]), "17")
+        self.assertEqual(str(rows[1]["trace_id"]), "17")
         self.assertEqual(rows[0]["verdict"], "INVALID")
         self.assertEqual(rows[0]["pain_level"], 1)
         self.assertEqual(rows[0]["witness"]["missing_dir"], "fake_dir")
@@ -477,6 +482,7 @@ class MemoryBusTest(unittest.TestCase):
         tactical = [row for row in stored if row["scale"] == "TACTICAL"]
         self.assertEqual(len(tactical), 1)
         self.assertEqual(str(tactical[0]["extra"]["trace_id"]), "42")
+        self.assertEqual(str(tactical[0]["trace_id"]), "42")
         self.assertEqual(tactical[0]["source"], "sidecar")
         self.assertEqual(second[0]["event_id"], tactical[0]["event_id"])
 
@@ -588,9 +594,13 @@ class LiveFailWriteTest(unittest.TestCase):
         self.assertIn("TACTICAL", scales)
         self.assertEqual(sum(1 for row in scale_rows if row["scale"] == "TACTICAL"), 1)
         micro = next(row for row in scale_rows if row["scale"] == "MICRO")
+        tactical = next(row for row in scale_rows if row["scale"] == "TACTICAL")
         self.assertEqual(micro["verdict"], "INVALID")
         self.assertEqual(micro["pain_level"], 1)
         self.assertEqual(micro["witness"]["missing_dir"], "missing_dir")
+        self.assertEqual(str(micro.get("extra", {}).get("trace_id")), "3")
+        self.assertEqual(str(tactical.get("extra", {}).get("trace_id")), "3")
+        self.assertEqual(str(micro.get("trace_id")), str(tactical.get("trace_id")))
 
 
 if __name__ == "__main__":

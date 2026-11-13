@@ -148,9 +148,32 @@ def _append_scale_event(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return row
 
 
+def _record_trace_id(record: Mapping[str, Any] | None) -> str:
+    """Audit-trace id if the caller had one. Does not invent an id."""
+    row = record or {}
+    extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+    for value in (row.get("id"), row.get("trace_id"), extra.get("trace_id") if extra else None):
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _attach_trace_id(row: Dict[str, Any], tid: str) -> Dict[str, Any]:
+    """Write extra.trace_id and top-level trace_id. Does not touch verdict."""
+    if not tid:
+        return row
+    extra = dict(row.get("extra") or {}) if isinstance(row.get("extra"), dict) else {}
+    extra["trace_id"] = tid
+    row["extra"] = extra
+    row["trace_id"] = tid
+    return row
+
+
 def _trace_id_of(row: Mapping[str, Any] | None) -> str:
     extra = (row or {}).get("extra") if isinstance((row or {}).get("extra"), dict) else {}
     value = extra.get("trace_id") if isinstance(extra, dict) else None
+    if value in (None, ""):
+        value = (row or {}).get("trace_id")
     if value in (None, ""):
         return ""
     return str(value).strip()
@@ -222,6 +245,7 @@ def _upsert_tactical(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         extra.update({key: value for key, value in incoming.items() if value not in (None, "", [])})
         extra["trace_id"] = tid
         existing["extra"] = extra
+        existing["trace_id"] = tid
         if not _save_events(rows):
             return None
         return existing
@@ -251,6 +275,7 @@ def record_scale_events(record: Mapping[str, Any]) -> list:
         or os.environ.get("GRADIA_PROJECT_ROOT")
         or os.getcwd()
     )
+    tid = _record_trace_id(record)
     prechecks = record.get("prechecks") or []
     if isinstance(prechecks, list):
         for item in prechecks:
@@ -276,13 +301,11 @@ def record_scale_events(record: Mapping[str, Any]) -> list:
                 "project_root": project_root,
                 "relative_path": str(item.get("path") or relative),
             }
+            _attach_trace_id(row, tid)
             stored = _append_scale_event(row)
             if stored:
                 written.append(stored)
     if str(record.get("verdict") or "") == "FAIL":
-        extra: Dict[str, Any] = {}
-        if record.get("id") not in (None, ""):
-            extra["trace_id"] = record.get("id")
         row = {
             "schema": SENTIENCE_SCHEMA,
             "event_id": str(uuid.uuid4()),
@@ -301,8 +324,7 @@ def record_scale_events(record: Mapping[str, Any]) -> list:
             "project_root": project_root,
             "relative_path": relative,
         }
-        if extra:
-            row["extra"] = extra
+        _attach_trace_id(row, tid)
         stored = _upsert_tactical(row)
         if stored:
             written.append(stored)
