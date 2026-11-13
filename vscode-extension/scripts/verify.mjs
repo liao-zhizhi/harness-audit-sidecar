@@ -107,21 +107,24 @@ try {
   );
   check("boundCwdFromEntry reads --cwd", boundCwdFromEntry(server) === emptyWs);
 
-  check("synced python tree has get_recent_pain_events", pythonRootHasPainTool(pythonRoot));
+  check("synced python tree has required off-lattice tools", pythonRootHasPainTool(pythonRoot));
   check("current runtime python is preservable", shouldPreserveExistingSidecar(entry));
   check("missing entry is not preserved", !shouldPreserveExistingSidecar(undefined));
 
   const staleHome = mkdtempSync(join(tmpdir(), "harness-audit-home-stale-"));
   const stalePython = mkdtempSync(join(tmpdir(), "harness-audit-old-py-"));
   mkdirSync(join(stalePython, "audit_sidecar"), { recursive: true });
-  writeFileSync(join(stalePython, "audit_sidecar", "mcp_server.py"), "# old sidecar, no pain tool\n");
+  writeFileSync(
+    join(stalePython, "audit_sidecar", "mcp_server.py"),
+    "# old sidecar, get_recent_pain_events only, no correction tools\nget_recent_pain_events = True\n"
+  );
   const staleEntry = {
     command: runtime.python,
     args: ["-m", "audit_sidecar.mcp_server", "--cwd", emptyWs],
     env: { PYTHONPATH: stalePython },
   };
   check(
-    "0.10.9 vendored python without pain tool is not preserved",
+    "0.11.0 vendored python without correction tools is not preserved",
     !shouldPreserveExistingSidecar(staleEntry)
   );
   injectGlobalMcpJson(staleEntry, staleHome, { force: true });
@@ -129,7 +132,7 @@ try {
     buildSidecarEntry(runtime.python, runtime.pythonRoot, emptyWs),
     staleHome
   );
-  check("upgrades a stale PYTHONPATH that lacks get_recent_pain_events", upgraded.changed);
+  check("upgrades a stale PYTHONPATH that lacks correction tools", upgraded.changed);
   const upgradedDoc = JSON.parse(readFileSync(join(staleHome, ".cursor", "mcp.json"), "utf8"));
   const upgradedServer = upgradedDoc.mcpServers["harness-audit"];
   check(

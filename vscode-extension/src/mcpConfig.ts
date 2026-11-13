@@ -12,8 +12,10 @@
  * start, which also reset PYTHONPATH to the vendored copy and wiped a newer
  * local tree (and ``get_recent_pain_events`` with it). Preserve an existing
  * ``harness-audit`` entry when it already has ``--cwd`` or a Python root that
- * implements the pain tool. Only the user's first Enable click, a missing
- * server, or a stale Python tree (no ``get_recent_pain_events``) may write.
+ * implements the required off-lattice tools. Only the user's first Enable
+ * click, a missing server, or a stale Python tree (missing
+ * ``get_recent_pain_events``, ``record_human_correction``, or
+ * ``get_recent_corrections``) may write.
  */
 
 import * as fs from "fs";
@@ -83,16 +85,29 @@ export function boundCwdFromEntry(entry: {
   return entry.cwd ? path.resolve(entry.cwd) : undefined;
 }
 
-export function pythonRootHasPainTool(pythonRoot: string | undefined): boolean {
+const REQUIRED_SIDECAR_MARKERS = [
+  "get_recent_pain_events",
+  "record_human_correction",
+  "get_recent_corrections",
+];
+
+export function pythonRootHasRequiredTools(
+  pythonRoot: string | undefined
+): boolean {
   if (!pythonRoot) {
     return false;
   }
   const server = path.join(pythonRoot, "audit_sidecar", "mcp_server.py");
   try {
-    return fs.readFileSync(server, "utf8").includes("get_recent_pain_events");
+    const text = fs.readFileSync(server, "utf8");
+    return REQUIRED_SIDECAR_MARKERS.every((marker) => text.includes(marker));
   } catch {
     return false;
   }
+}
+
+export function pythonRootHasPainTool(pythonRoot: string | undefined): boolean {
+  return pythonRootHasRequiredTools(pythonRoot);
 }
 
 /** True when activate/start must not rewrite ~/.cursor/mcp.json. */
@@ -104,7 +119,7 @@ export function shouldPreserveExistingSidecar(
   }
   const pythonRoot = entry.env?.PYTHONPATH;
   if (pythonRoot) {
-    return pythonRootHasPainTool(pythonRoot);
+    return pythonRootHasRequiredTools(pythonRoot);
   }
   return Boolean(flagValue(entry.args, "--cwd"));
 }

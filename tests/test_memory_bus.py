@@ -251,12 +251,68 @@ class MemoryBusTest(unittest.TestCase):
                 "arguments": {
                     "narrative_ref": "evt-x",
                     "human_action": "mkdir then write",
-                    "alignment": "aligned",
+                    "reported_alignment": "aligned",
                     "evidence": "not captured",
                 },
             },
         )
         self.assertFalse(payload.get("isError"))
+        self.assertNotIn("verdict", payload)
+        body = json.loads(payload["content"][0]["text"])
+        self.assertIn("ok", body)
+        lines = [
+            line
+            for line in Path(trace).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(lines, [])
+
+    def test_recent_corrections_lookup_is_not_traced_or_judged(self) -> None:
+        from audit_sidecar.mcp_server import JsonRpcServer
+        from audit_sidecar.memory_bus import load_recent_corrections
+        from audit_sidecar.runner import SafeRunner
+
+        path = events_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": "agent_sentience.multi_scale.v1",
+                    "event_id": "hc-1",
+                    "scale": "TACTICAL",
+                    "source": "human_correction",
+                    "intent": "先 mkdir -p 再写",
+                    "human_action": "先 mkdir -p 再写",
+                    "reported_alignment": "aligned",
+                    "reported_by": "agent",
+                    "evidence": "fake_dir/test.txt exists",
+                    "narrative_ref": "evt-n",
+                    "verdict": "PASS",
+                    "pain_level": 0,
+                    "timestamp": "2026-11-13T06:00:00+00:00",
+                    "project_root": self.home,
+                    "relative_path": "fake_dir/test.txt",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        listed = load_recent_corrections(limit=5, project_root=self.home)
+        self.assertEqual(listed[0]["human_action"], "先 mkdir -p 再写")
+        self.assertEqual(listed[0]["reported_alignment"], "aligned")
+        self.assertEqual(listed[0]["evidence"], "fake_dir/test.txt exists")
+        self.assertEqual(listed[0]["narrative_ref"], "evt-n")
+        trace = os.path.join(self.home, "corrections_lookup_trace.jsonl")
+        proxy = MCPProxy(cwd=self.home, runner=SafeRunner(timeout=5))
+        server = JsonRpcServer(proxy, TraceWriter(trace))
+        payload = server._handle_tools_call(
+            11,
+            {"name": "get_recent_corrections", "arguments": {"limit": 5}},
+        )
+        self.assertFalse(payload.get("isError"))
+        body = json.loads(payload["content"][0]["text"])
+        self.assertEqual(body["events"][0]["reported_alignment"], "aligned")
         self.assertNotIn("verdict", payload)
         lines = [
             line

@@ -270,6 +270,7 @@ class ToolsListTest(McpClientTestCase):
             "run_command",
             "validate_citation",
             "get_recent_pain_events",
+            "get_recent_corrections",
             "record_human_correction",
         ):
             self.assertIn(expected, names)

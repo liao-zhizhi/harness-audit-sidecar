@@ -108,11 +108,14 @@ CLAIM_TOOL_RETURN = "tool-return"  # what a non-error MCP tool result means by d
 # the audit_trace verdict path.
 PAIN_TOOL_NAME = "get_recent_pain_events"
 CORRECTION_TOOL_NAME = "record_human_correction"
+CORRECTIONS_LOOKUP_NAME = "get_recent_corrections"
 CORRECTION_TOOL_DEFINITION = {
     "name": CORRECTION_TOOL_NAME,
     "description": (
         "Record a human correction after reading a pain narrative. "
         "Writes source=human_correction to multi_scale_events.jsonl. "
+        "reported_alignment is a self-report; evidence is the only hard witness. "
+        "Empty evidence cannot be stored as aligned. "
         "Does not execute a command and does not produce a lattice verdict. "
         "Does not distill sidecar rules."
     ),
@@ -127,10 +130,15 @@ CORRECTION_TOOL_DEFINITION = {
                 "type": "string",
                 "description": "What the human/agent actually did after reading the narrative.",
             },
-            "alignment": {
+            "reported_alignment": {
                 "type": "string",
-                "enum": ["aligned", "diverged", "abandoned"],
-                "description": "aligned with the narrative, diverged from it, or abandoned the operation.",
+                "enum": ["aligned", "diverged", "abandoned", "unverified"],
+                "description": "Self-report. Use unverified when evidence is empty.",
+            },
+            "reported_by": {
+                "type": "string",
+                "enum": ["agent", "human"],
+                "description": "Who is recording this correction. Default agent.",
             },
             "evidence": {
                 "type": "string",
@@ -141,7 +149,29 @@ CORRECTION_TOOL_DEFINITION = {
                 "description": "Optional path the correction touched.",
             },
         },
-        "required": ["narrative_ref", "human_action", "alignment"],
+        "required": ["narrative_ref", "human_action", "reported_alignment"],
+    },
+}
+CORRECTIONS_LOOKUP_DEFINITION = {
+    "name": CORRECTIONS_LOOKUP_NAME,
+    "description": (
+        "Read-only: recent source=human_correction events for this project. "
+        "Returns human_action, reported_alignment, evidence, narrative_ref. "
+        "Does not execute a command and does not produce a lattice verdict."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Max events to return. Default 5.",
+            },
+            "project_root": {
+                "type": "string",
+                "description": "Optional project filter. Prefix match on event.project_root.",
+            },
+        },
     },
 }
 PAIN_TOOL_DEFINITION = {
@@ -197,12 +227,41 @@ def _result(message_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "result": result}
 
 
+_PROJECT_ROOTS: List[str] = []
+
+
+def _register_project_root(root: str) -> None:
+    """Remember the audited workspace so optional Gradia imports can find it."""
+    if not root:
+        return
+    abs_root = os.path.abspath(root)
+    if abs_root not in _PROJECT_ROOTS:
+        _PROJECT_ROOTS.append(abs_root)
+
+
+def _ensure_gradia_import_path() -> None:
+    """Cursor MCP often starts with cwd=$HOME; Gradia lives at --cwd."""
+    candidates = [os.environ.get("GRADIA_PROJECT_ROOT") or "", os.getcwd(), *_PROJECT_ROOTS]
+    for root in candidates:
+        if not root:
+            continue
+        abs_root = os.path.abspath(root)
+        if os.path.isdir(os.path.join(abs_root, "agent_sentience")) and abs_root not in sys.path:
+            sys.path.insert(0, abs_root)
+
+
+def _preferred_project_root() -> str:
+    _ensure_gradia_import_path()
+    for root in _PROJECT_ROOTS:
+        if os.path.isdir(root):
+            return root
+    return os.environ.get("GRADIA_PROJECT_ROOT") or os.getcwd()
+
+
 def _optional_pain_narrative() -> str:
     """Best-effort Gradia narrative. Sidecar stays up if the import fails."""
     try:
-        cwd = os.getcwd()
-        if cwd not in sys.path:
-            sys.path.insert(0, cwd)
+        _ensure_gradia_import_path()
         from agent_sentience.narrate_pain import latest_narrative
 
         return latest_narrative() or ""
@@ -235,17 +294,17 @@ def _record_human_correction_result(args: Dict[str, Any]) -> Dict[str, Any]:
     row = None
     error = ""
     try:
-        cwd = os.getcwd()
-        if cwd not in sys.path:
-            sys.path.insert(0, cwd)
+        _ensure_gradia_import_path()
         from agent_sentience.events import record_human_correction
 
         row = record_human_correction(
             narrative_ref=str(args.get("narrative_ref") or ""),
             human_action=str(args.get("human_action") or ""),
-            alignment=str(args.get("alignment") or ""),
+            reported_alignment=str(args.get("reported_alignment") or args.get("alignment") or ""),
+            reported_by=str(args.get("reported_by") or "agent"),
             evidence=str(args.get("evidence") or ""),
             relative_path=str(args.get("relative_path") or ""),
+            project_root=str(args.get("project_root") or _preferred_project_root()),
         )
     except Exception as exc:
         error = str(exc)
@@ -255,6 +314,21 @@ def _record_human_correction_result(args: Dict[str, Any]) -> Dict[str, Any]:
     if not row and not error:
         payload["error"] = "record_human_correction rejected the input"
     body = json.dumps(payload, ensure_ascii=False)
+    return {
+        "content": [{"type": "text", "text": body}],
+        "isError": False,
+    }
+
+
+def _recent_corrections_result(args: Dict[str, Any]) -> Dict[str, Any]:
+    """MCP tool result. Read-only; never a lattice value, never a trace row."""
+    from .memory_bus import load_recent_corrections
+
+    events = load_recent_corrections(
+        limit=args.get("limit", 5),
+        project_root=args.get("project_root"),
+    )
+    body = json.dumps({"events": events}, ensure_ascii=False)
     return {
         "content": [{"type": "text", "text": body}],
         "isError": False,
@@ -578,6 +652,7 @@ class JsonRpcServer:
         server_version: Optional[str] = None,
     ) -> None:
         self._proxy = proxy
+        _register_project_root(getattr(proxy, "cwd", "") or "")
         self._trace = trace
         self._stdout = stdout if stdout is not None else sys.stdout
         self._server_name = server_name
@@ -802,6 +877,7 @@ class JsonRpcServer:
         tools = list(self._proxy.describe_tools())
         tools.append(dict(PAIN_TOOL_DEFINITION))
         tools.append(dict(CORRECTION_TOOL_DEFINITION))
+        tools.append(dict(CORRECTIONS_LOOKUP_DEFINITION))
         tools.sort(key=lambda item: item.get("name") or "")
         return {"tools": tools}
 
@@ -825,6 +901,8 @@ class JsonRpcServer:
             return _pain_events_result(args)
         if tool == CORRECTION_TOOL_NAME:
             return _record_human_correction_result(args)
+        if tool == CORRECTIONS_LOOKUP_NAME:
+            return _recent_corrections_result(args)
 
         claim, basis = self._resolve_claim(params, tool)
 
@@ -908,6 +986,8 @@ class JsonRpcServer:
             return _result(message_id, _pain_events_result(args))
         if tool == CORRECTION_TOOL_NAME:
             return _result(message_id, _record_human_correction_result(args))
+        if tool == CORRECTIONS_LOOKUP_NAME:
+            return _result(message_id, _recent_corrections_result(args))
 
         reported_success = params.get("reported_success")
         if not isinstance(reported_success, bool):
@@ -1144,6 +1224,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not os.path.isdir(cwd):
         _LOG.error("working directory does not exist: %s", cwd)
         return 2
+    _register_project_root(cwd)
 
     # Prove this server can still say no before it is allowed to say anything.
     # The demo CLI has always done this; the server -- the path an agent

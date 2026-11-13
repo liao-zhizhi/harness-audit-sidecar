@@ -23,6 +23,7 @@ __all__ = [
     "intent_requires_full_witness",
     "load_overlay",
     "load_recent_pain_events",
+    "load_recent_corrections",
     "record_physical_fault",
     "record_scale_events",
     "rules_path",
@@ -299,6 +300,68 @@ def load_recent_pain_events(
                 "relative_path": item.get("relative_path"),
                 "timestamp": item.get("timestamp"),
                 "witness_summary": _witness_summary(witness),
+            }
+        )
+    return out
+
+
+def load_recent_corrections(
+    *,
+    limit: int = 5,
+    project_root: Optional[str] = None,
+) -> list:
+    """Read-only view of source=human_correction rows. Never writes, never judges."""
+    try:
+        cap = int(limit)
+    except (TypeError, ValueError):
+        cap = 5
+    if cap < 1:
+        cap = 1
+    if cap > 50:
+        cap = 50
+    path = events_path()
+    rows: list = []
+    try:
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("source") or "") != "human_correction":
+                    continue
+                if not _project_match(str(item.get("project_root") or ""), str(project_root or "")):
+                    continue
+                rows.append(item)
+    except (OSError, json.JSONDecodeError):
+        return []
+    numbered = list(enumerate(rows))
+    numbered.sort(
+        key=lambda item: (_parse_event_time(str(item[1].get("timestamp") or "")), item[0]),
+        reverse=True,
+    )
+    out = []
+    for _, item in numbered[:cap]:
+        witness = item.get("witness") if isinstance(item.get("witness"), dict) else {}
+        reported = str(
+            item.get("reported_alignment")
+            or item.get("alignment")
+            or witness.get("reported_alignment")
+            or witness.get("alignment")
+            or ""
+        ).strip()
+        evidence = str(item.get("evidence") or witness.get("evidence") or "").strip() or "not captured"
+        out.append(
+            {
+                "human_action": str(
+                    item.get("human_action") or witness.get("human_action") or item.get("intent") or ""
+                ).strip(),
+                "reported_alignment": reported,
+                "evidence": evidence,
+                "narrative_ref": str(
+                    item.get("narrative_ref") or witness.get("narrative_ref") or ""
+                ).strip(),
             }
         )
     return out

@@ -63,7 +63,7 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Bind ``~/.cursor/mcp.json`` only when the harness-audit server is missing
-   * or its Python tree is stale (no ``get_recent_pain_events``). A complete
+   * or its Python tree is stale (missing an off-lattice tool). A complete
    * existing entry is left alone so Reload cannot wipe a newer local package.
    */
   syncGlobalWorkspaceBind(): boolean {
