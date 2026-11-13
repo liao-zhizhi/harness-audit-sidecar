@@ -160,6 +160,19 @@ def _result(message_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "result": result}
 
 
+def _optional_pain_narrative() -> str:
+    """Best-effort Gradia narrative. Sidecar stays up if the import fails."""
+    try:
+        cwd = os.getcwd()
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+        from agent_sentience.narrate_pain import latest_narrative
+
+        return latest_narrative() or ""
+    except Exception:
+        return ""
+
+
 def _pain_events_result(args: Dict[str, Any]) -> Dict[str, Any]:
     """MCP tool result. Read-only; never a lattice value, never a trace row."""
     from .memory_bus import load_recent_pain_events
@@ -169,7 +182,11 @@ def _pain_events_result(args: Dict[str, Any]) -> Dict[str, Any]:
         project_root=args.get("project_root"),
         min_pain_level=args.get("min_pain_level", 1),
     )
-    body = json.dumps({"events": events}, ensure_ascii=False)
+    payload: Dict[str, Any] = {"events": events}
+    narrative = _optional_pain_narrative()
+    if narrative:
+        payload["narrative"] = narrative
+    body = json.dumps(payload, ensure_ascii=False)
     return {
         "content": [{"type": "text", "text": body}],
         "isError": False,
