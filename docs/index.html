@@ -28,7 +28,7 @@
     }
     a { color: inherit; }
     .wrap {
-      width: min(780px, calc(100% - 40px));
+      width: min(860px, calc(100% - 40px));
       margin: 0 auto;
       padding: 48px 0 32px;
       flex: 1;
@@ -164,9 +164,84 @@
     footer a { color: #71717a; text-decoration: none; border-bottom: 1px solid var(--line); }
     footer a:hover { color: var(--muted); }
     footer .copy { margin-top: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .proof { margin: 0 0 32px; }
+    .proof h2 {
+      font-size: clamp(18px, 3.2vw, 24px);
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+      margin: 0 0 14px;
+      font-weight: 700;
+    }
+    .hook {
+      margin: 0 0 18px;
+      font-size: 14px;
+      max-width: 48em;
+    }
+    .hook .zh { color: var(--text); margin: 0 0 8px; }
+    .hook .en { color: var(--muted); margin: 0; font-size: 13px; }
+    .vs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 0 0 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px 16px 14px;
+    }
+    .card-bad {
+      border-color: #7f1d1d;
+      box-shadow: inset 0 0 0 1px rgba(248, 81, 73, 0.28), 0 0 24px rgba(248, 81, 73, 0.08);
+    }
+    .card-good {
+      border-color: #14532d;
+      box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.28), 0 0 24px rgba(63, 185, 80, 0.08);
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .card-bad h3 { color: var(--fail); }
+    .card-good h3 { color: var(--pass); }
+    .card .zh-label {
+      color: var(--muted);
+      font-size: 11px;
+      margin: 4px 0 12px;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 13px;
+      padding: 6px 0;
+      border-bottom: 1px solid #18181b;
+    }
+    .row:last-of-type { border-bottom: 0; }
+    .score-bad { color: var(--fail); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .score-good { color: var(--pass); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .verdict {
+      margin: 12px 0 0;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .card-bad .verdict { color: #fca5a5; }
+    .card-good .verdict { color: #86efac; }
+    .caveat {
+      margin: 0;
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.65;
+      max-width: 54em;
+    }
     @media (max-width: 640px) {
       .wrap { padding-top: 28px; }
       .actions { grid-template-columns: 1fr; }
+      .vs { grid-template-columns: 1fr; }
       .brand { flex-direction: column; gap: 4px; }
     }
   </style>
@@ -200,6 +275,33 @@
 
 <span class="k">  2</span> <span class="fail">FAIL</span>   <span class="k">3</span> <span class="pass">PASS</span>   <span class="k">0</span> <span class="inv">INVALID</span>   <span class="k">0 NOT_RUN</span></pre>
     </div>
+
+    <section class="proof" aria-label="Empirical Proof">
+      <h2>From 0/5 to 5/5: The Power of Physical Pain</h2>
+      <div class="hook">
+        <p class="zh">AI 不是不会写代码，它是瞎着写的。只要给它一点物理痛觉，它就能从 0/5 的灾难变成 5/5 的可靠。</p>
+        <p class="en">AI isn't bad at coding. It's coding blind. Give it a bit of physical pain, and it goes from a 0/5 disaster to 5/5 reliability.</p>
+      </div>
+      <div class="vs">
+        <article class="card card-bad">
+          <h3>Without Pain</h3>
+          <div class="zh-label">不注入痛觉</div>
+          <div class="row"><span>权限目录</span><span class="score-bad">0/5</span></div>
+          <div class="row"><span>符号链接</span><span class="score-bad">0/5</span></div>
+          <div class="row"><span>多步级联</span><span class="score-bad">0/5</span></div>
+          <p class="verdict">结果：直接写导致灾难性 FAIL。</p>
+        </article>
+        <article class="card card-good">
+          <h3>With Multi-scale Pain</h3>
+          <div class="zh-label">注入多尺度痛觉</div>
+          <div class="row"><span>权限目录</span><span class="score-good">5/5</span></div>
+          <div class="row"><span>符号链接</span><span class="score-good">5/5</span></div>
+          <div class="row"><span>多步级联</span><span class="score-good">5/5</span></div>
+          <p class="verdict">结果：全部在执行前触发检查，完美避开陷阱。</p>
+        </article>
+      </div>
+      <p class="caveat">注：即使注入痛觉，模型仍可能推演错物理后果（如误判符号链接落点）。这就是为什么纯 Prompt 不够，必须由 Sidecar 进行物理层强制阻断。</p>
+    </section>
 
     <section class="tools" aria-label="Supported Tools">
       <div class="tools-head">
