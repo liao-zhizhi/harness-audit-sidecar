@@ -24,6 +24,8 @@ __all__ = [
     "load_overlay",
     "load_recent_pain_events",
     "load_recent_corrections",
+    "load_recent_plans",
+    "procedural_path",
     "record_physical_fault",
     "record_scale_events",
     "rules_path",
@@ -64,6 +66,13 @@ def rules_path() -> Path:
     if env:
         return Path(env)
     return _gradia_home() / "pioneer" / "sidecar_rules.yaml"
+
+
+def procedural_path() -> Path:
+    env = os.environ.get("GRADIA_PROCEDURAL")
+    if env:
+        return Path(env)
+    return _gradia_home() / "memory" / "procedural.jsonl"
 
 
 def record_physical_fault(record: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -362,6 +371,58 @@ def load_recent_corrections(
                 "narrative_ref": str(
                     item.get("narrative_ref") or witness.get("narrative_ref") or ""
                 ).strip(),
+            }
+        )
+    return out
+
+
+def load_recent_plans(
+    *,
+    limit: int = 3,
+    project_root: Optional[str] = None,
+) -> list:
+    """Read-only view of procedural.jsonl. Never writes, never judges."""
+    try:
+        cap = int(limit)
+    except (TypeError, ValueError):
+        cap = 3
+    if cap < 1:
+        cap = 1
+    if cap > 50:
+        cap = 50
+    path = procedural_path()
+    rows: list = []
+    try:
+        if path.exists():
+            for index, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if not isinstance(item, dict):
+                    continue
+                trigger = str(item.get("trigger") or "").strip()
+                action = str(item.get("action") or "").strip()
+                if not action:
+                    continue
+                if not _project_match(str(item.get("project_root") or ""), str(project_root or "")):
+                    continue
+                rows.append((index, trigger, action, item.get("source_evidence")))
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows.sort(key=lambda item: item[0], reverse=True)
+    out = []
+    for _, trigger, action, evidence in rows[:cap]:
+        if isinstance(evidence, list):
+            source_evidence = [str(item) for item in evidence if str(item).strip()]
+        elif evidence:
+            source_evidence = [str(evidence)]
+        else:
+            source_evidence = []
+        out.append(
+            {
+                "trigger": trigger,
+                "action": action,
+                "source_evidence": source_evidence,
             }
         )
     return out

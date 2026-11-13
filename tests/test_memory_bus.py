@@ -20,6 +20,8 @@ from audit_sidecar.memory_bus import (
     intent_requires_full_witness,
     load_overlay,
     load_recent_pain_events,
+    load_recent_plans,
+    procedural_path,
     record_physical_fault,
     record_scale_events,
     rules_path,
@@ -313,6 +315,47 @@ class MemoryBusTest(unittest.TestCase):
         self.assertFalse(payload.get("isError"))
         body = json.loads(payload["content"][0]["text"])
         self.assertEqual(body["events"][0]["reported_alignment"], "aligned")
+        self.assertNotIn("verdict", payload)
+        lines = [
+            line
+            for line in Path(trace).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(lines, [])
+
+    def test_recent_plans_lookup_is_not_traced_or_judged(self) -> None:
+        from audit_sidecar.mcp_server import JsonRpcServer
+        from audit_sidecar.runner import SafeRunner
+
+        path = procedural_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "trigger": "写文件到新路径",
+                    "action": "先检查父目录是否存在，不存在则 mkdir -p 再写",
+                    "source_evidence": ["evt-a", "evt-b"],
+                    "source": "human_correction",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        listed = load_recent_plans(limit=3)
+        self.assertEqual(listed[0]["trigger"], "写文件到新路径")
+        self.assertIn("mkdir -p", listed[0]["action"])
+        self.assertEqual(listed[0]["source_evidence"], ["evt-a", "evt-b"])
+        trace = os.path.join(self.home, "plans_lookup_trace.jsonl")
+        proxy = MCPProxy(cwd=self.home, runner=SafeRunner(timeout=5))
+        server = JsonRpcServer(proxy, TraceWriter(trace))
+        payload = server._handle_tools_call(
+            12,
+            {"name": "get_recent_plans", "arguments": {"limit": 3}},
+        )
+        self.assertFalse(payload.get("isError"))
+        body = json.loads(payload["content"][0]["text"])
+        self.assertEqual(body["plans"][0]["action"], listed[0]["action"])
         self.assertNotIn("verdict", payload)
         lines = [
             line

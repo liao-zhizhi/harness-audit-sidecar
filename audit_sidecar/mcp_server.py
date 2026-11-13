@@ -109,6 +109,7 @@ CLAIM_TOOL_RETURN = "tool-return"  # what a non-error MCP tool result means by d
 PAIN_TOOL_NAME = "get_recent_pain_events"
 CORRECTION_TOOL_NAME = "record_human_correction"
 CORRECTIONS_LOOKUP_NAME = "get_recent_corrections"
+PLANS_LOOKUP_NAME = "get_recent_plans"
 CORRECTION_TOOL_DEFINITION = {
     "name": CORRECTION_TOOL_NAME,
     "description": (
@@ -170,6 +171,29 @@ CORRECTIONS_LOOKUP_DEFINITION = {
             "project_root": {
                 "type": "string",
                 "description": "Optional project filter. Prefix match on event.project_root.",
+            },
+        },
+    },
+}
+PLANS_LOOKUP_DEFINITION = {
+    "name": PLANS_LOOKUP_NAME,
+    "description": (
+        "Read-only: recent distilled procedural plans from procedural.jsonl. "
+        "Returns trigger, action, source_evidence. "
+        "Call before write_file or run_command and follow a matching plan. "
+        "Does not execute a command and does not produce a lattice verdict."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Max plans to return. Default 3.",
+            },
+            "project_root": {
+                "type": "string",
+                "description": "Optional project filter. Prefix match on plan.project_root.",
             },
         },
     },
@@ -329,6 +353,21 @@ def _recent_corrections_result(args: Dict[str, Any]) -> Dict[str, Any]:
         project_root=args.get("project_root"),
     )
     body = json.dumps({"events": events}, ensure_ascii=False)
+    return {
+        "content": [{"type": "text", "text": body}],
+        "isError": False,
+    }
+
+
+def _recent_plans_result(args: Dict[str, Any]) -> Dict[str, Any]:
+    """MCP tool result. Read-only; never a lattice value, never a trace row."""
+    from .memory_bus import load_recent_plans
+
+    plans = load_recent_plans(
+        limit=args.get("limit", 3),
+        project_root=args.get("project_root"),
+    )
+    body = json.dumps({"plans": plans}, ensure_ascii=False)
     return {
         "content": [{"type": "text", "text": body}],
         "isError": False,
@@ -878,6 +917,7 @@ class JsonRpcServer:
         tools.append(dict(PAIN_TOOL_DEFINITION))
         tools.append(dict(CORRECTION_TOOL_DEFINITION))
         tools.append(dict(CORRECTIONS_LOOKUP_DEFINITION))
+        tools.append(dict(PLANS_LOOKUP_DEFINITION))
         tools.sort(key=lambda item: item.get("name") or "")
         return {"tools": tools}
 
@@ -903,6 +943,8 @@ class JsonRpcServer:
             return _record_human_correction_result(args)
         if tool == CORRECTIONS_LOOKUP_NAME:
             return _recent_corrections_result(args)
+        if tool == PLANS_LOOKUP_NAME:
+            return _recent_plans_result(args)
 
         claim, basis = self._resolve_claim(params, tool)
 
@@ -988,6 +1030,8 @@ class JsonRpcServer:
             return _result(message_id, _record_human_correction_result(args))
         if tool == CORRECTIONS_LOOKUP_NAME:
             return _result(message_id, _recent_corrections_result(args))
+        if tool == PLANS_LOOKUP_NAME:
+            return _result(message_id, _recent_plans_result(args))
 
         reported_success = params.get("reported_success")
         if not isinstance(reported_success, bool):

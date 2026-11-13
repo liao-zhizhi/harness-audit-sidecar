@@ -89,6 +89,7 @@ const REQUIRED_SIDECAR_MARKERS = [
   "get_recent_pain_events",
   "record_human_correction",
   "get_recent_corrections",
+  "get_recent_plans",
 ];
 
 export function pythonRootHasRequiredTools(
