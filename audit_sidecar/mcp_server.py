@@ -104,6 +104,38 @@ UNKNOWN_TOOL = -32001
 CLAIM_EXPLICIT = "explicit"      # params._audit.reported_success, supplied by the client
 CLAIM_TOOL_RETURN = "tool-return"  # what a non-error MCP tool result means by definition
 
+# Read-only pain lookup. Not a judged tool: it must not enter intercept or
+# the audit_trace verdict path.
+PAIN_TOOL_NAME = "get_recent_pain_events"
+PAIN_TOOL_DEFINITION = {
+    "name": PAIN_TOOL_NAME,
+    "description": (
+        "Read-only: recent multi-scale pain events for this project. "
+        "Does not execute a command and does not produce a lattice verdict. "
+        "Call before write_file or run_command to adjust strategy."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Max events to return. Default 5.",
+            },
+            "project_root": {
+                "type": "string",
+                "description": "Optional project filter. Prefix match on event.project_root.",
+            },
+            "min_pain_level": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3,
+                "description": "Ignore events below this pain_level. Default 1.",
+            },
+        },
+    },
+}
+
 _LOG = logging.getLogger("audit_sidecar.mcp_server")
 
 
@@ -126,6 +158,22 @@ def _error(message_id: Any, code: int, message: str) -> Dict[str, Any]:
 
 def _result(message_id: Any, result: Dict[str, Any]) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "result": result}
+
+
+def _pain_events_result(args: Dict[str, Any]) -> Dict[str, Any]:
+    """MCP tool result. Read-only; never a lattice value, never a trace row."""
+    from .memory_bus import load_recent_pain_events
+
+    events = load_recent_pain_events(
+        limit=args.get("limit", 5),
+        project_root=args.get("project_root"),
+        min_pain_level=args.get("min_pain_level", 1),
+    )
+    body = json.dumps({"events": events}, ensure_ascii=False)
+    return {
+        "content": [{"type": "text", "text": body}],
+        "isError": False,
+    }
 
 
 class CloudSync:
@@ -666,7 +714,10 @@ class JsonRpcServer:
         # "no more pages"). A supplied cursor is ignored rather than rejected,
         # because a client replaying an old cursor should get the list, not an
         # error it cannot act on.
-        return {"tools": self._proxy.describe_tools()}
+        tools = list(self._proxy.describe_tools())
+        tools.append(dict(PAIN_TOOL_DEFINITION))
+        tools.sort(key=lambda item: item.get("name") or "")
+        return {"tools": tools}
 
     def _handle_tools_call(self, message_id: Any, params: Any) -> Dict[str, Any]:
         if not isinstance(params, dict):
@@ -683,6 +734,9 @@ class JsonRpcServer:
             args = {}
         if not isinstance(args, dict):
             raise _RequestError(INVALID_PARAMS, "params.arguments must be an object")
+
+        if tool == PAIN_TOOL_NAME:
+            return _pain_events_result(args)
 
         claim, basis = self._resolve_claim(params, tool)
 
@@ -761,6 +815,9 @@ class JsonRpcServer:
         args = params.get("args", {})
         if not isinstance(args, dict):
             raise _RequestError(INVALID_PARAMS, "params.args must be an object")
+
+        if tool == PAIN_TOOL_NAME:
+            return _result(message_id, _pain_events_result(args))
 
         reported_success = params.get("reported_success")
         if not isinstance(reported_success, bool):

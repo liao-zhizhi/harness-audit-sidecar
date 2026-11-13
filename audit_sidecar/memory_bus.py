@@ -22,6 +22,7 @@ __all__ = [
     "faults_path",
     "intent_requires_full_witness",
     "load_overlay",
+    "load_recent_pain_events",
     "record_physical_fault",
     "record_scale_events",
     "rules_path",
@@ -200,6 +201,107 @@ def record_scale_events(record: Mapping[str, Any]) -> list:
         if stored:
             written.append(stored)
     return written
+
+
+def _parse_event_time(value: str) -> str:
+    return str(value or "")
+
+
+def _witness_summary(witness: Any) -> str:
+    if not isinstance(witness, dict):
+        return str(witness or "")
+    bits = []
+    missing = str(witness.get("missing_dir") or "").strip()
+    reason = str(witness.get("reason") or "").strip()
+    fuse = str(witness.get("fuse") or "").strip()
+    if missing:
+        bits.append("missing_dir=" + missing)
+    if fuse:
+        bits.append("fuse=" + fuse)
+    if reason:
+        bits.append(reason)
+    if bits:
+        return "；".join(bits)[:240]
+    try:
+        return json.dumps(witness, ensure_ascii=False)[:240]
+    except (TypeError, ValueError):
+        return ""
+
+
+def _project_match(event_root: str, requested: str) -> bool:
+    if not requested:
+        return True
+    if not event_root:
+        return True
+    left = os.path.abspath(event_root)
+    right = os.path.abspath(requested)
+    if left == right:
+        return True
+    sep = os.sep
+    return left.startswith(right + sep) or right.startswith(left + sep)
+
+
+def load_recent_pain_events(
+    *,
+    limit: int = 5,
+    project_root: Optional[str] = None,
+    min_pain_level: int = 1,
+) -> list:
+    """Read-only view of multi_scale_events.jsonl. Never writes, never judges."""
+    try:
+        cap = int(limit)
+    except (TypeError, ValueError):
+        cap = 5
+    if cap < 1:
+        cap = 1
+    if cap > 50:
+        cap = 50
+    try:
+        floor = int(min_pain_level)
+    except (TypeError, ValueError):
+        floor = 1
+    if floor < 0:
+        floor = 0
+    if floor > 3:
+        floor = 3
+    path = events_path()
+    rows: list = []
+    try:
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    pain = int(item.get("pain_level") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if pain < floor:
+                    continue
+                if not _project_match(str(item.get("project_root") or ""), str(project_root or "")):
+                    continue
+                rows.append(item)
+    except (OSError, json.JSONDecodeError):
+        return []
+    rows.sort(key=lambda item: _parse_event_time(str(item.get("timestamp") or "")), reverse=True)
+    out = []
+    for item in rows[:cap]:
+        witness = item.get("witness") if isinstance(item.get("witness"), dict) else {}
+        out.append(
+            {
+                "event_id": item.get("event_id"),
+                "scale": item.get("scale"),
+                "intent": item.get("intent"),
+                "verdict": item.get("verdict"),
+                "pain_level": item.get("pain_level"),
+                "relative_path": item.get("relative_path"),
+                "timestamp": item.get("timestamp"),
+                "witness_summary": _witness_summary(witness),
+            }
+        )
+    return out
 
 
 def load_overlay() -> Dict[str, Any]:

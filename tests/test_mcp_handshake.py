@@ -264,7 +264,13 @@ class ToolsListTest(McpClientTestCase):
         self.assertEqual(names, sorted(names))
         self.assertEqual(len(names), len(set(names)))
 
-        for expected in ("write_file", "append_file", "run_command", "validate_citation"):
+        for expected in (
+            "write_file",
+            "append_file",
+            "run_command",
+            "validate_citation",
+            "get_recent_pain_events",
+        ):
             self.assertIn(expected, names)
 
         for tool in tools:

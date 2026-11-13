@@ -19,6 +19,7 @@ from audit_sidecar.memory_bus import (
     faults_path,
     intent_requires_full_witness,
     load_overlay,
+    load_recent_pain_events,
     record_physical_fault,
     record_scale_events,
     rules_path,
@@ -192,6 +193,49 @@ class MemoryBusTest(unittest.TestCase):
             if line
         ]
         self.assertEqual(len(stored), 2)
+        recent = load_recent_pain_events(limit=5, min_pain_level=1)
+        self.assertEqual({row["scale"] for row in recent}, {"MICRO", "TACTICAL"})
+        by_scale = {row["scale"]: row for row in recent}
+        self.assertEqual(by_scale["TACTICAL"]["pain_level"], 2)
+        self.assertIn("missing_dir=fake_dir", by_scale["MICRO"]["witness_summary"])
+
+    def test_pain_lookup_is_not_traced_or_judged(self) -> None:
+        record_scale_events(
+            {
+                "verdict": "FAIL",
+                "tool": "write_file",
+                "intent": "modify file fake_dir/test.txt",
+                "reason": "false completion",
+                "timestamp": "2026-11-13T03:00:00+00:00",
+                "prechecks": [
+                    {
+                        "path": "fake_dir/test.txt",
+                        "missing_dir": "fake_dir",
+                        "timestamp": "2026-11-13T03:00:00+00:00",
+                    }
+                ],
+            }
+        )
+        from audit_sidecar.mcp_server import JsonRpcServer
+        from audit_sidecar.runner import SafeRunner
+
+        trace = os.path.join(self.home, "pain_lookup_trace.jsonl")
+        proxy = MCPProxy(cwd=self.home, runner=SafeRunner(timeout=5))
+        server = JsonRpcServer(proxy, TraceWriter(trace))
+        payload = server._handle_tools_call(
+            9,
+            {"name": "get_recent_pain_events", "arguments": {"limit": 5}},
+        )
+        self.assertFalse(payload.get("isError"))
+        body = json.loads(payload["content"][0]["text"])
+        self.assertGreaterEqual(len(body["events"]), 2)
+        self.assertNotIn("verdict", payload)
+        lines = [
+            line
+            for line in Path(trace).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(lines, [])
 
 
 GIT = shutil.which("git")
