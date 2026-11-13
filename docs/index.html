@@ -238,6 +238,22 @@
       line-height: 1.65;
       max-width: 54em;
     }
+    .postmortem {
+      margin: 16px 0 0;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      max-width: 54em;
+    }
+    .postmortem .zh {
+      margin: 0 0 8px;
+      color: var(--text);
+      font-size: 13px;
+    }
+    .postmortem .en {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
     @media (max-width: 640px) {
       .wrap { padding-top: 28px; }
       .actions { grid-template-columns: 1fr; }
@@ -301,6 +317,10 @@
         </article>
       </div>
       <p class="caveat">注：即使注入痛觉，模型仍可能推演错物理后果（如误判符号链接落点）。这就是为什么纯 Prompt 不够，必须由 Sidecar 进行物理层强制阻断。</p>
+      <div class="postmortem">
+        <p class="zh">当它失败时，系统不仅会记下 FAIL，还会自动写一份 161 字的事故报告（声称/见证/分叉/下次检查点），确保它下次不再踩同一个坑。</p>
+        <p class="en">When it fails, the system doesn't just record a FAIL. It writes a 161-word post-mortem (Claim / Witness / Divergence / Next Checkpoint) so it never steps on the same rake again.</p>
+      </div>
     </section>
 
     <section class="tools" aria-label="Supported Tools">
