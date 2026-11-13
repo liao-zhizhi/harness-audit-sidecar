@@ -24,7 +24,16 @@ const {
   workspaceBindMatches,
   tracePathFor,
 } = require("../out/mcpConfig.js");
-const { loadTrace, renderPanelHtml, countVerdicts } = require("../out/trace.js");
+const {
+  loadTrace,
+  renderPanelHtml,
+  countVerdicts,
+  pendingFails,
+  parseL0Events,
+  formatL0EventLine,
+  renderPendingRow,
+  PENDING_CAP,
+} = require("../out/trace.js");
 const { resolvePythonRoot, resolveRuntime } = require("../out/sidecar.js");
 
 const extRoot = join(here, "..");
@@ -222,6 +231,27 @@ try {
   check("panel highlights missing files", html.includes("没动的文件"));
   check("counts include FAIL", counts.FAIL >= 1);
   check("counts include PASS", counts.PASS >= 1);
+
+  const failRows = Array.from({ length: 6 }, (_, i) => ({
+    timestamp: `2026-11-14T02:0${i}:00+08:00`,
+    verdict: "FAIL",
+    intent: `modify file sentience_live/probe_${i}/test.txt`,
+    missing_expected: [`sentience_live/probe_${i}/test.txt`],
+  }));
+  const pendingAll = pendingFails(failRows, []);
+  check("pending keeps FAIL newest first", pendingAll[0].path.endsWith("probe_5/test.txt"));
+  check("pending ignores INVALID", pendingFails([{ ...failRows[0], verdict: "INVALID" }], []).length === 0);
+  const processedLine = formatL0EventLine(failRows[5].timestamp, failRows[5].missing_expected[0], "重做");
+  const after = pendingFails(failRows, parseL0Events(processedLine));
+  check("processed FAIL leaves the pending queue", after.length === 5);
+  check("processed match is path + timestamp", !after.some((item) => item.timestamp === failRows[5].timestamp));
+  check("cap is 5", PENDING_CAP === 5);
+  const extra = Math.max(0, pendingAll.length - PENDING_CAP);
+  check("six FAILs leave one extra", extra === 1);
+  const rowHtml = renderPendingRow(pendingAll[0]);
+  check("pending row has three buttons", rowHtml.includes("重做") && rowHtml.includes("跳过") && rowHtml.includes("不确定"));
+  check("pending row uses basename", rowHtml.includes(">test.txt<") && !rowHtml.includes(">sentience_live/probe_5/test.txt<"));
+  check("pending row title is full path", rowHtml.includes('title="sentience_live/probe_5/test.txt"'));
 
   const workspace = join(extRoot, ".test-workspace");
   mkdirSync(workspace, { recursive: true });

@@ -13,13 +13,26 @@ import {
   TRACE_NAME,
 } from "./mcpConfig";
 import { Runtime, SidecarProcess, resolveRuntime } from "./sidecar";
-import { loadTrace, renderPanelHtml } from "./trace";
+import {
+  L0_EVENTS_REL,
+  PENDING_CAP,
+  formatL0EventLine,
+  loadTrace,
+  parseL0Events,
+  pendingFails,
+  renderPanelHtml,
+  renderPendingRow,
+  renderProcessedRow,
+  type L0Event,
+  type TraceRow,
+} from "./trace";
 
 export class AuditViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
   private runtime: Runtime | undefined;
   private watcher: fs.FSWatcher | undefined;
   private refreshTimer: NodeJS.Timeout | undefined;
+  private painted = false;
   readonly process = new SidecarProcess();
 
   constructor(private readonly context: vscode.ExtensionContext) {}
@@ -34,6 +47,8 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
         this.start();
       } else if (message?.type === "stop") {
         this.stop();
+      } else if (message?.type === "judge") {
+        void this.judge(String(message.timestamp || ""), String(message.path || ""), String(message.button || ""));
       }
     });
     this.render();
@@ -208,27 +223,120 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     }
     try {
       this.watcher = fs.watch(root, (_event, name) => {
-        if (!name || name === TRACE_NAME || String(name).endsWith(TRACE_NAME)) {
-          this.render();
+        const label = String(name || "");
+        if (!name || label === TRACE_NAME || label.endsWith(TRACE_NAME) || label.endsWith("l0_events.md")) {
+          this.pushQueue();
         }
       });
     } catch {
       // empty folders on some FS cannot watch yet
     }
     this.refreshTimer = setInterval(() => {
-      if (this.process.running) {
-        this.render();
+      if (this.process.running || this.globallyEnabled()) {
+        this.pushQueue();
       }
     }, 1500);
   }
 
-  private panelBody(): string {
+  private eventsPath(): string | undefined {
+    const root = this.workspaceRoot();
+    return root ? path.join(root, L0_EVENTS_REL) : undefined;
+  }
+
+  private loadRows(): TraceRow[] {
     const file = this.tracePath();
     if (!file || !fs.existsSync(file)) {
-      return renderPanelHtml([]);
+      return [];
     }
+    return loadTrace(fs.readFileSync(file, "utf8"));
+  }
+
+  private loadEvents(): L0Event[] {
+    const file = this.eventsPath();
+    if (!file || !fs.existsSync(file)) {
+      return [];
+    }
+    return parseL0Events(fs.readFileSync(file, "utf8"));
+  }
+
+  private queuePayload(): {
+    pendingFixedHtml: string;
+    pendingOverflowHtml: string;
+    processedHtml: string;
+    history: string;
+    extra: number;
+    pendingCount: number;
+  } {
+    const rows = this.loadRows();
+    const events = this.loadEvents();
+    const pending = pendingFails(rows, events);
+    const processed = events.slice().reverse();
+    return {
+      pendingFixedHtml: pending.slice(0, PENDING_CAP).map(renderPendingRow).join(""),
+      pendingOverflowHtml: pending.slice(PENDING_CAP).map(renderPendingRow).join(""),
+      processedHtml: processed.map(renderProcessedRow).join(""),
+      history: renderPanelHtml(rows),
+      extra: Math.max(0, pending.length - PENDING_CAP),
+      pendingCount: pending.length,
+    };
+  }
+
+  private judge(timestamp: string, filePath: string, button: string): void {
+    const allowed = new Set(["重做", "跳过", "不确定"]);
+    if (!timestamp || !filePath || !allowed.has(button)) {
+      return;
+    }
+    const file = this.eventsPath();
+    const root = this.workspaceRoot();
+    if (!file || !root) {
+      return;
+    }
+    const already = this.loadEvents().some(
+      (item) => item.timestamp === timestamp && item.path === filePath
+    );
+    if (already) {
+      this.pushQueue();
+      return;
+    }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const line = formatL0EventLine(timestamp, filePath, button);
+    const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+    const pad = existing && !existing.endsWith("\n") ? "\n" : "";
+    fs.appendFileSync(file, `${pad}${line}\n`, "utf8");
+    this.pushQueue();
+  }
+
+  private pushQueue(): void {
+    if (!this.view || !this.globallyEnabled()) {
+      return;
+    }
+    if (!this.painted) {
+      this.render();
+      return;
+    }
+    void this.view.webview.postMessage({ type: "queue", ...this.queuePayload() });
+  }
+
+  private panelBody(): string {
     try {
-      return renderPanelHtml(loadTrace(fs.readFileSync(file, "utf8")));
+      const payload = this.queuePayload();
+      return `
+        <section id="pending-block">
+          <h2 class="pending-title">待判断</h2>
+          <div id="pending-fixed">${payload.pendingFixedHtml}</div>
+          <button type="button" id="pending-expand" data-extra="${payload.extra}"${payload.extra > 0 ? "" : " hidden"}>还有 ${payload.extra} 条，点击展开</button>
+          <div id="pending-overflow" hidden>${payload.pendingOverflowHtml}</div>
+          <p id="pending-empty" class="empty"${payload.pendingCount ? " hidden" : ""}>没有待判断的 FAIL。</p>
+        </section>
+        <section id="processed-block">
+          <details>
+            <summary>已处理</summary>
+            <div id="processed-list">${payload.processedHtml || `<p class="empty">还没有点过按钮。</p>`}</div>
+          </details>
+        </section>
+        <section id="history-block">
+          ${payload.history}
+        </section>`;
     } catch (error) {
       return `<p class="empty">无法读取 audit_trace.jsonl：${String(error)}</p>`;
     }
@@ -248,31 +356,45 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
       ? this.panelBody()
       : `<button class="go" id="enable">一键开启因果审计</button>
          <p class="hint">一次写入用户级 <code>~/.cursor/mcp.json</code>，并把 <code>--cwd</code> / <code>--trace</code> 绑到当前工作区根目录。日志落在该文件夹的 <code>audit_trace.jsonl</code>。不改仓库、不要求 git、不要求 pipx。</p>`;
+    this.painted = true;
     this.view.webview.html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <style>
-  body { font: 13px/1.45 var(--vscode-font-family); color: var(--vscode-foreground); margin: 0; padding: 12px; }
-  .status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  html, body { height: 100%; }
+  body { font: 13px/1.45 var(--vscode-font-family); color: var(--vscode-foreground); margin: 0; display: flex; flex-direction: column; min-height: 100%; overflow: hidden; }
+  .status { display: flex; align-items: center; gap: 8px; padding: 8px 12px; flex: 0 0 auto; }
   .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--vscode-widget-border); }
-  .on { background: #238636; color: #fff; border-color: #238636; }
+  .on { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-background); }
   .off { opacity: 0.7; }
-  button { cursor: pointer; border-radius: 6px; border: 1px solid var(--vscode-button-border, transparent); padding: 6px 10px; }
-  .go { display: block; width: 100%; background: #238636; color: #fff; font-size: 15px; font-weight: 600; padding: 14px 12px; border: 0; border-radius: 8px; }
+  button { cursor: pointer; border-radius: 6px; border: 1px solid var(--vscode-button-border, var(--vscode-widget-border)); padding: 6px 10px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+  .go { display: block; width: 100%; background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-size: 15px; font-weight: 600; padding: 14px 12px; border: 0; border-radius: 8px; }
   .hint { opacity: 0.8; font-size: 12px; }
   .row { border-top: 1px solid var(--vscode-widget-border); padding: 8px 0; }
   .head { font-family: var(--vscode-editor-font-family); }
-  .pass { color: #3fb950; font-weight: 700; }
-  .fail { color: #f85149; font-weight: 700; }
-  .invalid { color: #d29922; font-weight: 700; }
-  .notrun { color: #8b949e; font-weight: 700; }
-  .fail-hl { color: #f85149; font-weight: 600; }
+  .pass { color: var(--vscode-testing-iconPassed, var(--vscode-foreground)); font-weight: 700; }
+  .fail { color: var(--vscode-errorForeground); font-weight: 700; }
+  .invalid { color: var(--vscode-editorWarning-foreground, var(--vscode-foreground)); font-weight: 700; }
+  .notrun { opacity: 0.7; font-weight: 700; }
+  .fail-hl { color: var(--vscode-errorForeground); font-weight: 600; }
   .stats { opacity: 0.85; }
   .empty { opacity: 0.8; }
-  .err { color: #f85149; }
+  .err { color: var(--vscode-errorForeground); padding: 0 12px; }
   h2 { font-size: 13px; margin: 0 0 8px; }
+  #pending-block { flex: 0 0 auto; border-left: 3px solid var(--vscode-errorForeground); padding: 8px 12px; }
+  .pending-title { color: var(--vscode-errorForeground); }
+  .pending-row, .processed-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; min-height: 28px; min-width: 0; width: 100%; box-sizing: border-box; overflow: hidden; }
+  .pending-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+  .pending-time { flex: 0 0 auto; opacity: 0.8; }
+  .pending-btns { flex: 0 0 auto; display: flex; gap: 2px; }
+  .pending-btns button { padding: 2px 5px; font-size: 11px; }
+  #pending-overflow { max-height: 8em; overflow: auto; }
+  #pending-expand { width: 100%; margin-top: 4px; font-size: 12px; }
+  #processed-block { flex: 0 0 auto; padding: 4px 12px 8px; }
+  .processed-btn { flex: 0 0 auto; opacity: 0.85; }
+  #history-block { flex: 1 1 auto; overflow: auto; padding: 8px 12px 12px; }
 </style>
 </head>
 <body>
@@ -285,9 +407,61 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
   ${body}
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
+    let expanded = false;
     document.getElementById("enable")?.addEventListener("click", () => vscode.postMessage({ type: "enable" }));
     document.getElementById("start")?.addEventListener("click", () => vscode.postMessage({ type: "start" }));
     document.getElementById("stop")?.addEventListener("click", () => vscode.postMessage({ type: "stop" }));
+    function bindPending(root) {
+      root?.querySelectorAll(".pending-row button").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const row = btn.closest(".pending-row");
+          vscode.postMessage({
+            type: "judge",
+            timestamp: row?.dataset.ts,
+            path: row?.dataset.path,
+            button: btn.getAttribute("data-btn"),
+          });
+        });
+      });
+    }
+    function applyQueue(data) {
+      const fixed = document.getElementById("pending-fixed");
+      const overflow = document.getElementById("pending-overflow");
+      const expand = document.getElementById("pending-expand");
+      const empty = document.getElementById("pending-empty");
+      const processedList = document.getElementById("processed-list");
+      const history = document.getElementById("history-block");
+      if (fixed && data.pendingFixedHtml !== undefined) fixed.innerHTML = data.pendingFixedHtml;
+      if (overflow && data.pendingOverflowHtml !== undefined) overflow.innerHTML = data.pendingOverflowHtml;
+      if (expand) {
+        expand.hidden = !(data.extra > 0);
+        expand.dataset.extra = String(data.extra || 0);
+        expand.textContent = expanded ? "收起" : ("还有 " + (data.extra || 0) + " 条，点击展开");
+      }
+      if (overflow) overflow.hidden = !expanded || !(data.extra > 0);
+      if (empty) empty.hidden = data.pendingCount > 0;
+      if (processedList) {
+        processedList.innerHTML = data.processedHtml || '<p class="empty">还没有点过按钮。</p>';
+      }
+      if (history && data.history) history.innerHTML = data.history;
+      bindPending(fixed);
+      bindPending(overflow);
+    }
+    document.getElementById("pending-expand")?.addEventListener("click", () => {
+      expanded = !expanded;
+      const overflow = document.getElementById("pending-overflow");
+      const expand = document.getElementById("pending-expand");
+      if (overflow) overflow.hidden = !expanded;
+      if (expand) {
+        const extra = expand.dataset.extra || "0";
+        expand.textContent = expanded ? "收起" : ("还有 " + extra + " 条，点击展开");
+      }
+    });
+    bindPending(document.getElementById("pending-fixed"));
+    bindPending(document.getElementById("pending-overflow"));
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "queue") applyQueue(event.data);
+    });
   </script>
 </body>
 </html>`;
