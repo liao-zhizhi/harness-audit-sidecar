@@ -116,7 +116,7 @@ try {
   mkdirSync(join(stalePython, "audit_sidecar"), { recursive: true });
   writeFileSync(
     join(stalePython, "audit_sidecar", "mcp_server.py"),
-    "# old sidecar, pain and correction tools only\nget_recent_pain_events = True\nrecord_human_correction = True\nget_recent_corrections = True\n"
+    "# old sidecar 0.11.2, no tactical upsert\nget_recent_pain_events = True\nrecord_human_correction = True\nget_recent_corrections = True\nget_recent_plans = True\n"
   );
   const staleEntry = {
     command: runtime.python,
@@ -124,7 +124,7 @@ try {
     env: { PYTHONPATH: stalePython },
   };
   check(
-    "0.11.1 vendored python without get_recent_plans is not preserved",
+    "0.11.2 vendored python without _upsert_tactical is not preserved",
     !shouldPreserveExistingSidecar(staleEntry)
   );
   injectGlobalMcpJson(staleEntry, staleHome, { force: true });
@@ -132,7 +132,7 @@ try {
     buildSidecarEntry(runtime.python, runtime.pythonRoot, emptyWs),
     staleHome
   );
-  check("upgrades a stale PYTHONPATH that lacks get_recent_plans", upgraded.changed);
+  check("upgrades a stale PYTHONPATH that lacks _upsert_tactical", upgraded.changed);
   const upgradedDoc = JSON.parse(readFileSync(join(staleHome, ".cursor", "mcp.json"), "utf8"));
   const upgradedServer = upgradedDoc.mcpServers["harness-audit"];
   check(

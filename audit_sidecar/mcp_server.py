@@ -560,6 +560,7 @@ class TraceWriter:
         try:
             from .memory_bus import record_physical_fault, record_scale_events
 
+            # 0.11.3 data-layer marker: _upsert_tactical (same trace_id keeps one TACTICAL)
             record_physical_fault(record)
             record_scale_events(record)
         except Exception:

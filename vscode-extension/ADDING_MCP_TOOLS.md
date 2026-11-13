@@ -17,7 +17,7 @@ Cursor 扩展会在 activate 时检查 vendored Python 是否含全部 `REQUIRED
 3. 确认该工具走 `_handle_tools_call` 短路，**不进** `_execute` / `audit_trace`（off-lattice 约定）。
 4. 握手 / `memory_bus` 测试覆盖 `tools/list` 含新名、调用不被 trace。
 
-当前标记（0.11.2）：`get_recent_pain_events`、`record_human_correction`、`get_recent_corrections`、`get_recent_plans`。
+当前标记（0.11.3）：`get_recent_pain_events`、`record_human_correction`、`get_recent_corrections`、`get_recent_plans`、`_upsert_tactical`。
 
 ## 1. 同步 Python 进扩展包
 
