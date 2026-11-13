@@ -8,9 +8,12 @@
  * in the previous window, and Cursor may spawn the MCP process from a stale
  * mcp.json before the extension activates.
  *
- * So every enable / activate / start / folder change / focused-window sync
- * must force-write ``--cwd`` and ``--trace`` (and the spawn ``cwd`` field)
- * to the absolute path of ``workspaceFolders[0]``.
+ * Activate / focus / folder-change used to force-write that bind on every
+ * start, which also reset PYTHONPATH to the vendored copy and wiped a newer
+ * local tree (and ``get_recent_pain_events`` with it). Preserve an existing
+ * ``harness-audit`` entry when it already has ``--cwd`` or a Python root that
+ * implements the pain tool. Only the user's first Enable click, a missing
+ * server, or a stale Python tree (no ``get_recent_pain_events``) may write.
  */
 
 import * as fs from "fs";
@@ -78,6 +81,32 @@ export function boundCwdFromEntry(entry: {
     return path.resolve(fromFlag);
   }
   return entry.cwd ? path.resolve(entry.cwd) : undefined;
+}
+
+export function pythonRootHasPainTool(pythonRoot: string | undefined): boolean {
+  if (!pythonRoot) {
+    return false;
+  }
+  const server = path.join(pythonRoot, "audit_sidecar", "mcp_server.py");
+  try {
+    return fs.readFileSync(server, "utf8").includes("get_recent_pain_events");
+  } catch {
+    return false;
+  }
+}
+
+/** True when activate/start must not rewrite ~/.cursor/mcp.json. */
+export function shouldPreserveExistingSidecar(
+  entry: McpServerEntry | undefined
+): boolean {
+  if (!entry) {
+    return false;
+  }
+  const pythonRoot = entry.env?.PYTHONPATH;
+  if (pythonRoot) {
+    return pythonRootHasPainTool(pythonRoot);
+  }
+  return Boolean(flagValue(entry.args, "--cwd"));
 }
 
 export function workspaceBindMatches(
@@ -189,9 +218,17 @@ export function injectMcpJson(
 
 export function injectGlobalMcpJson(
   entry: McpServerEntry,
-  homeDir: string = os.homedir()
+  homeDir: string = os.homedir(),
+  options: { force?: boolean } = {}
 ): { changed: boolean; path: string } {
-  return injectMcpJson(globalMcpPath(homeDir), entry);
+  const file = globalMcpPath(homeDir);
+  if (!options.force) {
+    const current = readGlobalSidecarEntry(homeDir);
+    if (shouldPreserveExistingSidecar(current)) {
+      return { changed: false, path: file };
+    }
+  }
+  return injectMcpJson(file, entry);
 }
 
 export function buildSidecarEntry(

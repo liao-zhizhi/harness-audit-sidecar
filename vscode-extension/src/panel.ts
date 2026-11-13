@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import {
@@ -6,7 +7,9 @@ import {
   injectGlobalMcpJson,
   isEnabled,
   isEnabledInWorkspace,
+  readGlobalSidecarEntry,
   resolveWorkspaceRoot,
+  shouldPreserveExistingSidecar,
   TRACE_NAME,
 } from "./mcpConfig";
 import { Runtime, SidecarProcess, resolveRuntime } from "./sidecar";
@@ -59,18 +62,24 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Force-write the current window's absolute workspace into
-   * ``~/.cursor/mcp.json`` ``--cwd`` / ``--trace``. No-op until globally
-   * enabled, or when no folder is open.
+   * Bind ``~/.cursor/mcp.json`` only when the harness-audit server is missing
+   * or its Python tree is stale (no ``get_recent_pain_events``). A complete
+   * existing entry is left alone so Reload cannot wipe a newer local package.
    */
   syncGlobalWorkspaceBind(): boolean {
     const root = this.workspaceRoot();
-    if (!root || !this.globallyEnabled()) {
+    if (!root) {
+      return false;
+    }
+    if (shouldPreserveExistingSidecar(readGlobalSidecarEntry())) {
+      return false;
+    }
+    if (!this.globallyEnabled()) {
       return false;
     }
     try {
       const runtime = this.ensureRuntime();
-      const { changed } = this.bindGlobalSidecar(runtime, root);
+      const { changed } = this.bindGlobalSidecar(runtime, root, false);
       if (changed) {
         this.promptReload(root);
       }
@@ -80,13 +89,19 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Rewrite ~/.cursor/mcp.json so Cursor's MCP process uses this folder. */
-  private bindGlobalSidecar(runtime: Runtime, workspaceRoot: string): {
+  /** Write ~/.cursor/mcp.json. ``force`` is for the Enable button only. */
+  private bindGlobalSidecar(
+    runtime: Runtime,
+    workspaceRoot: string,
+    force = false
+  ): {
     changed: boolean;
     path: string;
   } {
     return injectGlobalMcpJson(
-      buildSidecarEntry(runtime.python, runtime.pythonRoot, workspaceRoot)
+      buildSidecarEntry(runtime.python, runtime.pythonRoot, workspaceRoot),
+      os.homedir(),
+      { force }
     );
   }
 
@@ -127,7 +142,7 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
       this.render(String(error));
       return;
     }
-    const result = this.bindGlobalSidecar(runtime, root);
+    const result = this.bindGlobalSidecar(runtime, root, true);
     this.start();
     this.render();
     this.lastPromptedBind = root;

@@ -17,7 +17,9 @@ const {
   buildSidecarEntry,
   boundCwdFromEntry,
   globalMcpPath,
+  pythonRootHasPainTool,
   resolveWorkspaceRoot,
+  shouldPreserveExistingSidecar,
   workspaceBindArgs,
   workspaceBindMatches,
   tracePathFor,
@@ -105,18 +107,29 @@ try {
   );
   check("boundCwdFromEntry reads --cwd", boundCwdFromEntry(server) === emptyWs);
 
+  check("synced python tree has get_recent_pain_events", pythonRootHasPainTool(pythonRoot));
+  check("current runtime python is preservable", shouldPreserveExistingSidecar(entry));
+  check("missing entry is not preserved", !shouldPreserveExistingSidecar(undefined));
+
   const staleHome = mkdtempSync(join(tmpdir(), "harness-audit-home-stale-"));
+  const stalePython = mkdtempSync(join(tmpdir(), "harness-audit-old-py-"));
+  mkdirSync(join(stalePython, "audit_sidecar"), { recursive: true });
+  writeFileSync(join(stalePython, "audit_sidecar", "mcp_server.py"), "# old sidecar, no pain tool\n");
   const staleEntry = {
     command: runtime.python,
-    args: ["-m", "audit_sidecar.mcp_server"],
-    env: { PYTHONPATH: runtime.pythonRoot },
+    args: ["-m", "audit_sidecar.mcp_server", "--cwd", emptyWs],
+    env: { PYTHONPATH: stalePython },
   };
-  injectGlobalMcpJson(staleEntry, staleHome);
+  check(
+    "0.10.9 vendored python without pain tool is not preserved",
+    !shouldPreserveExistingSidecar(staleEntry)
+  );
+  injectGlobalMcpJson(staleEntry, staleHome, { force: true });
   const upgraded = injectGlobalMcpJson(
     buildSidecarEntry(runtime.python, runtime.pythonRoot, emptyWs),
     staleHome
   );
-  check("upgrades a 0.10.5 entry that had no --cwd", upgraded.changed);
+  check("upgrades a stale PYTHONPATH that lacks get_recent_pain_events", upgraded.changed);
   const upgradedDoc = JSON.parse(readFileSync(join(staleHome, ".cursor", "mcp.json"), "utf8"));
   const upgradedServer = upgradedDoc.mcpServers["harness-audit"];
   check(
@@ -129,6 +142,7 @@ try {
   );
   check("upgrade writes spawn cwd", upgradedServer.cwd === emptyWs);
   rmSync(staleHome, { recursive: true, force: true });
+  rmSync(stalePython, { recursive: true, force: true });
 
   const otherHome = mkdtempSync(join(tmpdir(), "harness-audit-home2-"));
   mkdirSync(join(otherHome, ".cursor"), { recursive: true });
@@ -144,21 +158,28 @@ try {
 
   const otherWs = mkdtempSync(join(tmpdir(), "harness-audit-ws2-"));
   const rebound = buildSidecarEntry(runtime.python, runtime.pythonRoot, otherWs);
-  const rewritten = injectGlobalMcpJson(rebound, fakeHome);
-  check("rebinding to another workspace rewrites mcp.json", rewritten.changed);
+  const skipped = injectGlobalMcpJson(rebound, fakeHome);
+  check("activate does not rewrite a usable existing sidecar", !skipped.changed);
+  const still = JSON.parse(readFileSync(written.path, "utf8")).mcpServers["harness-audit"];
+  check(
+    "preserved --cwd stays the original workspace",
+    still.args[still.args.indexOf("--cwd") + 1] === emptyWs
+  );
+  const forced = injectGlobalMcpJson(rebound, fakeHome, { force: true });
+  check("Enable force-writes a new workspace bind", forced.changed);
   const reboundDoc = JSON.parse(readFileSync(written.path, "utf8"));
   const reboundServer = reboundDoc.mcpServers["harness-audit"];
   check(
-    "rebind updates --cwd",
+    "force rebind updates --cwd",
     reboundServer.args[reboundServer.args.indexOf("--cwd") + 1] === otherWs
   );
-  check("rebind updates spawn cwd", reboundServer.cwd === otherWs);
+  check("force rebind updates spawn cwd", reboundServer.cwd === otherWs);
   check(
-    "rebind updates --trace",
+    "force rebind updates --trace",
     reboundServer.args[reboundServer.args.indexOf("--trace") + 1] === join(otherWs, "audit_trace.jsonl")
   );
   const same = injectGlobalMcpJson(rebound, fakeHome);
-  check("rebind is a no-op when --cwd is already this workspace", !same.changed);
+  check("second activate is a no-op once the python tree has the pain tool", !same.changed);
   rmSync(otherWs, { recursive: true, force: true });
 
   const sample = join(extRoot, "..", "examples", "sample_trace.jsonl");
