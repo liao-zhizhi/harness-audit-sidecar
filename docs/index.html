@@ -254,10 +254,57 @@
       color: var(--muted);
       font-size: 12px;
     }
+    .loop { margin: 0 0 32px; }
+    .loop h2 {
+      font-size: clamp(18px, 3.2vw, 24px);
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+      margin: 0 0 8px;
+      font-weight: 700;
+    }
+    .loop-sub {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .loop-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+      margin: 0 0 14px;
+    }
+    .loop .card h3 {
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 10px;
+    }
+    .loop .zh {
+      margin: 0 0 8px;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .loop .en {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .loop-evidence {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      max-width: 54em;
+    }
+    .loop .caveat + .caveat { margin-top: 6px; }
     @media (max-width: 640px) {
       .wrap { padding-top: 28px; }
       .actions { grid-template-columns: 1fr; }
       .vs { grid-template-columns: 1fr; }
+      .loop-grid { grid-template-columns: 1fr; }
       .brand { flex-direction: column; gap: 4px; }
     }
   </style>
@@ -321,6 +368,32 @@
         <p class="zh">当它失败时，系统不仅会记下 FAIL，还会自动写一份 161 字的事故报告（声称/见证/分叉/下次检查点），确保它下次不再踩同一个坑。</p>
         <p class="en">When it fails, the system doesn't just record a FAIL. It writes a 161-word post-mortem (Claim / Witness / Divergence / Next Checkpoint) so it never steps on the same rake again.</p>
       </div>
+    </section>
+
+    <section class="loop" aria-label="Learning loop">
+      <h2>From Failure to Rule: The Learning Loop</h2>
+      <p class="loop-sub">从失败到规则：机器如何在事前避坑。</p>
+      <div class="loop-grid">
+        <article class="card">
+          <h3>Failure → Pain</h3>
+          <p class="zh">物理失败被 Sidecar 捕获，写入多尺度痛觉事件（MICRO/TACTICAL），不是模型自述。</p>
+          <p class="en">Physical failures are captured by Sidecar and written as multi-scale pain events (MICRO/TACTICAL), not model self-reports.</p>
+        </article>
+        <article class="card">
+          <h3>Pain → Narrative → Human Correction</h3>
+          <p class="zh">痛觉被压缩成可读的事故报告；人读完后的修正动作被记录为 `human_correction`，带物理证据。</p>
+          <p class="en">Pain is compressed into a readable post-mortem; human corrections are recorded as `human_correction` with physical evidence.</p>
+        </article>
+        <article class="card">
+          <h3>Correction → Distilled Plan → Pre-action Avoidance</h3>
+          <p class="zh">离线蒸馏把多条修正抽成一条可复用预案；下一次任务前，Agent 主动调用 `get_recent_plans` 读取预案，先检查再执行。</p>
+          <p class="en">Offline distillation turns multiple corrections into a reusable plan; before the next task, the agent calls `get_recent_plans` and checks before acting.</p>
+        </article>
+      </div>
+      <p class="loop-evidence">实测：`fake_dir11` 任务中，Agent 先调用 `get_recent_plans`，读到“写文件前检查父目录”的预案，先 `mkdir` 再写，一次 PASS，没有产生新的 FAIL。</p>
+      <p class="loop-evidence">Verified: in the `fake_dir11` run, the agent called `get_recent_plans`, read the “check parent directory before write” plan, ran `mkdir` first, and passed on the first attempt with no new FAIL.</p>
+      <p class="caveat">当前已验证的闭环只覆盖“缺父目录”这一种失败形态；权限、符号链接、多步级联的规则蒸馏尚未验证。规则读取仍是软约束，Sidecar 的物理阻断仍是最终防线。</p>
+      <p class="caveat">The verified loop currently covers only the “missing parent directory” failure shape. Distillation for permission, symlink, and cascading failures is not yet verified. Plan reading remains a soft constraint; Sidecar’s physical block remains the final line of defense.</p>
     </section>
 
     <section class="tools" aria-label="Supported Tools">
