@@ -2,7 +2,7 @@
 
 这是**部署协商**，不是学习。Cursor 不会因为仓库里出现了新函数就自动把工具交给 Agent。换一台机器、换一个项目、只改 Python 不打包，现场都看不到新工具。
 
-历史：`get_recent_pain_events`（0.11.0）→ `record_human_correction`（0.11.1）→ `get_recent_plans`（0.11.2）。每加一个工具都要走完整条链。漏一步会出现「代码在、面板没有、Agent 调不到」——那是工具未加载，不要写成规则未消费。
+历史：`get_recent_pain_events`（0.11.0）→ `record_human_correction`（0.11.1）→ `get_recent_plans`（0.11.2）→ `probe_target`（0.11.4）。每加一个工具都要走完整条链。漏一步会出现「代码在、面板没有、Agent 调不到」——那是工具未加载，不要写成规则未消费。
 
 不改四值枚举，不改 Sidecar 判定。本文件只记部署。
 
@@ -17,7 +17,7 @@ Cursor 扩展会在 activate 时检查 vendored Python 是否含全部 `REQUIRED
 3. 确认该工具走 `_handle_tools_call` 短路，**不进** `_execute` / `audit_trace`（off-lattice 约定）。
 4. 握手 / `memory_bus` 测试覆盖 `tools/list` 含新名、调用不被 trace。
 
-当前标记（0.11.3）：`get_recent_pain_events`、`record_human_correction`、`get_recent_corrections`、`get_recent_plans`、`_upsert_tactical`。
+当前标记（0.11.4）：`get_recent_pain_events`、`record_human_correction`、`get_recent_corrections`、`get_recent_plans`、`_upsert_tactical`、`probe_target`。
 
 ## 1. 同步 Python 进扩展包
 

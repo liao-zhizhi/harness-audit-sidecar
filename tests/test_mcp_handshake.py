@@ -273,6 +273,7 @@ class ToolsListTest(McpClientTestCase):
             "get_recent_corrections",
             "get_recent_plans",
             "record_human_correction",
+            "probe_target",
         ):
             self.assertIn(expected, names)
 

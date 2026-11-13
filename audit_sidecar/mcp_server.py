@@ -110,6 +110,7 @@ PAIN_TOOL_NAME = "get_recent_pain_events"
 CORRECTION_TOOL_NAME = "record_human_correction"
 CORRECTIONS_LOOKUP_NAME = "get_recent_corrections"
 PLANS_LOOKUP_NAME = "get_recent_plans"
+PROBE_TOOL_NAME = "probe_target"
 CORRECTION_TOOL_DEFINITION = {
     "name": CORRECTION_TOOL_NAME,
     "description": (
@@ -196,6 +197,24 @@ PLANS_LOOKUP_DEFINITION = {
                 "description": "Optional project filter. Prefix match on plan.project_root.",
             },
         },
+    },
+}
+PROBE_TARGET_DEFINITION = {
+    "name": PROBE_TOOL_NAME,
+    "description": (
+        "Read-only check of a path: whether it and its parent exist, "
+        "whether the parent is writable, and symlink, mtime, and size. "
+        "Does not write and does not produce a lattice verdict."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "File or directory path, absolute or relative to --cwd.",
+            },
+        },
+        "required": ["path"],
     },
 }
 PAIN_TOOL_DEFINITION = {
@@ -355,6 +374,51 @@ def _recent_corrections_result(args: Dict[str, Any]) -> Dict[str, Any]:
     body = json.dumps({"events": events}, ensure_ascii=False)
     return {
         "content": [{"type": "text", "text": body}],
+        "isError": False,
+    }
+
+
+def _probe_target_result(args: Dict[str, Any], cwd: str) -> Dict[str, Any]:
+    """Read-only path witness. Never writes and never enters the lattice."""
+    raw = args.get("path")
+    if not isinstance(raw, str) or not raw.strip():
+        body: Dict[str, Any] = {"error": "path is required"}
+    else:
+        path = raw if os.path.isabs(raw) else os.path.join(cwd or ".", raw)
+        parent = os.path.dirname(path) or (cwd or ".")
+        is_link = os.path.islink(path)
+        symlink_target = None
+        if is_link:
+            try:
+                symlink_target = os.readlink(path)
+            except OSError:
+                symlink_target = None
+        mtime = None
+        size = None
+        if os.path.lexists(path):
+            try:
+                st = os.lstat(path)
+                mtime = st.st_mtime
+                size = st.st_size
+            except OSError:
+                mtime = None
+                size = None
+        parent_exists = os.path.isdir(parent)
+        try:
+            parent_writable = bool(parent_exists and os.access(parent, os.W_OK))
+        except OSError:
+            parent_writable = False
+        body = {
+            "exists": os.path.exists(path),
+            "parent_exists": parent_exists,
+            "parent_writable": parent_writable,
+            "is_symlink": is_link,
+            "symlink_target": symlink_target,
+            "mtime": mtime,
+            "size": size,
+        }
+    return {
+        "content": [{"type": "text", "text": json.dumps(body, ensure_ascii=False)}],
         "isError": False,
     }
 
@@ -919,6 +983,7 @@ class JsonRpcServer:
         tools.append(dict(CORRECTION_TOOL_DEFINITION))
         tools.append(dict(CORRECTIONS_LOOKUP_DEFINITION))
         tools.append(dict(PLANS_LOOKUP_DEFINITION))
+        tools.append(dict(PROBE_TARGET_DEFINITION))
         tools.sort(key=lambda item: item.get("name") or "")
         return {"tools": tools}
 
@@ -946,6 +1011,8 @@ class JsonRpcServer:
             return _recent_corrections_result(args)
         if tool == PLANS_LOOKUP_NAME:
             return _recent_plans_result(args)
+        if tool == PROBE_TOOL_NAME:
+            return _probe_target_result(args, self._proxy.cwd)
 
         claim, basis = self._resolve_claim(params, tool)
 
@@ -1033,6 +1100,8 @@ class JsonRpcServer:
             return _result(message_id, _recent_corrections_result(args))
         if tool == PLANS_LOOKUP_NAME:
             return _result(message_id, _recent_plans_result(args))
+        if tool == PROBE_TOOL_NAME:
+            return _result(message_id, _probe_target_result(args, self._proxy.cwd))
 
         reported_success = params.get("reported_success")
         if not isinstance(reported_success, bool):

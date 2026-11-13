@@ -147,6 +147,34 @@ try {
   rmSync(staleHome, { recursive: true, force: true });
   rmSync(stalePython, { recursive: true, force: true });
 
+  const priorHome = mkdtempSync(join(tmpdir(), "harness-audit-home-prior-"));
+  const priorPython = mkdtempSync(join(tmpdir(), "harness-audit-prior-py-"));
+  mkdirSync(join(priorPython, "audit_sidecar"), { recursive: true });
+  writeFileSync(
+    join(priorPython, "audit_sidecar", "mcp_server.py"),
+    "# old sidecar 0.11.3\nget_recent_pain_events = True\nrecord_human_correction = True\nget_recent_corrections = True\nget_recent_plans = True\n_upsert_tactical = True\n"
+  );
+  const priorEntry = {
+    command: runtime.python,
+    args: ["-m", "audit_sidecar.mcp_server", "--cwd", emptyWs],
+    env: { PYTHONPATH: priorPython },
+  };
+  check(
+    "0.11.3 vendored python without the newest marker is not preserved",
+    !shouldPreserveExistingSidecar(priorEntry)
+  );
+  injectGlobalMcpJson(priorEntry, priorHome, { force: true });
+  const priorUpgraded = injectGlobalMcpJson(
+    buildSidecarEntry(runtime.python, runtime.pythonRoot, emptyWs),
+    priorHome
+  );
+  check(
+    "upgrades a 0.11.3 PYTHONPATH that lacks the newest marker",
+    priorUpgraded.changed
+  );
+  rmSync(priorHome, { recursive: true, force: true });
+  rmSync(priorPython, { recursive: true, force: true });
+
   const otherHome = mkdtempSync(join(tmpdir(), "harness-audit-home2-"));
   mkdirSync(join(otherHome, ".cursor"), { recursive: true });
   writeFileSync(

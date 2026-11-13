@@ -364,6 +364,99 @@ class MemoryBusTest(unittest.TestCase):
         ]
         self.assertEqual(lines, [])
 
+    def test_probe_target_is_not_traced_or_judged(self) -> None:
+        from audit_sidecar.mcp_server import JsonRpcServer
+        from audit_sidecar.runner import SafeRunner
+
+        present = os.path.join(self.home, "probe_present.txt")
+        Path(present).write_text("abc", encoding="utf-8")
+        link = os.path.join(self.home, "probe_link")
+        os.symlink(present, link)
+        dangling = os.path.join(self.home, "probe_dangling")
+        os.symlink(os.path.join(self.home, "no_such_target"), dangling)
+        missing = os.path.join(self.home, "probe_missing", "test.txt")
+
+        trace = os.path.join(self.home, "probe_trace.jsonl")
+        proxy = MCPProxy(cwd=self.home, runner=SafeRunner(timeout=5))
+        server = JsonRpcServer(proxy, TraceWriter(trace))
+        names = [tool["name"] for tool in server._handle_tools_list({})["tools"]]
+        self.assertIn("probe_target", names)
+
+        missing_payload = server._handle_tools_call(
+            21,
+            {"name": "probe_target", "arguments": {"path": missing}},
+        )
+        self.assertFalse(missing_payload.get("isError"))
+        self.assertNotIn("verdict", missing_payload)
+        missing_body = json.loads(missing_payload["content"][0]["text"])
+        self.assertEqual(missing_body["exists"], False)
+        self.assertEqual(missing_body["parent_exists"], False)
+        self.assertEqual(missing_body["parent_writable"], False)
+        self.assertEqual(missing_body["is_symlink"], False)
+        self.assertIsNone(missing_body["symlink_target"])
+        self.assertIsNone(missing_body["mtime"])
+        self.assertIsNone(missing_body["size"])
+        self.assertFalse(os.path.isdir(os.path.dirname(missing)))
+
+        present_body = json.loads(
+            server._handle_tools_call(
+                22,
+                {
+                    "name": "probe_target",
+                    "arguments": {"path": "probe_present.txt"},
+                },
+            )["content"][0]["text"]
+        )
+        self.assertTrue(present_body["exists"])
+        self.assertTrue(present_body["parent_exists"])
+        self.assertTrue(present_body["parent_writable"])
+        self.assertFalse(present_body["is_symlink"])
+        self.assertIsNone(present_body["symlink_target"])
+        self.assertEqual(present_body["size"], 3)
+        self.assertIsInstance(present_body["mtime"], float)
+
+        link_body = json.loads(
+            server._handle_tools_call(
+                23,
+                {"name": "probe_target", "arguments": {"path": "probe_link"}},
+            )["content"][0]["text"]
+        )
+        self.assertTrue(link_body["is_symlink"])
+        self.assertEqual(link_body["symlink_target"], present)
+        self.assertTrue(link_body["exists"])
+        self.assertEqual(link_body["size"], len(os.readlink(link).encode()))
+
+        dangling_body = json.loads(
+            server._handle_tools_call(
+                24,
+                {"name": "probe_target", "arguments": {"path": "probe_dangling"}},
+            )["content"][0]["text"]
+        )
+        self.assertFalse(dangling_body["exists"])
+        self.assertTrue(dangling_body["is_symlink"])
+        self.assertTrue(str(dangling_body["symlink_target"]).endswith("no_such_target"))
+
+        empty_body = json.loads(
+            server._handle_tools_call(
+                25,
+                {"name": "probe_target", "arguments": {"path": "  "}},
+            )["content"][0]["text"]
+        )
+        self.assertEqual(empty_body, {"error": "path is required"})
+
+        legacy = server._handle_tool_call(
+            26,
+            {"tool": "probe_target", "args": {"path": "probe_present.txt"}},
+        )
+        self.assertNotIn("verdict", legacy["result"])
+        self.assertEqual(Path(present).read_text(encoding="utf-8"), "abc")
+        lines = [
+            line
+            for line in Path(trace).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(lines, [])
+
     def test_same_trace_id_writes_one_tactical(self) -> None:
         payload = {
             "verdict": "FAIL",

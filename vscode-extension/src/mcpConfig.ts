@@ -15,8 +15,8 @@
  * implements the required off-lattice tools. Only the user's first Enable
  * click, a missing server, or a stale Python tree (missing
  * ``get_recent_pain_events``, ``record_human_correction``,
- * ``get_recent_corrections``, ``get_recent_plans``, or
- * ``_upsert_tactical``) may write.
+ * ``get_recent_corrections``, ``get_recent_plans``,
+ * ``_upsert_tactical``, or ``probe_target``) may write.
  * Adding a tool is deploy negotiation: sync-python → package → install →
  * Reload → confirm tools/list. See ADDING_MCP_TOOLS.md.
  */
@@ -94,6 +94,7 @@ const REQUIRED_SIDECAR_MARKERS = [
   "get_recent_corrections",
   "get_recent_plans",
   "_upsert_tactical",
+  "probe_target",
 ];
 
 export function pythonRootHasRequiredTools(
