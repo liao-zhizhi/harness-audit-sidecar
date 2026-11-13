@@ -305,17 +305,17 @@ class TraceWriter:
         self._offer_memory(record)
 
     def _offer_memory(self, record: Dict[str, Any]) -> None:
-        """On FAIL, copy a structured event into Gradia's memory bus.
+        """Copy FAIL onto the physical-fault bus; copy MICRO/TACTICAL onto sentience.
 
         Never raises: an unwritable memory file must not become an outage,
-        and the lattice value is already on the local trace.
+        and the lattice value is already on the local trace. Precheck events
+        are offered even when the verdict is not FAIL.
         """
-        if record.get("verdict") != "FAIL":
-            return
         try:
-            from .memory_bus import record_physical_fault
+            from .memory_bus import record_physical_fault, record_scale_events
 
             record_physical_fault(record)
+            record_scale_events(record)
         except Exception:
             _LOG.debug("memory bus skipped", exc_info=True)
 
@@ -407,6 +407,16 @@ def _trace_record(
         # A weaker verdict than the caller asked for must say so in the trace.
         "dropped_assertions": list(result.dropped_assertions),
         "immune_state": immune_state,
+        # Parent-missing prechecks. Empty when every path had a directory.
+        # Informational only; the lattice value above is unchanged.
+        "prechecks": [
+            {
+                "path": item.path,
+                "missing_dir": item.missing_dir,
+                "timestamp": item.timestamp,
+            }
+            for item in getattr(result, "prechecks", ()) or ()
+        ],
     }
 
 

@@ -15,10 +15,12 @@ from audit_sidecar.judgment_base import JudgmentBase
 from audit_sidecar.mcp_proxy import MCPProxy, ToolInvocation
 from audit_sidecar.mcp_server import TraceWriter
 from audit_sidecar.memory_bus import (
+    events_path,
     faults_path,
     intent_requires_full_witness,
     load_overlay,
     record_physical_fault,
+    record_scale_events,
     rules_path,
 )
 from audit_sidecar.verdict import Verdict
@@ -96,6 +98,14 @@ class MemoryBusTest(unittest.TestCase):
         ]
         self.assertEqual(len(faults), 1)
         self.assertEqual(faults[0]["tool"], "run_command")
+        scale_rows = [
+            json.loads(line)
+            for line in events_path().read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        self.assertEqual([row["scale"] for row in scale_rows], ["TACTICAL"])
+        self.assertEqual(scale_rows[0]["verdict"], "FAIL")
+        self.assertEqual(scale_rows[0]["pain_level"], 2)
 
     def test_overlay_escalates_innate_tier(self) -> None:
         path = rules_path()
@@ -152,6 +162,36 @@ class MemoryBusTest(unittest.TestCase):
     def test_missing_overlay_is_a_no_op(self) -> None:
         self.assertEqual(load_overlay(), {})
         self.assertFalse(intent_requires_full_witness("false completion", "write_file"))
+
+    def test_precheck_writes_micro_and_fail_writes_tactical(self) -> None:
+        rows = record_scale_events(
+            {
+                "verdict": "FAIL",
+                "tool": "write_file",
+                "intent": "modify file fake_dir/test.txt",
+                "reason": "false completion: report says success, witness says no effect",
+                "timestamp": "2026-11-13T02:00:00+00:00",
+                "prechecks": [
+                    {
+                        "path": "fake_dir/test.txt",
+                        "missing_dir": "fake_dir",
+                        "timestamp": "2026-11-13T02:00:00+00:00",
+                    }
+                ],
+            }
+        )
+        self.assertEqual([row["scale"] for row in rows], ["MICRO", "TACTICAL"])
+        self.assertEqual(rows[0]["verdict"], "INVALID")
+        self.assertEqual(rows[0]["pain_level"], 1)
+        self.assertEqual(rows[0]["witness"]["missing_dir"], "fake_dir")
+        self.assertEqual(rows[1]["verdict"], "FAIL")
+        self.assertEqual(rows[1]["pain_level"], 2)
+        stored = [
+            json.loads(line)
+            for line in events_path().read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        self.assertEqual(len(stored), 2)
 
 
 GIT = shutil.which("git")
@@ -223,6 +263,18 @@ class LiveFailWriteTest(unittest.TestCase):
         self.assertEqual(len(faults), 1)
         self.assertEqual(faults[0]["tool"], "write_file")
         self.assertIn("false completion", faults[0]["reason"])
+        scale_rows = [
+            json.loads(line)
+            for line in events_path().read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        scales = {row["scale"] for row in scale_rows}
+        self.assertIn("MICRO", scales)
+        self.assertIn("TACTICAL", scales)
+        micro = next(row for row in scale_rows if row["scale"] == "MICRO")
+        self.assertEqual(micro["verdict"], "INVALID")
+        self.assertEqual(micro["pain_level"], 1)
+        self.assertEqual(micro["witness"]["missing_dir"], "missing_dir")
 
 
 if __name__ == "__main__":
