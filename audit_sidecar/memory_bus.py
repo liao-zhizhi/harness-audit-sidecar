@@ -131,6 +131,10 @@ def _relative_path(record: Mapping[str, Any]) -> str:
     return ""
 
 
+SOURCE_MERGED_TACTICAL = "sidecar+memory_bus"
+READER_PLANS = "get_recent_plans"
+
+
 def _append_scale_event(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     path = events_path()
     try:
@@ -142,6 +146,93 @@ def _append_scale_event(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         _LOG.warning("could not append multi-scale event to %s: %s", path, problem)
         return None
     return row
+
+
+def _trace_id_of(row: Mapping[str, Any] | None) -> str:
+    extra = (row or {}).get("extra") if isinstance((row or {}).get("extra"), dict) else {}
+    value = extra.get("trace_id") if isinstance(extra, dict) else None
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def _merge_tactical_sources(left: str, right: str) -> str:
+    parts: list[str] = []
+    for item in (left, right):
+        for part in str(item or "").split("+"):
+            token = part.strip()
+            if token and token not in parts and token != SOURCE_MERGED_TACTICAL:
+                parts.append(token)
+    ordered = [name for name in ("sidecar", "memory_bus") if name in parts]
+    ordered.extend(name for name in parts if name not in ordered)
+    if ordered == ["sidecar", "memory_bus"]:
+        return SOURCE_MERGED_TACTICAL
+    return "+".join(ordered) if ordered else (left or right or "sidecar")
+
+
+def _load_events() -> list:
+    path = events_path()
+    rows: list = []
+    if not path.exists():
+        return rows
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    rows.append(item)
+    except (OSError, json.JSONDecodeError) as problem:
+        _LOG.warning("could not read multi-scale events %s: %s", path, problem)
+    return rows
+
+
+def _save_events(rows: list) -> bool:
+    path = events_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+    except OSError as problem:
+        _LOG.warning("could not rewrite multi-scale events %s: %s", path, problem)
+        return False
+    return True
+
+
+def _upsert_tactical(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Same trace_id keeps one TACTICAL. Does not delete older events."""
+    tid = _trace_id_of(row)
+    if not tid:
+        return _append_scale_event(row)
+    rows = _load_events()
+    for existing in rows:
+        if existing.get("scale") != "TACTICAL":
+            continue
+        if str(existing.get("source") or "") == "human_correction":
+            continue
+        if _trace_id_of(existing) != tid:
+            continue
+        existing["source"] = _merge_tactical_sources(
+            str(existing.get("source") or ""),
+            str(row.get("source") or ""),
+        )
+        extra = dict(existing.get("extra") or {}) if isinstance(existing.get("extra"), dict) else {}
+        incoming = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        extra.update({key: value for key, value in incoming.items() if value not in (None, "", [])})
+        extra["trace_id"] = tid
+        existing["extra"] = extra
+        if not _save_events(rows):
+            return None
+        return existing
+    return _append_scale_event(row)
+
+
+def _allows_plans(item: Mapping[str, Any]) -> bool:
+    declared = item.get("read_by")
+    if isinstance(declared, list):
+        return READER_PLANS in {str(value) for value in declared}
+    return bool(str(item.get("action") or "").strip())
 
 
 def record_scale_events(record: Mapping[str, Any]) -> list:
@@ -189,6 +280,9 @@ def record_scale_events(record: Mapping[str, Any]) -> list:
             if stored:
                 written.append(stored)
     if str(record.get("verdict") or "") == "FAIL":
+        extra: Dict[str, Any] = {}
+        if record.get("id") not in (None, ""):
+            extra["trace_id"] = record.get("id")
         row = {
             "schema": SENTIENCE_SCHEMA,
             "event_id": str(uuid.uuid4()),
@@ -207,7 +301,9 @@ def record_scale_events(record: Mapping[str, Any]) -> list:
             "project_root": project_root,
             "relative_path": relative,
         }
-        stored = _append_scale_event(row)
+        if extra:
+            row["extra"] = extra
+        stored = _upsert_tactical(row)
         if stored:
             written.append(stored)
     return written
@@ -402,6 +498,8 @@ def load_recent_plans(
                     continue
                 trigger = str(item.get("trigger") or "").strip()
                 action = str(item.get("action") or "").strip()
+                if not _allows_plans(item):
+                    continue
                 if not action:
                     continue
                 if not _project_match(str(item.get("project_root") or ""), str(project_root or "")):

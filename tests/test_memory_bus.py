@@ -364,6 +364,57 @@ class MemoryBusTest(unittest.TestCase):
         ]
         self.assertEqual(lines, [])
 
+    def test_same_trace_id_writes_one_tactical(self) -> None:
+        payload = {
+            "verdict": "FAIL",
+            "tool": "write_file",
+            "intent": "modify file missing_dir/target.py",
+            "reason": "false completion",
+            "timestamp": "2026-11-13T08:00:00+00:00",
+            "id": 42,
+        }
+        first = record_scale_events(payload)
+        second = record_scale_events(payload)
+        self.assertEqual([row["scale"] for row in first], ["TACTICAL"])
+        stored = [
+            json.loads(line)
+            for line in events_path().read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        tactical = [row for row in stored if row["scale"] == "TACTICAL"]
+        self.assertEqual(len(tactical), 1)
+        self.assertEqual(str(tactical[0]["extra"]["trace_id"]), "42")
+        self.assertEqual(tactical[0]["source"], "sidecar")
+        self.assertEqual(second[0]["event_id"], tactical[0]["event_id"])
+
+    def test_read_by_empty_is_skipped_by_plans(self) -> None:
+        path = procedural_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "trigger": "无人读取",
+                    "action": "仍有 action",
+                    "read_by": [],
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "trigger": "写文件到新路径",
+                    "action": "先检查父目录",
+                    "read_by": ["get_recent_plans", "distill_inject"],
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        listed = load_recent_plans(limit=3)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["trigger"], "写文件到新路径")
+
 
 GIT = shutil.which("git")
 
@@ -442,6 +493,7 @@ class LiveFailWriteTest(unittest.TestCase):
         scales = {row["scale"] for row in scale_rows}
         self.assertIn("MICRO", scales)
         self.assertIn("TACTICAL", scales)
+        self.assertEqual(sum(1 for row in scale_rows if row["scale"] == "TACTICAL"), 1)
         micro = next(row for row in scale_rows if row["scale"] == "MICRO")
         self.assertEqual(micro["verdict"], "INVALID")
         self.assertEqual(micro["pain_level"], 1)
