@@ -45,6 +45,45 @@
       margin-bottom: 36px;
     }
     .brand strong { color: var(--text); letter-spacing: 0.12em; font-weight: 600; }
+    .brand a {
+      color: var(--muted);
+      text-decoration: none;
+      border-bottom: 1px solid var(--line);
+      text-transform: none;
+      letter-spacing: 0.04em;
+    }
+    .brand a:hover { color: var(--pass); border-bottom-color: var(--pass); }
+    .dev { margin: 0 0 32px; }
+    .dev h2 {
+      font-size: clamp(18px, 3.2vw, 24px);
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+      margin: 0 0 12px;
+      font-weight: 700;
+    }
+    .dev .zh { margin: 0 0 8px; color: var(--text); font-size: 13px; }
+    .dev .en { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+    .dev .cmd {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin: 0 0 14px;
+      overflow-x: auto;
+      font-size: 13px;
+      color: #d4d4d8;
+    }
+    .dev .cmd code { font: inherit; }
+    .dev .more {
+      margin: 0;
+      font-size: 12px;
+    }
+    .dev .more a {
+      color: var(--muted);
+      text-decoration: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .dev .more a:hover { color: var(--pass); border-bottom-color: var(--pass); }
     h1 {
       font-size: clamp(28px, 5vw, 42px);
       line-height: 1.15;
@@ -385,7 +424,7 @@
   <main class="wrap">
     <div class="brand">
       <strong>因果审计 · Causal Audit</strong>
-      <span>本地侧车 · local audit sidecar</span>
+      <span>本地侧车 · local audit sidecar · <a href="#for-developers">For Developers</a></span>
     </div>
     <h1 class="bi">抓住谎称做完的智能体。
 Catch your agent lying about finishing.</h1>
@@ -414,6 +453,16 @@ Sample audit log below. Commands, paths, and status words stay in English.</p>
 
 <span class="k">  2</span> <span class="fail">FAIL</span>   <span class="k">3</span> <span class="pass">PASS</span>   <span class="k">0</span> <span class="inv">INVALID</span>   <span class="k">0 NOT_RUN</span></pre>
     </div>
+
+    <section id="for-developers" class="dev" aria-label="For Developers / 开发者入口">
+      <h2>For Developers / 开发者入口</h2>
+      <p class="zh">抓住编码智能体的假完成。同一套 harness-audit-sidecar，用物理见证审计「完成了」这个声称。</p>
+      <p class="en">Catches false completion in coding agents. Same harness-audit-sidecar package. It audits the claim with physical witnesses.</p>
+      <pre class="cmd"><span class="k">$</span> pipx install 'harness-audit-sidecar&gt;=0.11.3'</pre>
+      <p class="zh">验证：让 Agent 执行 <code>echo test &gt; trial_check.txt</code>，然后看 <code>audit_trace.jsonl</code> 是否出现 PASS；再写一个不存在目录下的文件，看是否出现 FAIL。</p>
+      <p class="en">Verify: ask the agent to run <code>echo test &gt; trial_check.txt</code>, then check <code>audit_trace.jsonl</code> for PASS. Then write a file under a missing directory and check for FAIL.</p>
+      <p class="more"><a href="https://github.com/liao-zhizhi/harness-audit-sidecar/blob/master/docs/FOR_DEVELOPERS.md">开发者指南 · Developer guide</a></p>
+    </section>
 
     <section class="proof" aria-label="实证对照 · Empirical proof">
       <h2 class="bi">从 0/5 到 5/5：物理痛觉的作用

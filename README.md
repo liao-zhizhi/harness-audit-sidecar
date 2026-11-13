@@ -1,6 +1,6 @@
 # agent-harness-audit
 
-> Agent Completion Auditor: catches false completion in coding agents. [Positioning](product/agent-completion-auditor/POSITIONING.md) · [Trial kit](product/agent-completion-auditor/TRIAL_KIT.md)
+> For developers: catches false completion in coding agents. [Developer guide](docs/FOR_DEVELOPERS.md) · Install: pipx install 'harness-audit-sidecar>=0.11.3'
 
 **An audit tool for the agent execution layer**
 
