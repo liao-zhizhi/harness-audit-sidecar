@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#09090b">
-  <meta name="description" content="Local agent audit layer. Catch your AI agent lying about finishing. Physical witnesses, no server.">
-  <title>Causal Audit — Catch your AI agent lying about finishing.</title>
+  <meta name="description" content="本地审计层，用物理见证抓住谎称做完的智能体，不经服务器。 Local audit layer. Catch an agent that claims it finished. Physical witnesses, no server.">
+  <title>因果审计 Causal Audit。抓住谎称做完的智能体。 Catch your agent lying about finishing.</title>
   <style>
     :root {
       --bg: #09090b;
@@ -200,10 +200,11 @@
       box-shadow: inset 0 0 0 1px rgba(63, 185, 80, 0.28), 0 0 24px rgba(63, 185, 80, 0.08);
     }
     .card h3 {
-      margin: 0;
+      margin: 0 0 12px;
       font-size: 12px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+      white-space: pre-line;
     }
     .card-bad h3 { color: var(--fail); }
     .card-good h3 { color: var(--pass); }
@@ -279,7 +280,9 @@
       font-size: 13px;
       color: var(--text);
       margin-bottom: 10px;
+      white-space: pre-line;
     }
+    .bi { white-space: pre-line; }
     .loop .zh {
       margin: 0 0 8px;
       color: var(--text);
@@ -312,16 +315,20 @@
 <body>
   <main class="wrap">
     <div class="brand">
-      <strong>causalaudit.net</strong>
-      <span>harness-audit-sidecar · local mcp</span>
+      <strong>因果审计 · Causal Audit</strong>
+      <span>本地侧车 · local audit sidecar</span>
     </div>
-    <h1>Catch your AI agent lying about finishing.</h1>
-    <p class="sub">抓出你的 AI 智能体假完成。<br>基于物理见证与痛觉传导的本地 Agent 审计层。</p>
+    <h1 class="bi">抓住谎称做完的智能体。
+Catch your agent lying about finishing.</h1>
+    <p class="sub bi">基于物理见证和痛觉传导的本地审计层。
+A local audit layer based on physical witnesses and pain signals.</p>
+    <p class="sub bi">下面是一段审计日志示例。命令、路径和状态词保持英文。
+Sample audit log below. Commands, paths, and status words stay in English.</p>
 
-    <div class="term" aria-label="Audit panel">
+    <div class="term" aria-label="审计面板 · Audit panel">
       <div class="term-bar">
         <i class="dot"></i><i class="dot"></i><i class="dot"></i>
-        <span>audit_trace.jsonl · cwd /Gradia</span>
+        <span>审计日志 · audit log file</span>
       </div>
       <pre><span class="k">$</span> harness-audit report
 
@@ -339,91 +346,96 @@
 <span class="k">  2</span> <span class="fail">FAIL</span>   <span class="k">3</span> <span class="pass">PASS</span>   <span class="k">0</span> <span class="inv">INVALID</span>   <span class="k">0 NOT_RUN</span></pre>
     </div>
 
-    <section class="proof" aria-label="Empirical Proof">
-      <h2>From 0/5 to 5/5: The Power of Physical Pain</h2>
+    <section class="proof" aria-label="实证对照 · Empirical proof">
+      <h2 class="bi">从 0/5 到 5/5：物理痛觉的作用
+From 0/5 to 5/5: The Power of Physical Pain</h2>
       <div class="hook">
-        <p class="zh">AI 不是不会写代码，它是瞎着写的。只要给它一点物理痛觉，它就能从 0/5 的灾难变成 5/5 的可靠。</p>
-        <p class="en">AI isn't bad at coding. It's coding blind. Give it a bit of physical pain, and it goes from a 0/5 disaster to 5/5 reliability.</p>
+        <p class="bi">它不是不会写代码，它是瞎着写的。只要给它一点物理痛觉，它就能从 0/5 的灾难变成 5/5 的可靠。
+It is not bad at writing code. It is writing blind. Give it a bit of physical pain, and it goes from a 0/5 disaster to 5/5 reliability.</p>
       </div>
       <div class="vs">
         <article class="card card-bad">
-          <h3>Without Pain</h3>
-          <div class="zh-label">不注入痛觉</div>
-          <div class="row"><span>权限目录</span><span class="score-bad">0/5</span></div>
-          <div class="row"><span>符号链接</span><span class="score-bad">0/5</span></div>
-          <div class="row"><span>多步级联</span><span class="score-bad">0/5</span></div>
-          <p class="verdict">结果：直接写导致灾难性 FAIL。</p>
+          <h3>不注入痛觉
+Without Pain</h3>
+          <div class="row"><span>权限目录 · Permission directory</span><span class="score-bad">0/5</span></div>
+          <div class="row"><span>符号链接 · Symbolic link</span><span class="score-bad">0/5</span></div>
+          <div class="row"><span>多步级联 · Cascading steps</span><span class="score-bad">0/5</span></div>
+          <p class="verdict">结果：直接写导致灾难性失败。 A direct write ends in a serious failure.</p>
         </article>
         <article class="card card-good">
-          <h3>With Multi-scale Pain</h3>
-          <div class="zh-label">注入多尺度痛觉</div>
-          <div class="row"><span>权限目录</span><span class="score-good">5/5</span></div>
-          <div class="row"><span>符号链接</span><span class="score-good">5/5</span></div>
-          <div class="row"><span>多步级联</span><span class="score-good">5/5</span></div>
-          <p class="verdict">结果：全部在执行前触发检查，完美避开陷阱。</p>
+          <h3>注入多尺度痛觉
+With Multi-scale Pain</h3>
+          <div class="row"><span>权限目录 · Permission directory</span><span class="score-good">5/5</span></div>
+          <div class="row"><span>符号链接 · Symbolic link</span><span class="score-good">5/5</span></div>
+          <div class="row"><span>多步级联 · Cascading steps</span><span class="score-good">5/5</span></div>
+          <p class="verdict">结果：全部在执行前触发检查，并避开陷阱。 Each run checks before writing and avoids the trap.</p>
         </article>
       </div>
-      <p class="caveat">注：即使注入痛觉，模型仍可能推演错物理后果（如误判符号链接落点）。这就是为什么纯 Prompt 不够，必须由 Sidecar 进行物理层强制阻断。</p>
+      <p class="caveat bi">注：即使注入痛觉，模型仍可能推演错物理后果（如误判符号链接落点）。提示词不够，必须由 Sidecar 做物理阻断。
+Note: pain can still be followed by a wrong guess about the physical effect, such as where a symlink write lands. A prompt is not enough. Sidecar remains the physical block.</p>
       <div class="postmortem">
-        <p class="zh">当它失败时，系统不仅会记下 FAIL，还会自动写一份 161 字的事故报告（声称/见证/分叉/下次检查点），确保它下次不再踩同一个坑。</p>
-        <p class="en">When it fails, the system doesn't just record a FAIL. It writes a 161-word post-mortem (Claim / Witness / Divergence / Next Checkpoint) so it never steps on the same rake again.</p>
+        <p class="bi">失败时，系统除了记下失败，还会写一份 161 字的事故报告（声称 / 见证 / 分叉 / 下次检查点）。
+When it fails, the system records the failure and writes a 161-word post-mortem: claim, witness, divergence, and the next checkpoint.</p>
       </div>
     </section>
 
-    <section class="loop" aria-label="Learning loop">
-      <h2>From Failure to Rule: The Learning Loop</h2>
-      <p class="loop-sub">从失败到规则：机器如何在事前避坑。</p>
+    <section class="loop" aria-label="学习闭环 · Learning loop">
+      <h2 class="bi">从失败到规则：机器如何在事前避坑。
+From Failure to Rule: The Learning Loop</h2>
       <div class="loop-grid">
         <article class="card">
-          <h3>Failure → Pain</h3>
-          <p class="zh">物理失败被 Sidecar 捕获，写入多尺度痛觉事件（MICRO/TACTICAL），不是模型自述。</p>
-          <p class="en">Physical failures are captured by Sidecar and written as multi-scale pain events (MICRO/TACTICAL), not model self-reports.</p>
+          <h3>失败 → 痛觉
+Failure → Pain</h3>
+          <p class="bi">物理失败由 Sidecar 捕获，写成多尺度痛觉事件，不是模型自述。
+Physical failures are captured by Sidecar and written as multi-scale pain events, not model self-reports.</p>
         </article>
         <article class="card">
-          <h3>Pain → Narrative → Human Correction</h3>
-          <p class="zh">痛觉被压缩成可读的事故报告；人读完后的修正动作被记录为 `human_correction`，带物理证据。</p>
-          <p class="en">Pain is compressed into a readable post-mortem; human corrections are recorded as `human_correction` with physical evidence.</p>
+          <h3>痛觉 → 叙事 → 人的修正
+Pain → Narrative → Human Correction</h3>
+          <p class="bi">痛觉被压成可读的事故报告。人读完后的修正记为带物理证据的校正记录。
+Pain is compressed into a readable post-mortem. A human correction is stored with physical evidence.</p>
         </article>
         <article class="card">
-          <h3>Correction → Distilled Plan → Pre-action Avoidance</h3>
-          <p class="zh">离线蒸馏把多条修正抽成一条可复用预案；下一次任务前，Agent 主动调用 `get_recent_plans` 读取预案，先检查再执行。</p>
-          <p class="en">Offline distillation turns multiple corrections into a reusable plan; before the next task, the agent calls `get_recent_plans` and checks before acting.</p>
+          <h3>修正 → 蒸馏预案 → 事前避开
+Correction → Distilled Plan → Pre-action Avoidance</h3>
+          <p class="bi">离线蒸馏把多条修正收成一条可复用预案。下次任务前先读取预案，检查之后再执行。
+Offline distillation turns several corrections into one reusable plan. Before the next task the agent reads that plan and checks before acting.</p>
         </article>
       </div>
-      <p class="loop-evidence">实测：`fake_dir11` 任务中，Agent 先调用 `get_recent_plans`，读到“写文件前检查父目录”的预案，先 `mkdir` 再写，一次 PASS，没有产生新的 FAIL。</p>
-      <p class="loop-evidence">Verified: in the `fake_dir11` run, the agent called `get_recent_plans`, read the “check parent directory before write” plan, ran `mkdir` first, and passed on the first attempt with no new FAIL.</p>
-      <p class="caveat">当前已验证的闭环只覆盖“缺父目录”这一种失败形态；权限、符号链接、多步级联的规则蒸馏尚未验证。规则读取仍是软约束，Sidecar 的物理阻断仍是最终防线。</p>
-      <p class="caveat">The verified loop currently covers only the “missing parent directory” failure shape. Distillation for permission, symlink, and cascading failures is not yet verified. Plan reading remains a soft constraint; Sidecar’s physical block remains the final line of defense.</p>
+      <p class="loop-evidence bi">实测：`fake_dir11` 任务中，它先调用 `get_recent_plans`，读到“写文件前检查父目录”的预案，先 `mkdir` 再写，一次通过，没有产生新的失败。
+Verified: in the `fake_dir11` run, it called `get_recent_plans`, read the “check parent directory before write” plan, ran `mkdir` first, and passed on the first attempt with no new failure.</p>
+      <p class="caveat bi">当前已验证的闭环只覆盖“缺父目录”这一种失败形态；权限、符号链接、多步级联的规则蒸馏尚未验证。规则读取仍是软约束，Sidecar 的物理阻断仍是最终防线。
+The verified loop currently covers only the “missing parent directory” failure shape. Distillation for permission, symlink, and cascading failures is not yet verified. Plan reading remains a soft constraint; Sidecar’s physical block remains the final line of defense.</p>
     </section>
 
-    <section class="tools" aria-label="Supported Tools">
+    <section class="tools" aria-label="支持的工具 · Supported tools">
       <div class="tools-head">
-        <span class="tools-label">Supported Tools</span>
-        <span class="tools-note">Built on native MCP. Works with any MCP-compatible client.</span>
+        <span class="tools-label">支持的工具 · Supported tools</span>
+        <span class="tools-note">基于原生协议，可接任何兼容的客户端。 Built on the native protocol. Works with any compatible client.</span>
       </div>
       <div class="badges">
-        <span class="badge">Cursor</span>
-        <span class="badge">Claude Code</span>
-        <span class="badge">Cline</span>
-        <span class="badge">Windsurf</span>
+        <span class="badge">Cursor 编辑器 · Cursor editor</span>
+        <span class="badge">Claude 命令行 · Claude command line</span>
+        <span class="badge">Cline 插件 · Cline plugin</span>
+        <span class="badge">Windsurf 编辑器 · Windsurf editor</span>
       </div>
       <div class="tool-links">
-        <a href="/integrations/cursor.html">Cursor Setup</a>
-        <a href="/integrations/claude-code.html">Claude Code Setup</a>
-        <a href="/integrations/cline.html">Cline Setup</a>
-        <a href="/integrations/windsurf.html">Windsurf Setup</a>
+        <a href="/integrations/cursor.html">Cursor 接入 · Cursor setup</a>
+        <a href="/integrations/claude-code.html">Claude 接入 · Claude setup</a>
+        <a href="/integrations/cline.html">Cline 接入 · Cline setup</a>
+        <a href="/integrations/windsurf.html">Windsurf 接入 · Windsurf setup</a>
       </div>
     </section>
 
     <div class="actions">
-      <a class="btn btn-primary" href="https://github.com/liao-zhizhi/harness-audit-sidecar/releases/download/v0.10.9/harness-audit-0.10.9.vsix">Download Extension (.vsix)</a>
-      <a class="btn btn-ghost" href="https://github.com/liao-zhizhi/harness-audit-sidecar">View on GitHub</a>
+      <a class="btn btn-primary" title="下载扩展 · Download extension" href="https://github.com/liao-zhizhi/harness-audit-sidecar/releases/download/v0.10.9/harness-audit-0.10.9.vsix">下载扩展 · Download extension</a>
+      <a class="btn btn-ghost" title="在仓库查看 · View the source repo" href="https://github.com/liao-zhizhi/harness-audit-sidecar">在仓库查看 · View the source repo</a>
     </div>
 
     <footer>
-      <div>Feedback &amp; Bug Reports: <a href="https://github.com/liao-zhizhi/harness-audit-sidecar/issues">GitHub Issues</a></div>
-      <div>Commercial / Team Inquiries: <span id="mail">contact [at] causalaudit.net</span></div>
-      <div class="copy">© 2026 Causal Audit. 100% Local &amp; Open Source.</div>
+      <div>反馈与缺陷报告 · Feedback and bug reports: <a href="https://github.com/liao-zhizhi/harness-audit-sidecar/issues">议题列表 · Issue tracker</a></div>
+      <div>商业与团队咨询 · Commercial and team inquiries: <a id="mail" href="mailto:contact@causalaudit.net">联系邮箱 · contact email</a></div>
+      <div class="copy">© 2026 因果审计。百分百本地并且开源。 Copyright. Fully local and open source.</div>
     </footer>
   </main>
   <script>
@@ -433,7 +445,8 @@
       var user = "contact";
       var host = "causalaudit.net";
       var addr = user + "@" + host;
-      el.innerHTML = '<a href="mailto:' + addr + '">' + addr + "</a>";
+      el.href = "mailto:" + addr;
+      el.textContent = "联系邮箱 · contact email";
     })();
   </script>
 </body>
