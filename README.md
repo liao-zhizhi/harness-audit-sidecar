@@ -1,5 +1,7 @@
 # agent-harness-audit
 
+> Agent Completion Auditor: catches false completion in coding agents. [Positioning](product/agent-completion-auditor/POSITIONING.md) · [Trial kit](product/agent-completion-auditor/TRIAL_KIT.md)
+
 **An audit tool for the agent execution layer**
 
 ## Install (two commands)
