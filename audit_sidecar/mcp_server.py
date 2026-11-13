@@ -107,6 +107,43 @@ CLAIM_TOOL_RETURN = "tool-return"  # what a non-error MCP tool result means by d
 # Read-only pain lookup. Not a judged tool: it must not enter intercept or
 # the audit_trace verdict path.
 PAIN_TOOL_NAME = "get_recent_pain_events"
+CORRECTION_TOOL_NAME = "record_human_correction"
+CORRECTION_TOOL_DEFINITION = {
+    "name": CORRECTION_TOOL_NAME,
+    "description": (
+        "Record a human correction after reading a pain narrative. "
+        "Writes source=human_correction to multi_scale_events.jsonl. "
+        "Does not execute a command and does not produce a lattice verdict. "
+        "Does not distill sidecar rules."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "narrative_ref": {
+                "type": "string",
+                "description": "event_id or timestamp of the narrative being corrected.",
+            },
+            "human_action": {
+                "type": "string",
+                "description": "What the human/agent actually did after reading the narrative.",
+            },
+            "alignment": {
+                "type": "string",
+                "enum": ["aligned", "diverged", "abandoned"],
+                "description": "aligned with the narrative, diverged from it, or abandoned the operation.",
+            },
+            "evidence": {
+                "type": "string",
+                "description": "Physical witness of the correction. Use 'not captured' if unknown.",
+            },
+            "relative_path": {
+                "type": "string",
+                "description": "Optional path the correction touched.",
+            },
+        },
+        "required": ["narrative_ref", "human_action", "alignment"],
+    },
+}
 PAIN_TOOL_DEFINITION = {
     "name": PAIN_TOOL_NAME,
     "description": (
@@ -186,6 +223,37 @@ def _pain_events_result(args: Dict[str, Any]) -> Dict[str, Any]:
     narrative = _optional_pain_narrative()
     if narrative:
         payload["narrative"] = narrative
+    body = json.dumps(payload, ensure_ascii=False)
+    return {
+        "content": [{"type": "text", "text": body}],
+        "isError": False,
+    }
+
+
+def _record_human_correction_result(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Off-lattice write. Never a verdict, never a trace row."""
+    row = None
+    error = ""
+    try:
+        cwd = os.getcwd()
+        if cwd not in sys.path:
+            sys.path.insert(0, cwd)
+        from agent_sentience.events import record_human_correction
+
+        row = record_human_correction(
+            narrative_ref=str(args.get("narrative_ref") or ""),
+            human_action=str(args.get("human_action") or ""),
+            alignment=str(args.get("alignment") or ""),
+            evidence=str(args.get("evidence") or ""),
+            relative_path=str(args.get("relative_path") or ""),
+        )
+    except Exception as exc:
+        error = str(exc)
+    payload: Dict[str, Any] = {"ok": bool(row), "event": row}
+    if error:
+        payload["error"] = error
+    if not row and not error:
+        payload["error"] = "record_human_correction rejected the input"
     body = json.dumps(payload, ensure_ascii=False)
     return {
         "content": [{"type": "text", "text": body}],
@@ -733,6 +801,7 @@ class JsonRpcServer:
         # error it cannot act on.
         tools = list(self._proxy.describe_tools())
         tools.append(dict(PAIN_TOOL_DEFINITION))
+        tools.append(dict(CORRECTION_TOOL_DEFINITION))
         tools.sort(key=lambda item: item.get("name") or "")
         return {"tools": tools}
 
@@ -754,6 +823,8 @@ class JsonRpcServer:
 
         if tool == PAIN_TOOL_NAME:
             return _pain_events_result(args)
+        if tool == CORRECTION_TOOL_NAME:
+            return _record_human_correction_result(args)
 
         claim, basis = self._resolve_claim(params, tool)
 
@@ -835,6 +906,8 @@ class JsonRpcServer:
 
         if tool == PAIN_TOOL_NAME:
             return _result(message_id, _pain_events_result(args))
+        if tool == CORRECTION_TOOL_NAME:
+            return _result(message_id, _record_human_correction_result(args))
 
         reported_success = params.get("reported_success")
         if not isinstance(reported_success, bool):

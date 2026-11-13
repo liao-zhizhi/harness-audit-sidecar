@@ -237,6 +237,34 @@ class MemoryBusTest(unittest.TestCase):
         ]
         self.assertEqual(lines, [])
 
+    def test_human_correction_lookup_is_not_traced_or_judged(self) -> None:
+        from audit_sidecar.mcp_server import JsonRpcServer
+        from audit_sidecar.runner import SafeRunner
+
+        trace = os.path.join(self.home, "correction_trace.jsonl")
+        proxy = MCPProxy(cwd=self.home, runner=SafeRunner(timeout=5))
+        server = JsonRpcServer(proxy, TraceWriter(trace))
+        payload = server._handle_tools_call(
+            10,
+            {
+                "name": "record_human_correction",
+                "arguments": {
+                    "narrative_ref": "evt-x",
+                    "human_action": "mkdir then write",
+                    "alignment": "aligned",
+                    "evidence": "not captured",
+                },
+            },
+        )
+        self.assertFalse(payload.get("isError"))
+        self.assertNotIn("verdict", payload)
+        lines = [
+            line
+            for line in Path(trace).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(lines, [])
+
 
 GIT = shutil.which("git")
 
