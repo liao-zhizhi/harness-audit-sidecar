@@ -13,6 +13,10 @@ harness-audit setup
 `ref_roots.json`, and takes a baseline. It backs up every file it replaces and
 refuses to rewrite one it cannot parse.
 
+Cursor extension: adding a MCP tool is deploy negotiation, not learning.
+Every new tool needs `sync-python.js` → package vsix → install → Reload →
+confirm `tools/list`. Full steps: [`vscode-extension/ADDING_MCP_TOOLS.md`](vscode-extension/ADDING_MCP_TOOLS.md).
+
 Three errors, and what to run:
 
 | What you see | What it means | Fix |

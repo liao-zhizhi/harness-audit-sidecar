@@ -14,8 +14,10 @@
  * ``harness-audit`` entry when it already has ``--cwd`` or a Python root that
  * implements the required off-lattice tools. Only the user's first Enable
  * click, a missing server, or a stale Python tree (missing
- * ``get_recent_pain_events``, ``record_human_correction``, or
- * ``get_recent_corrections``) may write.
+ * ``get_recent_pain_events``, ``record_human_correction``,
+ * ``get_recent_corrections``, or ``get_recent_plans``) may write.
+ * Adding a tool is deploy negotiation: sync-python → package → install →
+ * Reload → confirm tools/list. See ADDING_MCP_TOOLS.md.
  */
 
 import * as fs from "fs";
