@@ -303,11 +303,48 @@
       max-width: 54em;
     }
     .loop .caveat + .caveat { margin-top: 6px; }
+    .why { margin: 0 0 32px; }
+    .why h2 {
+      font-size: clamp(18px, 3.2vw, 24px);
+      line-height: 1.2;
+      letter-spacing: -0.03em;
+      margin: 0 0 16px;
+      font-weight: 700;
+    }
+    .why-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 0 0 12px;
+    }
+    .why .card h3 {
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 13px;
+      margin-bottom: 10px;
+      white-space: pre-line;
+    }
+    .why .zh {
+      margin: 0 0 8px;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .why .en {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .why .card-good .zh { color: var(--text); }
+    .why .card-good .en { color: #86efac; }
+    .why .caveat { margin-top: 14px; }
     @media (max-width: 640px) {
       .wrap { padding-top: 28px; }
       .actions { grid-template-columns: 1fr; }
       .vs { grid-template-columns: 1fr; }
       .loop-grid { grid-template-columns: 1fr; }
+      .why-grid { grid-template-columns: 1fr; }
       .brand { flex-direction: column; gap: 4px; }
     }
   </style>
@@ -406,6 +443,33 @@ Offline distillation turns several corrections into one reusable plan. Before th
 Verified: in the `fake_dir11` run, it called `get_recent_plans`, read the “check parent directory before write” plan, ran `mkdir` first, and passed on the first attempt with no new failure.</p>
       <p class="caveat bi">当前已验证的闭环只覆盖“缺父目录”这一种失败形态；权限、符号链接、多步级联的规则蒸馏尚未验证。规则读取仍是软约束，Sidecar 的物理阻断仍是最终防线。
 The verified loop currently covers only the “missing parent directory” failure shape. Distillation for permission, symlink, and cascading failures is not yet verified. Plan reading remains a soft constraint; Sidecar’s physical block remains the final line of defense.</p>
+    </section>
+
+    <section class="why" aria-label="为什么纯 Prompt 救不了 Agent · Why prompting isn't enough">
+      <h2 class="bi">为什么纯 Prompt 救不了 Agent？
+Why Prompting Isn't Enough?</h2>
+      <div class="why-grid">
+        <article class="card card-bad">
+          <h3>模型无法内化契约
+Models cannot internalize contracts</h3>
+          <p class="zh">我们做了一个极端测试：移除所有外部规则和工具描述，看模型能否自己学会“在写文件前请求物理见证”。结论是：不能。模型依然会盲目直接执行。大模型可以被约束，但无法被“教会”内化契约。</p>
+          <p class="en">We ran an extreme test: removing all external rules and tool descriptions to see if the model could learn to "request physical witnesses" before writing. The result: No. It still acts blindly. LLMs can be constrained, but they cannot be taught to internalize contracts.</p>
+        </article>
+        <article class="card card-bad">
+          <h3>规则套用是盲目的
+Rule application is blind</h3>
+          <p class="zh">模型分不清“缺少父目录”和“缺少写权限”。只要看到类似场景，它会把 A 场景的痛觉规则生搬硬套到 B 场景，导致依然失败。它缺乏对物理后果的推演能力。</p>
+          <p class="en">The model cannot distinguish between "missing parent directory" and "missing write permission." It blindly applies rules from scenario A to scenario B, causing failure. It lacks the ability to deduce physical consequences.</p>
+        </article>
+      </div>
+      <article class="card card-good">
+        <h3>唯一的防线在外部
+The only defense is external</h3>
+        <p class="zh">这就是为什么你需要 Sidecar。因为模型不可靠、规则容易套错、内化不存在，所以必须有一个独立的物理侧车，死死卡住它的每一个动作，用文件哈希和权限位做最后裁决。</p>
+        <p class="en">This is why you need Sidecar. Because models are unreliable, rules get misapplied, and internalization doesn't exist, you must have an independent physical sidecar to hard-block every action, using file hashes and permission bits as the final verdict.</p>
+      </article>
+      <p class="caveat bi">注：当前结论基于 `chmod 000` 和缺父目录场景的实测。对于更复杂的物理环境，Sidecar 的拦截判据需要相应扩展。
+Note: Current conclusions are based on tests with `chmod 000` and missing parent directories. For more complex physical environments, Sidecar's blocking criteria will need to be extended.</p>
     </section>
 
     <section class="tools" aria-label="支持的工具 · Supported tools">
