@@ -20,6 +20,10 @@ import tempfile
 import unittest
 from unittest import mock
 
+from audit_sidecar.mcp_server import TraceWriter, _check_receipt, _trace_record
+from audit_sidecar.runner import ExecutionResult
+from audit_sidecar.verdict import Verdict
+
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE = "audit_sidecar.mcp_server"
 GIT = shutil.which("git")
@@ -175,6 +179,10 @@ class HonestCallE2ETest(StdioServerTestCase):
         self.assertEqual(record["split"]["exit_code"], 0)
         self.assertEqual(record["split"]["missing_expected"], [])
         self.assertEqual(record["split"]["unexpected_changes"], [])
+        self.assertEqual(
+            record["check_receipt"],
+            {"present": False, "kind": None, "detail": ""},
+        )
 
 
 class SwallowedErrorE2ETest(StdioServerTestCase):
@@ -287,6 +295,33 @@ class SwallowedErrorE2ETest(StdioServerTestCase):
         self.assertTrue(drifted["split"]["unexpected_changes"])
         self.assertIn("wrong.py", drifted["split"]["unexpected_changes"])
         self.assertIn("wrong.py", drifted["unexpected_changes"])
+
+    def test_check_receipt_sees_pytest_and_not_echo(self) -> None:
+        # Neither command declares a file, so both stay INVALID. The receipt
+        # bit must not become a fifth verdict or a new FAIL reason.
+        stdout, stderr, code = self.run_server(
+            [
+                _request(1, "run_command", {"command": "python3 -m pytest -q"}, True),
+                _request(2, "run_command", {"command": "echo hi"}, True),
+            ]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len([line for line in stdout.splitlines() if line.strip()]), 2)
+        records = self.trace_records()
+        self.assertEqual(len(records), 2)
+        pytest_row, echo_row = records
+        self.assertEqual(pytest_row["check_receipt"]["present"], True)
+        self.assertEqual(pytest_row["check_receipt"]["kind"], "pytest")
+        self.assertIn("pytest", pytest_row["check_receipt"]["detail"])
+        self.assertEqual(
+            echo_row["check_receipt"],
+            {"present": False, "kind": None, "detail": ""},
+        )
+        self.assertEqual(pytest_row["verdict"], "INVALID")
+        self.assertEqual(echo_row["verdict"], "INVALID")
+        self.assertNotIn("check_receipt", pytest_row["reason"])
+        self.assertNotIn("check_receipt", echo_row["reason"])
+        self.assertNotIn("receipt", echo_row["reason"])
 
     def test_ids_are_echoed_for_string_ids(self) -> None:
         stdout, _stderr, code = self.run_server(
@@ -568,6 +603,104 @@ class CloudSyncHeaderTest(unittest.TestCase):
             captured.get("ct"),
         )
         self.assertNotIn("Python-urllib", captured.get("ua") or "")
+
+
+def _execution(command: str, verdict: Verdict) -> ExecutionResult:
+    return ExecutionResult(
+        intent="run command: {}".format(command),
+        effect_observed=True,
+        check_observed=True,
+        verdict=verdict,
+        command=command,
+        exit_code=0,
+        reason="witness matches intent, report agrees",
+    )
+
+
+class CheckReceiptTraceTest(unittest.TestCase):
+    """The receipt is a side field. It is written, and it does not judge."""
+
+    def test_kinds_follow_the_command_token(self) -> None:
+        cases = (
+            ("pytest -q", "pytest"),
+            ("python3 -m pytest tests", "pytest"),
+            ("py.test", "pytest"),
+            ("python -m unittest discover", "unittest"),
+            ("npm test", "npm_test"),
+            ("pnpm test --", "npm_test"),
+            ("yarn test", "npm_test"),
+            ("cargo test --lib", "cargo_test"),
+            ("go test ./...", "go_test"),
+            ("ctest --output-on-failure", "ctest"),
+            ("tox -e py39", "generic_test"),
+            ("nox -s tests", "generic_test"),
+            ("echo hi && pytest -q", "pytest"),
+            ("bash -c 'cargo test'", "cargo_test"),
+        )
+        for command, kind in cases:
+            receipt = _check_receipt(
+                "run_command", {"command": command}, _execution(command, Verdict.PASS)
+            )
+            self.assertEqual(receipt["present"], True, command)
+            self.assertEqual(receipt["kind"], kind, command)
+            self.assertTrue(receipt["detail"], command)
+
+    def test_echo_and_write_payload_are_not_receipts(self) -> None:
+        echo = _check_receipt(
+            "run_command", {"command": "echo hi"}, _execution("echo hi", Verdict.PASS)
+        )
+        self.assertEqual(echo, {"present": False, "kind": None, "detail": ""})
+        mentioned = _check_receipt(
+            "run_command",
+            {"command": "echo pytest"},
+            _execution("echo pytest", Verdict.PASS),
+        )
+        self.assertFalse(mentioned["present"])
+        written = _check_receipt(
+            "write_file",
+            {"path": "test_app.py", "content": "import pytest\n"},
+            _execution("printf '%s' 'import pytest' > test_app.py", Verdict.PASS),
+        )
+        self.assertFalse(written["present"])
+
+    def test_missing_receipt_does_not_change_a_pass(self) -> None:
+        record = _trace_record(
+            1,
+            "run_command",
+            {"command": "echo hi"},
+            True,
+            _execution("echo hi", Verdict.PASS),
+            timestamp="2026-11-19T00:00:00+08:00",
+        )
+        self.assertEqual(record["verdict"], "PASS")
+        self.assertEqual(
+            record["check_receipt"],
+            {"present": False, "kind": None, "detail": ""},
+        )
+        self.assertNotIn("receipt", record["reason"])
+
+    def test_trace_round_trip_keeps_pytest_receipt(self) -> None:
+        scratch = tempfile.TemporaryDirectory(prefix="harness-receipt-")
+        self.addCleanup(scratch.cleanup)
+        path = os.path.join(scratch.name, "audit_trace.jsonl")
+        command = "python3 -m pytest -q"
+        writer = TraceWriter(path)
+        writer.write(
+            _trace_record(
+                4,
+                "run_command",
+                {"command": command},
+                True,
+                _execution(command, Verdict.PASS),
+                timestamp="2026-11-19T00:00:00+08:00",
+            )
+        )
+        with open(path, encoding="utf-8") as handle:
+            record = json.loads(handle.readline())
+        self.assertEqual(record["verdict"], "PASS")
+        self.assertEqual(record["check_receipt"]["present"], True)
+        self.assertEqual(record["check_receipt"]["kind"], "pytest")
+        self.assertEqual(record["check_receipt"]["detail"], command)
 
 
 if __name__ == "__main__":

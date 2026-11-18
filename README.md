@@ -1739,6 +1739,8 @@ use).
  "exit_code":0,"pipe_status":[0],"changed_files":["target.py"], ...}
 ```
 
+Each record also carries `check_receipt` (`present`, `kind`, `detail`): whether that call's command was a check invocation (`pytest`, `unittest`, `npm test`, `cargo test`, `go test`, `ctest`, `tox`, `nox`); `present: false` does not change the four-valued verdict.
+
 ### Wiring into an agent client
 
 Any framework that can launch a stdio MCP server will work. A typical client configuration:

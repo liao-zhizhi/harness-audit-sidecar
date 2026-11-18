@@ -44,6 +44,7 @@ import argparse
 import json
 import logging
 import os
+import shlex
 import sys
 import threading
 import time
@@ -663,6 +664,174 @@ def _next_step_offered(result: Any) -> bool:
     return value not in (None, "PASS")
 
 
+# Command-token heuristic for "this call ran a check". Aligned with the
+# doneattr receipt names: pytest, unittest, npm test, cargo test, go test,
+# ctest, tox, nox. pnpm/yarn test and py.test are the same families.
+# The first matching shell segment wins. This does not feed the lattice.
+_CHECK_WRAPPERS = {"env", "sudo", "command", "time", "nice", "nohup"}
+_CHECK_SHELLS = {"sh", "bash"}
+_CHECK_PYTHONS = {"python", "python3", "python2"}
+
+
+def _shell_segments(command: str) -> List[str]:
+    """Split on shell separators, leaving quoted text in one piece."""
+    parts: List[str] = []
+    buf: List[str] = []
+    quote: Optional[str] = None
+    i = 0
+    length = len(command)
+    while i < length:
+        ch = command[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if command.startswith("&&", i) or command.startswith("||", i):
+            parts.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        if ch in ";&|\n":
+            parts.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
+def _tokens(segment: str) -> List[str]:
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return segment.split()
+
+
+def _is_assignment(token: str) -> bool:
+    return "=" in token and not token.startswith(("=", "-"))
+
+
+def _preamble_end(tokens: List[str]) -> int:
+    """Index of the real program after env assignments and thin wrappers."""
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if _is_assignment(token):
+            i += 1
+            continue
+        base = os.path.basename(token).lower()
+        if base in _CHECK_WRAPPERS:
+            i += 1
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 1
+            continue
+        break
+    return i
+
+
+def _shell_c_payload(tokens: List[str]) -> Optional[str]:
+    """The script passed to ``sh -c`` / ``bash -c``, if this argv is one."""
+    i = _preamble_end(tokens)
+    if i >= len(tokens):
+        return None
+    if os.path.basename(tokens[i]).lower() not in _CHECK_SHELLS:
+        return None
+    try:
+        flag = tokens.index("-c", i + 1)
+    except ValueError:
+        return None
+    if flag + 1 >= len(tokens):
+        return None
+    return tokens[flag + 1]
+
+
+def _kind_of_tokens(tokens: List[str]) -> Optional[str]:
+    i = _preamble_end(tokens)
+    if i >= len(tokens):
+        return None
+    base = os.path.basename(tokens[i]).lower().strip("()")
+    nxt = tokens[i + 1].lower() if i + 1 < len(tokens) else ""
+    nxt2 = tokens[i + 2].lower() if i + 2 < len(tokens) else ""
+    if base in _CHECK_PYTHONS and nxt == "-m":
+        if nxt2 in {"pytest", "py.test"}:
+            return "pytest"
+        if nxt2 == "unittest":
+            return "unittest"
+        return None
+    if base in {"pytest", "py.test"}:
+        return "pytest"
+    if base == "unittest":
+        return "unittest"
+    if base in {"npm", "pnpm", "yarn"} and nxt == "test":
+        return "npm_test"
+    if base == "cargo" and nxt == "test":
+        return "cargo_test"
+    if base == "go" and nxt == "test":
+        return "go_test"
+    if base == "ctest":
+        return "ctest"
+    if base in {"tox", "nox"}:
+        return "generic_test"
+    return None
+
+
+def _match_check_command(command: str, depth: int = 0) -> Tuple[Optional[str], str]:
+    if depth > 3 or not isinstance(command, str):
+        return None, ""
+    for segment in _shell_segments(command):
+        text = " ".join(segment.split())
+        if not text:
+            continue
+        tokens = _tokens(segment)
+        payload = _shell_c_payload(tokens)
+        if payload is not None:
+            kind, detail = _match_check_command(payload, depth + 1)
+            if kind:
+                return kind, detail
+            continue
+        kind = _kind_of_tokens(tokens)
+        if kind:
+            return kind, text[:200]
+    return None, ""
+
+
+def _command_for_receipt(tool: str, args: Dict[str, Any], result: Any) -> str:
+    """The command this call actually invoked, not a write payload.
+
+    ``write_file`` / ``append_file`` wrap their contents in ``printf``. A file
+    that mentions pytest is not a check run, so those tools never count unless
+    the caller passed an explicit ``command`` argument.
+    """
+    if isinstance(args, dict):
+        raw = args.get("command")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    if tool in {"write_file", "append_file"}:
+        return ""
+    raw = getattr(result, "command", "")
+    return raw if isinstance(raw, str) else ""
+
+
+def _check_receipt(tool: str, args: Dict[str, Any], result: Any) -> Dict[str, Any]:
+    """Diagnostic: did this call's command look like a test or check?
+
+    ``present`` false is not a verdict. Callers must not turn it into FAIL.
+    """
+    kind, detail = _match_check_command(_command_for_receipt(tool, args, result))
+    if kind is None:
+        return {"present": False, "kind": None, "detail": ""}
+    return {"present": True, "kind": kind, "detail": detail}
+
+
 def _trace_record(
     message_id: Any,
     tool: str,
@@ -709,6 +878,9 @@ def _trace_record(
             "missing_expected": list(result.missing_expected),
             "unexpected_changes": list(result.unexpected_changes),
         },
+        # Whether this call's command was a check. Informational only: a
+        # missing receipt does not change PASS/FAIL/INVALID/NOT RUN.
+        "check_receipt": _check_receipt(tool, args, result),
         # Judgment-base provenance. ``rule_id`` names the rule that decided
         # the verdict, so a trace stays readable after the policy changes:
         # without it, an INVALID caused by a rule is indistinguishable from
