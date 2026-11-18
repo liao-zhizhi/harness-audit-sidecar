@@ -701,6 +701,14 @@ def _trace_record(
         "changed_files": list(result.changed_files),
         "missing_expected": list(result.missing_expected),
         "unexpected_changes": list(result.unexpected_changes),
+        # Nested copy for readers that only look at ``split``. The three
+        # top-level fields stay so older readers keep working. ``exit_code``
+        # may be None when the command never started.
+        "split": {
+            "exit_code": result.exit_code,
+            "missing_expected": list(result.missing_expected),
+            "unexpected_changes": list(result.unexpected_changes),
+        },
         # Judgment-base provenance. ``rule_id`` names the rule that decided
         # the verdict, so a trace stays readable after the policy changes:
         # without it, an INVALID caused by a rule is indistinguishable from

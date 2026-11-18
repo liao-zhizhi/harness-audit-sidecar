@@ -42,6 +42,21 @@ def _request(message_id, tool, args, reported_success):
     }
 
 
+def _assert_native_split(test, record):
+    """``split`` is written beside the top-level triple and matches it."""
+    test.assertIn("exit_code", record)
+    test.assertIn("missing_expected", record)
+    test.assertIn("unexpected_changes", record)
+    split = record["split"]
+    test.assertEqual(
+        set(split),
+        {"exit_code", "missing_expected", "unexpected_changes"},
+    )
+    test.assertEqual(split["exit_code"], record["exit_code"])
+    test.assertEqual(split["missing_expected"], record["missing_expected"])
+    test.assertEqual(split["unexpected_changes"], record["unexpected_changes"])
+
+
 @unittest.skipUnless(HAS_GIT, "git is required for the change-set witness")
 class StdioServerTestCase(unittest.TestCase):
     """Base fixture: a real repository plus a helper to talk to the server."""
@@ -156,6 +171,10 @@ class HonestCallE2ETest(StdioServerTestCase):
         self.assertIn("T", record["timestamp"])
         self.assertTrue(record["session_id"])
         self.assertIs(record["next_step_offered"], False)
+        _assert_native_split(self, record)
+        self.assertEqual(record["split"]["exit_code"], 0)
+        self.assertEqual(record["split"]["missing_expected"], [])
+        self.assertEqual(record["split"]["unexpected_changes"], [])
 
 
 class SwallowedErrorE2ETest(StdioServerTestCase):
@@ -196,6 +215,9 @@ class SwallowedErrorE2ETest(StdioServerTestCase):
         self.assertIs(record["next_step_offered"], True)
         self.assertTrue(record["session_id"])
         self.assertIn("T", record["timestamp"])
+        _assert_native_split(self, record)
+        self.assertNotEqual(record["split"]["exit_code"], 0)
+        self.assertTrue(record["split"]["missing_expected"])
 
     def test_world_is_unchanged_after_the_lie(self) -> None:
         self.run_server(
@@ -224,6 +246,47 @@ class SwallowedErrorE2ETest(StdioServerTestCase):
         session_ids = {record["session_id"] for record in records}
         self.assertEqual(len(session_ids), 1)
         self.assertTrue(session_ids.pop())
+        for record in records:
+            _assert_native_split(self, record)
+
+    def test_trace_split_covers_nonzero_exit_and_drift(self) -> None:
+        # Written by the real sidecar, then read back from the JSONL file.
+        stdout, stderr, code = self.run_server(
+            [
+                _request(
+                    1,
+                    "run_command",
+                    {
+                        "command": "exit 2",
+                        "expected_files_modified": ["target.py"],
+                    },
+                    True,
+                ),
+                _request(
+                    2,
+                    "run_command",
+                    {
+                        "command": "printf 'x\\n' > wrong.py",
+                        "expected_files_modified": ["target.py"],
+                    },
+                    True,
+                ),
+            ]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(len([line for line in stdout.splitlines() if line.strip()]), 2)
+        records = self.trace_records()
+        self.assertEqual(len(records), 2)
+        nonzero, drifted = records
+        _assert_native_split(self, nonzero)
+        _assert_native_split(self, drifted)
+        self.assertEqual(nonzero["split"]["exit_code"], 2)
+        self.assertNotEqual(nonzero["exit_code"], 0)
+        self.assertTrue(nonzero["split"]["missing_expected"])
+        self.assertIn("target.py", drifted["split"]["missing_expected"])
+        self.assertTrue(drifted["split"]["unexpected_changes"])
+        self.assertIn("wrong.py", drifted["split"]["unexpected_changes"])
+        self.assertIn("wrong.py", drifted["unexpected_changes"])
 
     def test_ids_are_echoed_for_string_ids(self) -> None:
         stdout, _stderr, code = self.run_server(
