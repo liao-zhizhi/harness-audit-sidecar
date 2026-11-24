@@ -630,6 +630,12 @@ class TraceWriter:
                 self._path,
             )
             return None
+        # Release the descriptor when the writer is garbage collected, not only
+        # on an explicit close: a process that builds one per request in a test
+        # must not creep toward the fd limit.
+        import weakref
+
+        weakref.finalize(self, guard.close)
         return guard
 
     def close(self) -> None:
