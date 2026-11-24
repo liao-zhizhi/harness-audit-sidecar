@@ -595,12 +595,64 @@ class TraceWriter:
         # an E2E test then cannot pass by finding a stale file.
         with open(self._path, "a", encoding="utf-8"):
             pass
+        self._exclusive = True
+        self._refused_writes = 0
+        self._guard = self._claim_single_writer()
+
+    def _claim_single_writer(self) -> Optional[TextIO]:
+        """Hold a lock on the trace so exactly one process appends to it.
+
+        Two sidecars on one trace is not a load problem, it is an evidence
+        problem: two verdict streams interleave and neither can be trusted
+        afterwards. Cursor restarts an MCP server when its config changes and
+        does not always reap the previous child, so a second instance is
+        reachable in practice, not only in theory.
+
+        The instance that loses the race keeps answering -- refusing to serve
+        would take the agent down to win a lock -- but it does not append. The
+        guard is a descriptor held for the process lifetime, and the kernel
+        drops it on exit including a crash, so a stale lock cannot outlive its
+        owner.
+        """
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - not POSIX
+            return None
+        guard = open(self._path, "a", encoding="utf-8")
+        try:
+            fcntl.flock(guard.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            guard.close()
+            self._exclusive = False
+            _LOG.error(
+                "another sidecar already writes %s; this instance will answer "
+                "but will not append to the trace",
+                self._path,
+            )
+            return None
+        return guard
+
+    def close(self) -> None:
+        """Release the writer lock now. Process exit does this anyway."""
+        guard = self._guard
+        self._guard = None
+        if guard is not None:
+            guard.close()
 
     @property
     def path(self) -> str:
         return self._path
 
     def write(self, record: Dict[str, Any]) -> None:
+        if not self._exclusive:
+            self._refused_writes += 1
+            if self._refused_writes == 1:
+                _LOG.error(
+                    "not appending to %s: another sidecar holds the writer "
+                    "lock; later records from this instance are dropped too",
+                    self._path,
+                )
+            return
         line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
         try:
             with open(self._path, "a", encoding="utf-8") as handle:
