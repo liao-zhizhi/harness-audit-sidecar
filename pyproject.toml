@@ -61,10 +61,21 @@ harness-audit = "audit_sidecar.cli:main"
 
 [tool.setuptools]
 # Only the package itself: tests and scratch output are not part of the wheel.
-packages = ["audit_sidecar", "audit_sidecar.tools"]
+#
+# `audit_sidecar.rules` is listed even though it holds no `.py` files. It is a
+# data package, and leaving it out produced "Package would be ignored" on every
+# build: the rules reached the wheel only through `package-data`. That works
+# today, but it is one setuptools change away from shipping a wheel whose audit
+# gate enforces nothing -- and no test would catch it, because the code still
+# imports and still runs. Naming it is the cheap half of that fix.
+packages = ["audit_sidecar", "audit_sidecar.tools", "audit_sidecar.rules"]
 
 [tool.setuptools.package-data]
 # py.typed marks the package as typed. rules/*.yaml ships the default policy
 # inside the wheel, so a plain `pip install` produces a working audit gate
 # instead of one that silently enforces nothing until configured.
 audit_sidecar = ["py.typed", "rules/*.yaml"]
+# Quoted, and not optional: an unquoted dotted key would nest under the
+# `audit_sidecar` key above, which TOML forbids as mutating an immutable
+# namespace. The parse error is loud, so this fails at build time.
+"audit_sidecar.rules" = ["*.yaml"]
