@@ -8,3 +8,9 @@ node_modules/**/test/**
 .test-workspace/**
 .gitignore
 *.vsix
+# Bytecode caches must never ship. A .pyc is a second copy of the module that
+# can outlive the source it was compiled from, and it doubles as dead weight in
+# the package. The extension also stops writing them (PYTHONDONTWRITEBYTECODE);
+# this rule covers caches left by anything else that ran Python in here.
+**/__pycache__/**
+**/*.pyc

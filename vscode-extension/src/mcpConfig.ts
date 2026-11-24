@@ -306,7 +306,7 @@ export function buildSidecarEntry(
   return {
     command: python,
     args: ["-m", "audit_sidecar.mcp_server", ...workspaceBindArgs(abs)],
-    env: { PYTHONPATH: pythonRoot },
+    env: { PYTHONPATH: pythonRoot, PYTHONDONTWRITEBYTECODE: "1" },
     cwd: abs,
   };
 }

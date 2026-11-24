@@ -60,12 +60,15 @@ export function resolvePythonRoot(extensionPath: string): string {
   return vendored;
 }
 
+// Importing the package to probe it would otherwise drop __pycache__ into
+// the vendored tree, which then ships inside the VSIX: dead weight, and a
+// second copy of the code that can disagree with the source next to it.
 function pythonHasSidecar(python: string, pythonRoot: string): boolean {
   const probe = spawnSync(
     python,
     ["-c", "import audit_sidecar, yaml; print(audit_sidecar.__version__)"],
     {
-      env: { ...process.env, PYTHONPATH: pythonRoot },
+      env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONDONTWRITEBYTECODE: "1" },
       encoding: "utf8",
     }
   );
@@ -87,7 +90,7 @@ export function resolveRuntime(extensionPath: string): Runtime {
       pythonRoot,
       command: python,
       args: ["-m", "audit_sidecar.mcp_server"],
-      env: { ...process.env, PYTHONPATH: pythonRoot },
+      env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONDONTWRITEBYTECODE: "1" },
     };
   }
   const onPath = which("harness-audit-server");
@@ -97,7 +100,7 @@ export function resolveRuntime(extensionPath: string): Runtime {
       pythonRoot,
       command: onPath,
       args: [],
-      env: { ...process.env, PYTHONPATH: pythonRoot },
+      env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONDONTWRITEBYTECODE: "1" },
     };
   }
   throw new Error(
