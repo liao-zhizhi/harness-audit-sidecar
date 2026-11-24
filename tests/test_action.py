@@ -9,6 +9,7 @@ actually calls the subcommand the README advertises.
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -128,7 +129,16 @@ class ActionShapeTests(unittest.TestCase):
     def test_the_readme_says_v1_does_not_pin_the_package(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("pins the workflow, not the package", readme)
-        self.assertIn("version: 0.10.2", readme)
+        # Name the version the package actually ships. Hard-coding it made this
+        # fail on every release, which invites editing the test instead of
+        # noticing that the README example had gone stale.
+        version = re.search(
+            r'^version = "([^"]+)"',
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(version, "pyproject.toml has no version line")
+        self.assertIn(f"version: {version.group(1)}", readme)
 
     def test_the_judging_step_calls_the_check_subcommand(self):
         self.assertIn("harness-audit check", self.steps[-1]["run"])
