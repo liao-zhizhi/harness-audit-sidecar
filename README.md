@@ -1,6 +1,6 @@
 # agent-harness-audit
 
-> For developers: catches false completion in coding agents. [Developer guide](docs/FOR_DEVELOPERS.md) · Install: pipx install 'harness-audit-sidecar>=0.11.6'
+> For developers: catches false completion in coding agents. [Developer guide](docs/FOR_DEVELOPERS.md) · Install: pipx install 'harness-audit-sidecar>=0.11.7'
 
 **An audit tool for the agent execution layer**
 
@@ -150,7 +150,7 @@ flares, earlier than any real false completion.
 
 > See [ERRATA.md](ERRATA.md) for a list of false completions caught by our own audit during development.
 
-> **Project status: MVP / early version (v0.11.6) — interfaces may change; not recommended for production yet.**
+> **Project status: MVP / early version (v0.11.7) — interfaces may change; not recommended for production yet.**
 >
 > Implemented: the four-valued verdict engine, the trust-energy account, the self-audit loop,
 > three witness sources, the external judgment base, condition-triggered tiered immune
@@ -900,7 +900,7 @@ release gate, an audit trail, a postmortem -- name the version:
 ```yaml
 - uses: liao-zhizhi/harness-audit-sidecar@v1
   with:
-    version: 0.11.6            # exact pin; omit for latest
+    version: 0.11.7            # exact pin; omit for latest
     check: file src/main.py
 ```
 
