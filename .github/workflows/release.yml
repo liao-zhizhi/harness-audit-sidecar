@@ -64,6 +64,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The tests import `audit_sidecar`, which imports PyYAML at module scope
+      # (`judgment_base.py`). A fresh runner has neither, so without this step
+      # every test module fails at import and the suite never collects -- it
+      # reported 0 tests, not a failing assertion. Installing from pyproject is
+      # deliberate: hardcoding `pip install PyYAML` here would drift the moment
+      # a dependency is added.
+      - name: install the package and its dependencies
+        run: python -m pip install -e .
+
       # The tests are the baseline, not the proof: a green suite says the code
       # behaves, not that the wheel contains it.
       - name: test suite
