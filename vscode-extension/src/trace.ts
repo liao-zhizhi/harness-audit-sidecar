@@ -26,6 +26,7 @@ export interface PendingFail {
   path: string;
   basename: string;
   timeLabel: string;
+  verdict: "FAIL" | "INVALID";
 }
 
 export const L0_EVENTS_REL = "notes/l0_events.md";
@@ -100,6 +101,7 @@ function firstPath(value: unknown): string {
 const INTENT_PATH = /(?:modify file|append file|append to)\s+(\S+)/i;
 const RELATIVE_PATH =
   /(?:^|[\s"'=])((?:sentience_live|experiments|notes|scripts|docs|fake_dir|my_new_dir)\/[^\s"']+)/;
+const ABSOLUTE_PATH = /(\/(?:[^\s"'\\;|&<>]+)+)/;
 
 export function pathOf(row: TraceRow): string {
   const found =
@@ -119,7 +121,12 @@ export function pathOf(row: TraceRow): string {
   if (relative) {
     return relative[1].replace(/["']$/, "");
   }
-  return "";
+  const absolute = ABSOLUTE_PATH.exec(intent);
+  if (absolute) {
+    return absolute[1];
+  }
+  const command = intent.replace(/^run command:\s*/i, "").trim();
+  return command ? command.slice(0, 120) : "";
 }
 
 export function basenameOf(filePath: string): string {
@@ -161,7 +168,8 @@ export function pendingFails(rows: TraceRow[], events: L0Event[]): PendingFail[]
   const pending: PendingFail[] = [];
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index];
-    if (String(row.verdict || "") !== "FAIL") {
+    const verdict = String(row.verdict || "");
+    if (verdict !== "FAIL" && verdict !== "INVALID") {
       continue;
     }
     const filePath = pathOf(row);
@@ -177,6 +185,7 @@ export function pendingFails(rows: TraceRow[], events: L0Event[]): PendingFail[]
       path: filePath,
       basename: basenameOf(filePath),
       timeLabel: timeLabelOf(timestamp),
+      verdict: verdict === "INVALID" ? "INVALID" : "FAIL",
     });
   }
   return pending;
@@ -187,7 +196,11 @@ export function renderPendingRow(item: PendingFail): string {
   const name = escapeHtml(item.basename);
   const time = escapeHtml(item.timeLabel);
   const ts = escapeHtml(item.timestamp);
+  const kind = item.verdict === "INVALID" ? "invalid" : "fail";
+  const mark = item.verdict === "INVALID" ? "INV" : "FAIL";
   return `<div class="pending-row" data-ts="${ts}" data-path="${path}">
+    <span class="pending-dot pending-dot-${kind}" title="${mark}"></span>
+    <span class="pending-mark pending-mark-${kind}">${mark}</span>
     <span class="pending-name" title="${path}">${name}</span>
     <span class="pending-time">${time}</span>
     <span class="pending-btns">

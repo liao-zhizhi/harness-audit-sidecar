@@ -240,7 +240,18 @@ try {
   }));
   const pendingAll = pendingFails(failRows, []);
   check("pending keeps FAIL newest first", pendingAll[0].path.endsWith("probe_5/test.txt"));
-  check("pending ignores INVALID", pendingFails([{ ...failRows[0], verdict: "INVALID" }], []).length === 0);
+  check(
+    "pending includes INVALID",
+    pendingFails([{ ...failRows[0], verdict: "INVALID" }], []).length === 1
+  );
+  const catInvalid = pendingFails(
+    [{ timestamp: "2026-11-14T02:35:01+08:00", verdict: "INVALID", intent: "run command: cat /nonexistent_dir_abc/def.txt" }],
+    []
+  );
+  check("INVALID cat uses the command path", catInvalid[0]?.path === "/nonexistent_dir_abc/def.txt");
+  check("INVALID cat shows basename", catInvalid[0]?.basename === "def.txt");
+  check("INVALID cat keeps verdict", catInvalid[0]?.verdict === "INVALID");
+  check("INVALID pending row uses yellow mark", renderPendingRow(catInvalid[0]).includes("pending-dot-invalid"));
   const processedLine = formatL0EventLine(failRows[5].timestamp, failRows[5].missing_expected[0], "重做");
   const after = pendingFails(failRows, parseL0Events(processedLine));
   check("processed FAIL leaves the pending queue", after.length === 5);

@@ -326,7 +326,7 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
           <div id="pending-fixed">${payload.pendingFixedHtml}</div>
           <button type="button" id="pending-expand" data-extra="${payload.extra}"${payload.extra > 0 ? "" : " hidden"}>还有 ${payload.extra} 条，点击展开</button>
           <div id="pending-overflow" hidden>${payload.pendingOverflowHtml}</div>
-          <p id="pending-empty" class="empty"${payload.pendingCount ? " hidden" : ""}>没有待判断的 FAIL。</p>
+          <p id="pending-empty" class="empty"${payload.pendingCount ? " hidden" : ""}>没有待判断的 FAIL 或 INVALID。</p>
         </section>
         <section id="processed-block">
           <details>
@@ -386,6 +386,12 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
   #pending-block { flex: 0 0 auto; border-left: 3px solid var(--vscode-errorForeground); padding: 8px 12px; }
   .pending-title { color: var(--vscode-errorForeground); }
   .pending-row, .processed-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; min-height: 28px; min-width: 0; width: 100%; box-sizing: border-box; overflow: hidden; }
+  .pending-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .pending-dot-fail { background: var(--vscode-errorForeground); }
+  .pending-dot-invalid { background: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #d29922)); }
+  .pending-mark { flex: 0 0 auto; font-size: 10px; font-weight: 700; }
+  .pending-mark-fail { color: var(--vscode-errorForeground); }
+  .pending-mark-invalid { color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow, #d29922)); }
   .pending-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
   .pending-time { flex: 0 0 auto; opacity: 0.8; }
   .pending-btns { flex: 0 0 auto; display: flex; gap: 2px; }
