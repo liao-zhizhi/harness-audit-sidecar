@@ -17,6 +17,18 @@
  * ``get_recent_pain_events``, ``record_human_correction``,
  * ``get_recent_corrections``, ``get_recent_plans``,
  * ``_upsert_tactical``, or ``probe_target``) may write.
+ *
+ * **The vendored copy the extension itself wrote is the exception.** A marker
+ * check only notices a newer sidecar when a *tool* was added, so a release that
+ * only fixes behaviour leaves every marker in place. Cursor keeps the previous
+ * extension version's directory after an upgrade, so ``mcp.json`` would keep
+ * pointing at it and the MCP server would run the old code while the UI ran the
+ * new one -- silently, because nothing looks broken. A Python root that lives
+ * under the same ``.cursor/extensions`` tree but in a *different* extension
+ * directory is therefore treated as stale no matter how many markers it has.
+ * Roots the user chose outside that tree (pipx, a repo checkout) are still
+ * preserved: pinning those is the user's decision, not a stale pointer.
+ *
  * Adding a tool is deploy negotiation: sync-python → package → install →
  * Reload → confirm tools/list. See ADDING_MCP_TOOLS.md.
  */
@@ -116,15 +128,48 @@ export function pythonRootHasPainTool(pythonRoot: string | undefined): boolean {
   return pythonRootHasRequiredTools(pythonRoot);
 }
 
+/**
+ * The extension directory a Python root belongs to, when Cursor manages it.
+ *
+ * ``~/.cursor/extensions/liao-zhizhi.harness-audit-0.11.6/node_modules/...``
+ * and ``.../vendor/...`` both answer ``.../liao-zhizhi.harness-audit-0.11.6``.
+ * Anything outside an extensions tree answers ``undefined``, which is how a
+ * pipx install stays distinguishable from the copy we wrote ourselves.
+ */
+export function extensionDirOf(pythonRoot: string | undefined): string | undefined {
+  if (!pythonRoot) {
+    return undefined;
+  }
+  const marker = `${path.sep}.cursor${path.sep}extensions${path.sep}`;
+  const at = pythonRoot.indexOf(marker);
+  if (at < 0) {
+    return undefined;
+  }
+  const afterMarker = pythonRoot.slice(at + marker.length);
+  const name = afterMarker.split(path.sep)[0];
+  if (!name || name === ".." || name === ".") {
+    return undefined;
+  }
+  return pythonRoot.slice(0, at + marker.length) + name;
+}
+
 /** True when activate/start must not rewrite ~/.cursor/mcp.json. */
 export function shouldPreserveExistingSidecar(
-  entry: McpServerEntry | undefined
+  entry: McpServerEntry | undefined,
+  currentPythonRoot?: string
 ): boolean {
   if (!entry) {
     return false;
   }
   const pythonRoot = entry.env?.PYTHONPATH;
   if (pythonRoot) {
+    const currentDir = extensionDirOf(currentPythonRoot);
+    const existingDir = extensionDirOf(pythonRoot);
+    if (currentDir && existingDir && currentDir !== existingDir) {
+      // An extension-managed copy from some other version. Markers cannot see
+      // this: a patch release adds no tools. Repoint instead of preserving.
+      return false;
+    }
     return pythonRootHasRequiredTools(pythonRoot);
   }
   return Boolean(flagValue(entry.args, "--cwd"));
@@ -245,7 +290,7 @@ export function injectGlobalMcpJson(
   const file = globalMcpPath(homeDir);
   if (!options.force) {
     const current = readGlobalSidecarEntry(homeDir);
-    if (shouldPreserveExistingSidecar(current)) {
+    if (shouldPreserveExistingSidecar(current, entry.env?.PYTHONPATH)) {
       return { changed: false, path: file };
     }
   }

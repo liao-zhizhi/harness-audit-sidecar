@@ -86,14 +86,17 @@ export class AuditViewProvider implements vscode.WebviewViewProvider {
     if (!root) {
       return false;
     }
-    if (shouldPreserveExistingSidecar(readGlobalSidecarEntry())) {
-      return false;
-    }
     if (!this.globallyEnabled()) {
       return false;
     }
     try {
       const runtime = this.ensureRuntime();
+      // Pass the Python root this extension would write now. A vendored copy
+      // left behind by an earlier version lives in a sibling extensions
+      // directory and must not be preserved, or Reload keeps running old code.
+      if (shouldPreserveExistingSidecar(readGlobalSidecarEntry(), runtime.pythonRoot)) {
+        return false;
+      }
       const { changed } = this.bindGlobalSidecar(runtime, root, false);
       if (changed) {
         this.promptReload(root);

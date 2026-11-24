@@ -20,6 +20,7 @@ const {
   pythonRootHasPainTool,
   resolveWorkspaceRoot,
   shouldPreserveExistingSidecar,
+  extensionDirOf,
   workspaceBindArgs,
   workspaceBindMatches,
   tracePathFor,
@@ -119,6 +120,48 @@ try {
   check("synced python tree has required off-lattice tools", pythonRootHasPainTool(pythonRoot));
   check("current runtime python is preservable", shouldPreserveExistingSidecar(entry));
   check("missing entry is not preserved", !shouldPreserveExistingSidecar(undefined));
+
+  // A previous extension version leaves its directory behind on upgrade. Every
+  // marker is still present, so only directory identity reveals that the
+  // vendored copy is older than the extension reading it.
+  const extHome = mkdtempSync(join(tmpdir(), "harness-audit-exts-"));
+  const extBase = join(extHome, ".cursor", "extensions");
+  const rootFor = (ver) =>
+    join(extBase, `liao-zhizhi.harness-audit-${ver}`, "node_modules", "harness-audit-sidecar", "python");
+  const oldRoot = rootFor("0.11.6");
+  const newRoot = rootFor("0.11.7");
+  const allMarkers =
+    "get_recent_pain_events record_human_correction get_recent_corrections get_recent_plans _upsert_tactical probe_target";
+  for (const r of [oldRoot, newRoot]) {
+    mkdirSync(join(r, "audit_sidecar"), { recursive: true });
+    writeFileSync(join(r, "audit_sidecar", "mcp_server.py"), allMarkers);
+  }
+  const vendoredOld = {
+    command: runtime.python,
+    args: ["-m", "audit_sidecar.mcp_server", "--cwd", emptyWs],
+    env: { PYTHONPATH: oldRoot },
+  };
+  check(
+    "vendored copy from a previous extension version is not preserved",
+    !shouldPreserveExistingSidecar(vendoredOld, newRoot)
+  );
+  check(
+    "vendored copy of the current extension version is preserved",
+    shouldPreserveExistingSidecar(vendoredOld, oldRoot)
+  );
+  check(
+    "a Python root outside the extensions tree is preserved on markers alone",
+    shouldPreserveExistingSidecar(
+      { command: runtime.python, args: ["-m", "audit_sidecar.mcp_server"], env: { PYTHONPATH: pythonRoot } },
+      newRoot
+    )
+  );
+  check(
+    "extensionDirOf answers the extension directory",
+    extensionDirOf(oldRoot) === join(extBase, "liao-zhizhi.harness-audit-0.11.6")
+  );
+  check("extensionDirOf ignores a pipx root", extensionDirOf(pythonRoot) === undefined);
+  rmSync(extHome, { recursive: true, force: true });
 
   const staleHome = mkdtempSync(join(tmpdir(), "harness-audit-home-stale-"));
   const stalePython = mkdtempSync(join(tmpdir(), "harness-audit-old-py-"));
