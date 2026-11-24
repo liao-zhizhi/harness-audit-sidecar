@@ -1,6 +1,6 @@
 # 因果审计 Harness Audit · 小白使用指南
 
-> 适用版本：**0.11.7**（扩展 ID `liao-zhizhi.harness-audit`）
+> 适用版本：**0.11.8**（扩展 ID `liao-zhizhi.harness-audit`）
 > 这份文档写给第一次用它的人。不需要懂 MCP、不需要懂 git、不需要读那 2000 行 README。
 
 ---
@@ -21,7 +21,7 @@
 ### 第 1 步：装插件
 
 ```bash
-cursor --install-extension /home/liaozhizhi/Gradia/agent-harness-audit/vscode-extension/harness-audit-0.11.7.vsix
+cursor --install-extension /home/liaozhizhi/Gradia/agent-harness-audit/vscode-extension/harness-audit-0.11.8.vsix
 ```
 
 装完重启 Cursor。
@@ -203,7 +203,7 @@ cursor --install-extension /home/liaozhizhi/Gradia/agent-harness-audit/vscode-ex
 
 **0.10.5 及更早版本没有写这两个参数**，于是痕迹全落到 `~/audit_trace.jsonl`，而你的项目里那个文件是空的。**0.10.6 起已修复**。
 
-修复：升到 0.11.7，重新点一次一键开启。
+修复：升到 0.11.8，重新点一次一键开启。
 
 ### 5.3 面板「运行中」，但 AI 的调用没被审计
 
